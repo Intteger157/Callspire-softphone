@@ -1,20 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
-    <Nullable>enable</Nullable>
-    <UseWPF>true</UseWPF>
-    <ApplicationIcon>app.ico</ApplicationIcon>
-    <AssemblyName>Softphone</AssemblyName>
-    <RootNamespace>Softphone</RootNamespace>
-  </PropertyGroup>
+	<PropertyGroup>
+		<!-- Делаем именно приложение, а не библиотеку -->
+		<OutputType>WinExe</OutputType>
 
-  <ItemGroup>
-    <PackageReference Include="SIPSorcery" Version="6.0.0" />
-    <PackageReference Include="SIPSorceryMedia.Windows" Version="1.0.0" />
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-  </ItemGroup>
+		<!-- .NET 8 + Windows 10.0.17763 (для SIPSorceryMedia.Windows) -->
+		<TargetFramework>net8.0-windows10.0.17763</TargetFramework>
+
+		<!-- Включаем WPF -->
+		<UseWPF>true</UseWPF>
+
+		<!-- Включаем поддержку nullable, чтобы убрать ворнинги позже -->
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="SIPSorcery" Version="6.2.0" />
+		<PackageReference Include="SIPSorceryMedia.Windows" Version="8.0.7" />
+		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+		<PackageReference Include="NAudio" Version="2.2.1" />
+	</ItemGroup>
 
 </Project>
-
