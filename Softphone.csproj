@@ -19,6 +19,11 @@
 		<PackageReference Include="SIPSorceryMedia.Windows" Version="8.0.7" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
 		<PackageReference Include="NAudio" Version="2.2.1" />
+		<PackageReference Include="FluentIcons.Wpf" Version="1.2.315" />
+	</ItemGroup>
+	
+	<ItemGroup>
+		<Resource Include="Fonts\**\*" />
 	</ItemGroup>
 
 </Project>

@@ -1,6 +1,7 @@
 <Window x:Class="Softphone.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ic="clr-namespace:FluentIcons.Wpf;assembly=FluentIcons.Wpf"
         Title="Softphone" Height="600" Width="900"
         WindowStyle="None" 
         AllowsTransparency="True"
@@ -101,21 +102,25 @@
 
                         <!-- Navigation Buttons -->
                         <StackPanel Grid.Row="1">
-                            <Button Content="&#xE717;" Style="{StaticResource SidebarButtonStyle}" 
+                            <Button Style="{StaticResource SidebarButtonStyle}" 
                                    Click="DialerButton_Click" Name="DialerButton"
-                                   Foreground="{StaticResource AccentBlueBrush}"
-                                   ToolTip="Dialer"/>
-                            <Button Content="&#xE81C;" Style="{StaticResource SidebarButtonStyle}" 
+                                   ToolTip="Dialer">
+                                <ic:SymbolIcon Symbol="Dialpad" Width="24" Height="24" IconVariant="Regular" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                            </Button>
+                            <Button Style="{StaticResource SidebarButtonStyle}" 
                                    Click="HistoryButton_Click" Name="HistoryButton"
-                                   ToolTip="History"/>
+                                   ToolTip="History">
+                                <ic:SymbolIcon Symbol="History" Width="24" Height="24" IconVariant="Regular"/>
+                            </Button>
                         </StackPanel>
 
                         <!-- Settings Button -->
-                        <Button Grid.Row="2" Content="&#xE713;" 
-                               Style="{StaticResource SidebarButtonStyle}" 
+                        <Button Grid.Row="2" Style="{StaticResource SidebarButtonStyle}" 
                                Click="SettingsButton_Click" 
                                Margin="0,0,0,16"
-                               ToolTip="Settings"/>
+                               ToolTip="Settings">
+                            <ic:SymbolIcon Symbol="Settings" Width="24" Height="24" IconVariant="Regular"/>
+                        </Button>
                     </Grid>
                 </Border>
 
@@ -190,17 +195,20 @@
                             <Button Grid.Row="3" Grid.Column="0" Content="*" Style="{StaticResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
                             <Button Grid.Row="3" Grid.Column="1" Content="0" Style="{StaticResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
                             <Button Grid.Row="3" Grid.Column="2" Content="#" Style="{StaticResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="4" Grid.Column="0" Content="&#xE715;" Style="{StaticResource BackspaceButtonStyle}" Margin="8,16,8,8" Click="BackspaceButton_Click"/>
                             <Button Grid.Row="4" Grid.Column="1" Name="CallButton"
-                                   Content="&#xE728;" Style="{StaticResource NumpadCallButtonStyle}" 
+                                   Style="{StaticResource NumpadCallButtonStyle}" 
                                    Click="CallButton_Click"
                                    Margin="8,16,8,8"
-                                   IsEnabled="False"/>
+                                   HorizontalAlignment="Center"
+                                   IsEnabled="False">
+                                <ic:SymbolIcon Symbol="Call" Width="24" Height="24" IconVariant="Regular" Foreground="White"/>
+                            </Button>
                             <Button Grid.Row="4" Grid.Column="2" Name="BackspaceButton"
-                                   Content="&#xE94F;"  
                                    Style="{StaticResource BackspaceButtonStyle}" 
                                    Click="BackspaceButton_Click"
-                                   Margin="8,16,8,8"/>
+                                   Margin="8,16,8,8">
+                                <ic:SymbolIcon Symbol="Backspace" Width="20" Height="20" IconVariant="Regular"/>
+                            </Button>
                         </Grid>
                     </Grid>
 
@@ -270,13 +278,13 @@
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
 
-                                                <TextBlock Grid.Column="0"
-                                                          Text="{Binding CallDirectionIcon}" 
-                                                          FontSize="18"
-                                                          Foreground="{Binding CallDirectionColor}"
-                                                          VerticalAlignment="Center"
-                                                          Margin="0,0,16,0"
-                                                          FontFamily="Segoe Fluent Icons"/> 
+                                                <ic:SymbolIcon Grid.Column="0"
+                                                               Symbol="{Binding CallDirectionIcon}" 
+                                                               Width="20" Height="20"
+                                                               Foreground="{Binding CallDirectionColor}"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,16,0"
+                                                               IconVariant="Regular"/> 
 
                                                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                                     <TextBlock Text="{Binding PhoneNumber}"
@@ -301,15 +309,15 @@
                                                 </StackPanel>
 
                                                 <Button Grid.Column="3"
-                                                       Content="&#xE717;"
                                                        Width="36"
                                                        Height="36"
                                                        Style="{StaticResource NumpadCallButtonStyle}"
                                                        Background="{StaticResource AccentGreenBrush}"
-                                                       FontSize="16"
                                                        Margin="8,0,0,0"
                                                        Tag="{Binding PhoneNumber}"
-                                                       Click="CallFromHistoryButton_Click"/>
+                                                       Click="CallFromHistoryButton_Click">
+                                                       <ic:SymbolIcon Symbol="Call" Width="16" Height="16" IconVariant="Regular" Foreground="White"/>
+                                                </Button>
                                             </Grid>
                                         </Border>
                                     </DataTemplate>

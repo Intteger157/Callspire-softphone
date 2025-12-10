@@ -135,7 +135,7 @@ namespace Softphone
                 DurationText = call.Duration.HasValue 
                     ? $"{call.Duration.Value.Minutes:D2}:{call.Duration.Value.Seconds:D2}" 
                     : "-",
-                CallDirectionIcon = call.IsIncoming ? "↓" : "↑",
+                CallDirectionIcon = call.IsIncoming ? "CallInbound" : "CallOutbound",
                 CallDirectionColor = call.IsIncoming 
                     ? new SolidColorBrush(Color.FromRgb(59, 130, 246)) // Blue for incoming
                     : new SolidColorBrush(Color.FromRgb(34, 197, 94)) // Green for outgoing

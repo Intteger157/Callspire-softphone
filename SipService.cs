@@ -28,6 +28,36 @@ namespace Softphone
 
         public bool IsRegistered { get; private set; }
         public bool IsInCall => _userAgent?.IsCallActive == true;
+        
+        /// <summary>
+        /// Отправляет DTMF-тон во время активного звонка.
+        /// </summary>
+        public void SendDTMF(char digit)
+        {
+            if (!IsInCall)
+            {
+                SetStatus("No active call to send DTMF.");
+                return;
+            }
+
+            if (_voipMediaSession == null)
+            {
+                SetStatus("Media session not available.");
+                return;
+            }
+
+            try
+            {
+                // Отправляем DTMF через RTP (RFC 4733)
+                byte dtmfByte = (byte)digit;
+                _voipMediaSession.SendDtmf(dtmfByte, System.Threading.CancellationToken.None);
+                SetStatus($"DTMF sent: {digit}");
+            }
+            catch (Exception ex)
+            {
+                SetStatus($"DTMF error: {ex.Message}");
+            }
+        }
         private bool _wasCallActive = false; // Флаг для отслеживания завершения звонка
 
         private int? _microphoneDeviceNumber;
@@ -396,20 +426,23 @@ namespace Softphone
                 SetStatus("Hanging up call...");
                 try
                 {
+                    // Сначала завершаем SIP-звонок
                     _userAgent.Hangup();
                     
                     // Устанавливаем флаг, что звонок был активен
                     _wasCallActive = true;
                     
-                    // Закрываем медиа-сессию после завершения звонка
-                    // Это необходимо для корректной работы аудио при следующем звонке
+                    // Увеличиваем задержку перед закрытием медиа-сессии, чтобы дать время завершить передачу аудио
+                    System.Threading.Thread.Sleep(500);
+                    
+                    // Затем закрываем медиа-сессию, чтобы остановить аудио
                     try
                     {
                         _voipMediaSession?.Close("hangup");
                     }
                     catch
                     {
-                        // Игнорируем ошибки при закрытии
+                        // Игнорируем ошибки при закрытии медиа-сессии
                     }
                     
                     SetStatus("Call ended");
@@ -418,12 +451,24 @@ namespace Softphone
                 catch (Exception ex)
                 {
                     SetStatus($"Hangup error: {ex.Message}");
+                    // Все равно вызываем OnCallEnded, чтобы уведомить UI
+                    OnCallEnded?.Invoke();
                     throw;
                 }
             }
             else
             {
                 SetStatus("No active call.");
+                // Если звонок не активен, но медиа-сессия может быть открыта, закрываем её
+                try
+                {
+                    _voipMediaSession?.Close("hangup");
+                }
+                catch
+                {
+                    // Игнорируем ошибки
+                }
+                OnCallEnded?.Invoke();
             }
         }
 

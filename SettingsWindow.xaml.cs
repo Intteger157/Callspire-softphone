@@ -17,7 +17,20 @@ namespace Softphone
             ShowView(ConnectionSettingsView);
             LoadSettings();
             LoadAudioDevices(); // Загружаем устройства при открытии окна
+            
+            // Подписываемся на события статуса из MainWindow после загрузки окна
+            Loaded += SettingsWindow_Loaded;
+        }
+
+        private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
+        {
             UpdateConnectionStatus();
+            
+            // Подписываемся на события статуса из MainWindow после установки Owner
+            if (Owner is MainWindow mainWindow)
+            {
+                mainWindow.OnConnectionStatusChanged += UpdateConnectionStatusFromMainWindow;
+            }
         }
 
         private void UpdateConnectionStatus()
@@ -37,6 +50,14 @@ namespace Softphone
             {
                 ConnectionStatusTextBlock.Text = "Status: Not connected";
             }
+        }
+
+        private void UpdateConnectionStatusFromMainWindow(string status)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                ConnectionStatusTextBlock.Text = $"Status: {status}";
+            });
         }
 
         private void ShowView(Grid view)
@@ -150,15 +171,7 @@ namespace Softphone
                 {
                     ConnectionStatusTextBlock.Text = "Status: Connecting...";
                     
-                    // Подписываемся на события статуса из MainWindow
-                    mainWindow.OnConnectionStatusChanged += (status) =>
-                    {
-                        Dispatcher.Invoke(() =>
-                        {
-                            ConnectionStatusTextBlock.Text = $"Status: {status}";
-                        });
-                    };
-
+                    // Подписка уже есть в конструкторе, просто вызываем переподключение
                     await mainWindow.ReconnectFromSettingsAsync();
                 }
 
@@ -328,6 +341,16 @@ namespace Softphone
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
             Close();
+        }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            // Отписываемся от событий при закрытии окна
+            if (Owner is MainWindow mainWindow)
+            {
+                mainWindow.OnConnectionStatusChanged -= UpdateConnectionStatusFromMainWindow;
+            }
+            base.OnClosed(e);
         }
     }
 }

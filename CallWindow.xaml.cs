@@ -12,6 +12,10 @@ namespace Softphone
         private bool _isOnHold = false;
         private DateTime _callStartTime;
         private System.Windows.Threading.DispatcherTimer? _callTimer;
+        private const double DefaultWidth = 380;
+        private const double ExpandedWidth = 800; // Ширина с открытым нумпадом
+        private const double DefaultHeight = 450;
+        private const double ExpandedHeight = 680; // Высота с открытым нумпадом
 
         public CallWindow(SipService sipService, string phoneNumber)
         {
@@ -27,10 +31,69 @@ namespace Softphone
             if (_sipService != null)
             {
                 _sipService.OnStatusChanged += UpdateCallStatus;
+                _sipService.OnCallEnded += OnCallEnded;
             }
 
             // Запускаем таймер для отображения длительности звонка
             StartCallTimer();
+            
+            // Включаем обработку нажатий клавиш для DTMF
+            KeyDown += CallWindow_KeyDown;
+            Focusable = true;
+            Focus();
+        }
+        
+        private bool _isClosing = false;
+        
+        private void OnCallEnded()
+        {
+            Dispatcher.Invoke(() =>
+            {
+                if (_isClosing)
+                {
+                    // Если окно уже закрывается, просто закрываем его
+                    Close();
+                }
+                else
+                {
+                    // Обновляем статус
+                    CallStatusTextBlock.Text = "Call ended";
+                }
+            });
+        }
+        
+        private void CallWindow_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (_sipService == null || !_sipService.IsInCall)
+                return;
+
+            char? digit = null;
+            
+            // Обрабатываем цифры 0-9
+            if (e.Key >= Key.D0 && e.Key <= Key.D9)
+            {
+                digit = (char)('0' + (e.Key - Key.D0));
+            }
+            // Обрабатываем цифры на цифровой клавиатуре
+            else if (e.Key >= Key.NumPad0 && e.Key <= Key.NumPad9)
+            {
+                digit = (char)('0' + (e.Key - Key.NumPad0));
+            }
+            // Обрабатываем * и #
+            else if (e.Key == Key.Multiply || e.Key == Key.OemQuestion)
+            {
+                digit = '*';
+            }
+            else if (e.Key == Key.Divide || e.Key == Key.OemTilde)
+            {
+                digit = '#';
+            }
+
+            if (digit.HasValue)
+            {
+                _sipService.SendDTMF(digit.Value);
+                e.Handled = true;
+            }
         }
 
         private void StartCallTimer()
@@ -81,18 +144,33 @@ namespace Softphone
                 // Отключаем кнопку, чтобы предотвратить повторные нажатия
                 HangupButton.IsEnabled = false;
                 
+                // Устанавливаем флаг закрытия
+                _isClosing = true;
+                
                 // Завершаем звонок
                 _sipService.Hangup();
-                CallStatusTextBlock.Text = "Call ended";
+                CallStatusTextBlock.Text = "Hanging up...";
                 
-                // Закрываем окно через небольшую задержку, чтобы пользователь увидел статус
-                System.Threading.Tasks.Task.Delay(500).ContinueWith(_ =>
+                // Закрываем окно через небольшую задержку после завершения звонка
+                // OnCallEnded закроет окно автоматически
+                System.Threading.Tasks.Task.Delay(1000).ContinueWith(_ =>
                 {
-                    Dispatcher.Invoke(() => Close());
+                    Dispatcher.Invoke(() =>
+                    {
+                        try
+                        {
+                            Close();
+                        }
+                        catch
+                        {
+                            // Окно уже закрыто
+                        }
+                    });
                 });
             }
             catch (Exception ex)
             {
+                _isClosing = false;
                 MessageBox.Show($"Hangup error: {ex.Message}", "Error", 
                     MessageBoxButton.OK, MessageBoxImage.Error);
                 HangupButton.IsEnabled = true;
@@ -115,11 +193,28 @@ namespace Softphone
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
             // При закрытии окна завершаем звонок
-            if (_sipService != null)
+            if (_sipService != null && _sipService.IsInCall)
             {
                 try
                 {
+                    _isClosing = true;
                     _sipService.Hangup();
+                    // Ждем немного перед закрытием, чтобы звонок успел завершиться
+                    System.Threading.Tasks.Task.Delay(300).ContinueWith(_ =>
+                    {
+                        Dispatcher.Invoke(() =>
+                        {
+                            try
+                            {
+                                Close();
+                            }
+                            catch
+                            {
+                                // Окно уже закрыто
+                            }
+                        });
+                    });
+                    return; // Не закрываем сразу
                 }
                 catch
                 {
@@ -170,6 +265,71 @@ namespace Softphone
         {
             // TODO: Логика переключения динамика
         }
+        
+        private void DtmfButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_sipService == null || !_sipService.IsInCall)
+                return;
+
+            if (sender is System.Windows.Controls.Button button && button.Content is string digit)
+            {
+                _sipService.SendDTMF(digit[0]);
+            }
+        }
+        
+        private void KeypadToggleButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (KeypadGrid.Visibility == Visibility.Visible)
+            {
+                // Закрываем нумпад
+                KeypadGrid.Visibility = Visibility.Collapsed;
+                
+                // Анимация уменьшения ширины окна
+                var widthAnimation = new System.Windows.Media.Animation.DoubleAnimation(
+                    DefaultWidth,
+                    TimeSpan.FromMilliseconds(250));
+                widthAnimation.EasingFunction = new System.Windows.Media.Animation.QuadraticEase 
+                { 
+                    EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut 
+                };
+                BeginAnimation(WidthProperty, widthAnimation);
+                
+                // Анимация уменьшения высоты окна
+                var heightAnimation = new System.Windows.Media.Animation.DoubleAnimation(
+                    DefaultHeight,
+                    TimeSpan.FromMilliseconds(250));
+                heightAnimation.EasingFunction = new System.Windows.Media.Animation.QuadraticEase 
+                { 
+                    EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut 
+                };
+                BeginAnimation(HeightProperty, heightAnimation);
+            }
+            else
+            {
+                // Открываем нумпад
+                KeypadGrid.Visibility = Visibility.Visible;
+                
+                // Анимация увеличения ширины окна
+                var widthAnimation = new System.Windows.Media.Animation.DoubleAnimation(
+                    ExpandedWidth,
+                    TimeSpan.FromMilliseconds(250));
+                widthAnimation.EasingFunction = new System.Windows.Media.Animation.QuadraticEase 
+                { 
+                    EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut 
+                };
+                BeginAnimation(WidthProperty, widthAnimation);
+                
+                // Анимация увеличения высоты окна
+                var heightAnimation = new System.Windows.Media.Animation.DoubleAnimation(
+                    ExpandedHeight,
+                    TimeSpan.FromMilliseconds(250));
+                heightAnimation.EasingFunction = new System.Windows.Media.Animation.QuadraticEase 
+                { 
+                    EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut 
+                };
+                BeginAnimation(HeightProperty, heightAnimation);
+            }
+        }
 
         protected override void OnClosed(EventArgs e)
         {
@@ -180,6 +340,20 @@ namespace Softphone
             if (_sipService != null)
             {
                 _sipService.OnStatusChanged -= UpdateCallStatus;
+                _sipService.OnCallEnded -= OnCallEnded;
+                
+                // Если звонок все еще активен при закрытии окна, завершаем его
+                if (_sipService.IsInCall && !_isClosing)
+                {
+                    try
+                    {
+                        _sipService.Hangup();
+                    }
+                    catch
+                    {
+                        // Игнорируем ошибки
+                    }
+                }
             }
             base.OnClosed(e);
         }
