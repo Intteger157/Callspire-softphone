@@ -133,7 +133,6 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
                         
@@ -142,126 +141,226 @@
                                   Foreground="{StaticResource TextPrimaryBrush}"
                                   Margin="0,0,0,20"/>
                         
-                        <StackPanel Grid.Row="1" Margin="0,0,0,20">
-                            <TextBlock Text="Callspire Softphone" 
-                                      FontSize="24" FontWeight="Light"
-                                      Foreground="{StaticResource TextPrimaryBrush}"
-                                      Margin="0,0,0,8"/>
-                            <TextBlock Name="VersionTextBlock"
-                                      Text="Version: 1.0.0"
-                                      FontSize="14"
-                                      Foreground="{StaticResource TextSecondaryBrush}"
-                                      Margin="0,0,0,16"/>
-                        </StackPanel>
+                        <Border Grid.Row="1"
+                                Background="{StaticResource BackgroundMediumBrush}"
+                                CornerRadius="8"
+                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderThickness="1"
+                                Padding="16"
+                                Margin="0,0,0,20">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Border Width="48"
+                                        Height="48"
+                                        CornerRadius="10"
+                                        Background="{StaticResource BackgroundDarkBrush}"
+                                        BorderBrush="{StaticResource BorderBrush}"
+                                        BorderThickness="1"
+                                        VerticalAlignment="Top">
+                                    <Image Width="32"
+                                           Height="32"
+                                           Stretch="Uniform"
+                                           RenderOptions.BitmapScalingMode="HighQuality"
+                                           Source="pack://application:,,,/icon.ico"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
+                                </Border>
+
+                                <StackPanel Grid.Column="1" Margin="14,0,0,0">
+                                    <TextBlock Text="Callspire Softphone" 
+                                               FontSize="24"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextPrimaryBrush}"
+                                               Margin="0,0,0,4"/>
+                                    <TextBlock Name="VersionTextBlock"
+                                               Text="Version: 1.0.0"
+                                               FontSize="13"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Margin="0,0,0,0"/>
+                                </StackPanel>
+                            </Grid>
+                        </Border>
                         
                         <TextBlock Grid.Row="2" 
                                   Text="A modern softphone application for Windows."
                                   FontSize="13"
                                   Foreground="{StaticResource TextSecondaryBrush}"
                                   TextWrapping="Wrap"
-                                  Margin="0,0,0,20"/>
+                                  Margin="0,0,0,30"/>
                         
-                        <!-- GitHub Token для приватных репозиториев -->
-                        <StackPanel Grid.Row="3" Orientation="Vertical" Margin="0,0,0,20">
-                            <TextBlock Text="GitHub Personal Access Token (для приватных репозиториев):" 
-                                      Foreground="{StaticResource TextSecondaryBrush}"
-                                      FontSize="13"
-                                      Margin="0,0,0,8"/>
-                            <PasswordBox Name="GitHubTokenPasswordBox" 
-                                        Background="{StaticResource BackgroundMediumBrush}"
-                                        Foreground="{StaticResource TextPrimaryBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
-                                        BorderThickness="1"
-                                        Padding="8,6" 
-                                        FontSize="13"
-                                        MinWidth="400"/>
-                            <TextBlock Text="Токен будет зашифрован и сохранен локально. Нужен только для приватных репозиториев."
-                                      FontSize="11"
-                                      Foreground="{StaticResource TextSecondaryBrush}"
-                                      Margin="0,4,0,0"
-                                      TextWrapping="Wrap"
-                                      Opacity="0.7"/>
-                            <Button Name="SaveTokenButton"
-                                   Content="Save Token"
-                                   Background="{StaticResource AccentGreenBrush}"
-                                   Foreground="White"
-                                   BorderThickness="0"
-                                   Padding="16,8"
-                                   FontSize="13"
-                                   FontWeight="SemiBold"
-                                   Cursor="Hand"
-                                   Click="SaveTokenButton_Click"
-                                   HorizontalAlignment="Left"
-                                   Margin="0,8,0,0"
-                                   Width="150" Height="36">
-                                <Button.Style>
-                                    <Style TargetType="Button">
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border Background="{TemplateBinding Background}"
-                                                            CornerRadius="4"
-                                                            SnapsToDevicePixels="True">
-                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-                                                    </Border>
-                                                    <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter Property="Background" Value="#2E7D32"/>
-                                                        </Trigger>
-                                                        <Trigger Property="IsEnabled" Value="False">
-                                                            <Setter Property="Background" Value="#4A4A4A"/>
-                                                            <Setter Property="Foreground" Value="#6A6A6A"/>
-                                                        </Trigger>
-                                                    </ControlTemplate.Triggers>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                    </Style>
-                                </Button.Style>
-                            </Button>
-                        </StackPanel>
-                        
-                        <Button Grid.Row="4" Name="CheckForUpdatesButton"
-                               Content="Check for Updates"
-                               Background="{StaticResource AccentBlueBrush}"
-                               Foreground="White"
-                               BorderThickness="0"
-                               Padding="16,8"
-                               FontSize="13"
-                               FontWeight="SemiBold"
-                               Cursor="Hand"
-                               Click="CheckForUpdatesButton_Click"
-                               HorizontalAlignment="Left"
-                               Width="150" Height="36"
-                               Visibility="Collapsed">
-                            <Button.Style>
-                                <Style TargetType="Button">
-                                    <Setter Property="Template">
-                                        <Setter.Value>
-                                            <ControlTemplate TargetType="Button">
-                                                <Border Background="{TemplateBinding Background}"
-                                                        CornerRadius="4"
-                                                        SnapsToDevicePixels="True">
-                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-                                                </Border>
-                                                <ControlTemplate.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Background" Value="#4752C4"/>
-                                                    </Trigger>
-                                                    <Trigger Property="IsEnabled" Value="False">
-                                                        <Setter Property="Background" Value="#4A4A4A"/>
-                                                        <Setter Property="Foreground" Value="#6A6A6A"/>
-                                                    </Trigger>
-                                                </ControlTemplate.Triggers>
-                                            </ControlTemplate>
-                                        </Setter.Value>
-                                    </Setter>
-                                </Style>
-                            </Button.Style>
-                        </Button>
-                    </Grid>
-                    
-                    <!-- Connection Settings View -->
+                        <!-- Automatic Update Checker Section -->
+                        <Expander Grid.Row="3" 
+                                 Header="Updates"
+                                 FontSize="16" FontWeight="SemiBold"
+                                 Foreground="{StaticResource TextPrimaryBrush}"
+                                 IsExpanded="True"
+                                 Margin="0,0,0,20">
+                            <Grid Margin="20,10,20,0">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- GitHub Repository Link -->
+                                <TextBlock Grid.Row="0"
+                                           Text="GitHub repository URL:"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="13"
+                                           Margin="0,0,0,6"/>
+                                <TextBox Grid.Row="1"
+                                         Name="GitHubRepositoryLinkTextBox"
+                                         Background="{StaticResource BackgroundMediumBrush}"
+                                         Foreground="{StaticResource TextPrimaryBrush}"
+                                         BorderBrush="{StaticResource BorderBrush}"
+                                         BorderThickness="1"
+                                         Padding="8,6"
+                                         FontSize="13"
+                                         Height="32"
+                                         MinWidth="240"
+                                         HorizontalAlignment="Stretch"
+                                         MaxWidth="420"
+                                         TextAlignment="Left"
+                                         HorizontalContentAlignment="Left"
+                                         VerticalContentAlignment="Center"
+                                         TextWrapping="NoWrap"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         TextChanged="GitHubRepositoryLinkTextBox_TextChanged"/>
+                                <TextBlock Grid.Row="2"
+                                           Text="Example: https://github.com/username/repository"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           Margin="0,4,0,14"
+                                           TextWrapping="Wrap"
+                                           Opacity="0.7"/>
+
+                                <!-- GitHub Token -->
+                                <TextBlock Grid.Row="3"
+                                           Text="GitHub Personal Access Token (for private repositories):"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="13"
+                                           Margin="0,0,0,6"/>
+                                <PasswordBox Grid.Row="4"
+                                             Name="GitHubTokenPasswordBox"
+                                             Background="{StaticResource BackgroundMediumBrush}"
+                                             Foreground="{StaticResource TextPrimaryBrush}"
+                                             BorderBrush="{StaticResource BorderBrush}"
+                                             BorderThickness="1"
+                                             Padding="8,6"
+                                             FontSize="13"
+                                             Height="32"
+                                             MinWidth="240"
+                                             HorizontalAlignment="Stretch"
+                                             MaxWidth="420"
+                                             HorizontalContentAlignment="Left"
+                                             VerticalContentAlignment="Center"
+                                             PasswordChanged="GitHubTokenPasswordBox_PasswordChanged"/>
+                                <TextBlock Grid.Row="5"
+                                           Text="The token will be encrypted and stored locally. Only needed for private repositories."
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           Margin="0,4,0,14"
+                                           TextWrapping="Wrap"
+                                           Opacity="0.7"/>
+
+                                <!-- Actions -->
+                                <WrapPanel Grid.Row="6" Margin="0,6,0,0">
+                                    <Button Name="SaveUpdateSettingsButton"
+                                            Content="Save"
+                                            Background="{StaticResource AccentGreenBrush}"
+                                            Foreground="White"
+                                            BorderThickness="0"
+                                            Padding="16,8"
+                                            FontSize="13"
+                                            FontWeight="SemiBold"
+                                            Cursor="Hand"
+                                            Click="SaveUpdateSettingsButton_Click"
+                                            Width="120"
+                                            Height="36"
+                                            Visibility="Visible">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border Background="{TemplateBinding Background}"
+                                                                    CornerRadius="4"
+                                                                    SnapsToDevicePixels="True">
+                                                                <ContentPresenter HorizontalAlignment="Center"
+                                                                                  VerticalAlignment="Center"
+                                                                                  Margin="{TemplateBinding Padding}"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Background" Value="#2E7D32"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsEnabled" Value="False">
+                                                                    <Setter Property="Background" Value="#4A4A4A"/>
+                                                                    <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
+
+                                    <Button Name="CheckForUpdatesButton"
+                                            Content="Check for Updates"
+                                            Background="{StaticResource AccentBlueBrush}"
+                                            Foreground="White"
+                                            BorderThickness="0"
+                                            Padding="16,8"
+                                            FontSize="13"
+                                            FontWeight="SemiBold"
+                                            Cursor="Hand"
+                                            Click="CheckForUpdatesButton_Click"
+                                            Margin="10,0,0,0"
+                                            Width="150"
+                                            Height="36"
+                                            Visibility="Collapsed">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border Background="{TemplateBinding Background}"
+                                                                    CornerRadius="4"
+                                                                    SnapsToDevicePixels="True">
+                                                                <ContentPresenter HorizontalAlignment="Center"
+                                                                                  VerticalAlignment="Center"
+                                                                                  Margin="{TemplateBinding Padding}"/>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter Property="Background" Value="#4752C4"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsEnabled" Value="False">
+                                                                    <Setter Property="Background" Value="#4A4A4A"/>
+                                                                    <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
+                                </WrapPanel>
+                            </Grid>
+                </Expander>
+            </Grid>
+            
+            <!-- Connection Settings View -->
                     <Grid Name="ConnectionSettingsView" Visibility="Visible" Margin="30,20">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -750,8 +849,8 @@
                 </Grid>
             </Grid>
             
-            <!-- Скрытый WebView2 для WebRTC тестирования (всегда в visual tree) -->
-            <!-- Hidden вместо Collapsed - чтобы участвовал в layout -->
+            <!-- Hidden WebView2 for WebRTC testing (always in the visual tree) -->
+            <!-- Use Hidden instead of Collapsed so it still participates in layout -->
             <wv2:WebView2 x:Name="WebRtcStatusWebView" 
                          Visibility="Hidden" 
                          Width="1" 

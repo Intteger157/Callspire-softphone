@@ -140,6 +140,30 @@ namespace Softphone
 
             return cachePath;
         }
+
+        /// <summary>
+        /// Gets the updates download directory: %LOCALAPPDATA%\Callspire\Updates
+        /// Creates the directory if it does not exist.
+        /// </summary>
+        public static string GetUpdatesDirectory()
+        {
+            string updatesPath = Path.Combine(GetAppDataPath(), "Updates");
+
+            try
+            {
+                if (!Directory.Exists(updatesPath))
+                {
+                    Directory.CreateDirectory(updatesPath);
+                    MainWindow.Log($"[AppDataHelper] Created updates directory: {updatesPath}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[AppDataHelper] ERROR: Failed to create updates directory: {ex.Message}");
+            }
+
+            return updatesPath;
+        }
     }
 }
 

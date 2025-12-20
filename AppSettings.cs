@@ -25,6 +25,7 @@ namespace Softphone
         public bool EnableCallRecording { get; set; } = false; // Включить запись звонков
         
         // GitHub update settings
+        public string? GitHubRepositoryLink { get; set; } // Ссылка на GitHub репозиторий (например: https://github.com/username/repo)
         public string? GitHubTokenEncrypted { get; set; } // Зашифрованный GitHub Personal Access Token
     }
 }

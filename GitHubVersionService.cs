@@ -339,14 +339,24 @@ namespace Softphone
     /// </summary>
     public class GitHubAsset
     {
+        [JsonProperty("id")]
+        public long Id { get; set; }
+
         [JsonProperty("name")]
         public string Name { get; set; } = "";
         
+        // GitHub API URL for the asset (used for authenticated downloads via API)
+        [JsonProperty("url")]
+        public string ApiUrl { get; set; } = "";
+
         [JsonProperty("browser_download_url")]
         public string BrowserDownloadUrl { get; set; } = "";
         
         [JsonProperty("size")]
         public long Size { get; set; }
+
+        [JsonProperty("content_type")]
+        public string ContentType { get; set; } = "";
     }
 }
 

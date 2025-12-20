@@ -21,9 +21,11 @@
 		<Configurations>Debug;Release;Callspire Softphone</Configurations>
 
 		<!-- Application Version -->
+		<!-- Измените эти значения перед каждым релизом -->
 		<Version>1.0.0</Version>
 		<AssemblyVersion>1.0.0.0</AssemblyVersion>
 		<FileVersion>1.0.0.0</FileVersion>
+		<InformationalVersion>1.0.0</InformationalVersion>
 
 	</PropertyGroup>
 
@@ -40,6 +42,10 @@
 	
 	<ItemGroup>
 		<Resource Include="Fonts\**\*" />
+	</ItemGroup>
+	
+	<ItemGroup>
+		<Resource Include="icon.ico" />
 	</ItemGroup>
 
 	<ItemGroup>

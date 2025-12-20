@@ -1702,8 +1702,8 @@ namespace Softphone
                             _ = ResetEngineAsync();
                         }
 
-                        // Логируем состояние
-                        MainWindow.Log($"[WebRtcService] State: ready={IsReadyForCalls}, registered={_registered}, callState={_state}, sessionId={_activeSessionId ?? "none"}");
+                        // Логируем состояние только при изменении или раз в минуту (для уменьшения нагрузки)
+                        // Убрано избыточное логирование для предотвращения зависаний
 
                         // Запрашиваем статистику для активных звонков
                         if (_state == WebRtcCallState.Connected)

@@ -110,18 +110,20 @@ namespace Softphone
                 // Небольшая задержка, чтобы не мешать загрузке приложения
                 await System.Threading.Tasks.Task.Delay(3000);
                 
-                // Получаем данные репозитория
-                string repositoryOwner = GetRepositoryOwner();
-                string repositoryName = GetRepositoryName();
+                // Получаем данные репозитория из настроек
+                var repositoryInfo = GetRepositoryFromSettings();
                 
                 // Пропускаем проверку, если репозиторий не настроен
-                if (repositoryOwner == "YOUR_GITHUB_USERNAME" || repositoryName == "YOUR_REPOSITORY_NAME")
+                if (repositoryInfo == null)
                 {
                     Log("[MainWindow] GitHub repository not configured, skipping update check.");
                     return;
                 }
                 
-                Log("[MainWindow] Checking for updates on startup...");
+                string repositoryOwner = repositoryInfo.Value.owner;
+                string repositoryName = repositoryInfo.Value.name;
+                
+                Log($"[MainWindow] Checking for updates on startup... Repository: {repositoryOwner}/{repositoryName}");
                 
                 // Получаем GitHub токен из защищенного провайдера
                 string? githubToken = GitHubTokenProvider.GetToken();
@@ -140,13 +142,28 @@ namespace Softphone
                     if (latestRelease != null)
                     {
                         string currentVersion = GitHubVersionService.GetCurrentVersion();
+
                         string repositoryUrl = $"https://github.com/YOUR_Repository";
+
+                        
+                        // Получаем URL репозитория из настроек
+                        string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                        string repositoryUrl = $"https://github.com/{repositoryOwner}/{repositoryName}";
+                        if (System.IO.File.Exists(settingsFilePath))
+                        {
+                            string json = System.IO.File.ReadAllText(settingsFilePath);
+                            var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                            if (settings != null && !string.IsNullOrEmpty(settings.GitHubRepositoryLink))
+                            {
+                                repositoryUrl = settings.GitHubRepositoryLink;
+                            }
+                        }
                         
                         // Показываем окно уведомления о новой версии
                         Dispatcher.Invoke(() =>
                         {
                             var updateWindow = new UpdateAvailableWindow(
-                                latestRelease, currentVersion, repositoryUrl)
+                                latestRelease, currentVersion, repositoryUrl, repositoryOwner, repositoryName, githubToken)
                             {
                                 Owner = this
                             };
@@ -169,10 +186,11 @@ namespace Softphone
         }
         
         /// <summary>
-        /// Получает владельца репозитория GitHub
+        /// Получает данные репозитория из настроек
         /// </summary>
-        private string GetRepositoryOwner()
+        private (string owner, string name)? GetRepositoryFromSettings()
         {
+<<<<<<< HEAD
             return "USERNAME";
         }
         
@@ -182,6 +200,31 @@ namespace Softphone
         private string GetRepositoryName()
         {
             return "Softphone";
+=======
+            try
+            {
+                string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                if (!System.IO.File.Exists(settingsFilePath))
+                {
+                    return null;
+                }
+                
+                string json = System.IO.File.ReadAllText(settingsFilePath);
+                var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                
+                if (settings == null || string.IsNullOrEmpty(settings.GitHubRepositoryLink))
+                {
+                    return null;
+                }
+                
+                return GitHubRepositoryParser.ParseRepositoryLink(settings.GitHubRepositoryLink);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Error getting repository from settings: {ex.Message}");
+                return null;
+            }
+>>>>>>> 7636c95 (The update function has been redesigned)
         }
         
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -2026,6 +2069,10 @@ namespace Softphone
         // Сохраняем предыдущий статус для предотвращения избыточного логирования
         private string? _lastConnectionStatus = null;
         
+        // Throttling для UpdateConnectionStatus - предотвращает слишком частые вызовы
+        private DateTime _lastStatusUpdateTime = DateTime.MinValue;
+        private const int STATUS_UPDATE_THROTTLE_MS = 500; // Минимум 500мс между обновлениями
+        
         /// <summary>
         /// Публичное свойство для получения текущего статуса подключения (для синхронизации с SettingsWindow)
         /// </summary>
@@ -2039,91 +2086,90 @@ namespace Softphone
         
         /// <summary>
         /// Обновляет статус подключения с учетом типа подключения (WebRTC или SIP)
+        /// Оптимизировано для предотвращения зависаний UI
         /// </summary>
         public void UpdateConnectionStatus()
         {
-            bool useWebRtc = ShouldUseWebRtc();
-            bool isConnected = IsConnected;
-            string newStatus = "";
-            
-            if (useWebRtc)
+            // Throttling: предотвращаем слишком частые вызовы
+            var now = DateTime.Now;
+            if ((now - _lastStatusUpdateTime).TotalMilliseconds < STATUS_UPDATE_THROTTLE_MS && _lastConnectionStatus != null)
             {
-                // WebRTC режим
-                if (isConnected)
+                // Пропускаем обновление, если прошло меньше 500мс с последнего
+                return;
+            }
+            _lastStatusUpdateTime = now;
+            
+            try
+            {
+                bool useWebRtc = ShouldUseWebRtc();
+                bool isConnected = IsConnected;
+                string newStatus = "";
+                
+                if (useWebRtc)
                 {
-                    // ВАЖНО: Если WebRTC подключен и зарегистрирован, всегда обновляем статус на "Connected with WebRTC"
-                    // независимо от текущего статуса (даже если он "Connecting...")
-                    newStatus = "Connected with WebRTC";
-                    
-                    // ДИАГНОСТИКА: логируем перед обновлением
-                    string oldStatus = StatusTextBlock.Text;
-                    bool isReady = WebRtcService.Instance?.IsReadyForCalls ?? false;
-                    Log($"[MainWindow] UpdateConnectionStatus (WebRTC connected): oldStatus='{oldStatus}', newStatus='{newStatus}', IsReadyForCalls={isReady}, IsConnected={isConnected}");
-                    
-                    StatusTextBlock.Text = newStatus;
-                    UpdateStatusColor(true);
-                    // Включаем кнопку вызова при готовности WebRTC
-                    CallButton.IsEnabled = true;
-                }
-                else
-                {
-                    // WebRTC не подключен
-                    // Проверяем, не идет ли инициализация (чтобы не перезаписать статус "Initializing..." или "Connecting...")
-                    string currentStatus = StatusTextBlock.Text;
-                    
-                    // ДИАГНОСТИКА: логируем состояние для отладки
-                    bool isReady = WebRtcService.Instance?.IsReadyForCalls ?? false;
-                    Log($"[MainWindow] UpdateConnectionStatus (WebRTC not connected): currentStatus='{currentStatus}', IsReadyForCalls={isReady}, IsConnected={isConnected}");
-                    
-                    if (!currentStatus.Contains("Initializing") && 
-                        !currentStatus.Contains("Connecting") && 
-                        !currentStatus.Contains("Connected to WebRTC"))
+                    // WebRTC режим
+                    if (isConnected)
                     {
-                        newStatus = "Not connected";
-                        StatusTextBlock.Text = newStatus;
-                        UpdateStatusColor(false);
+                        newStatus = "Connected with WebRTC";
                     }
                     else
                     {
-                        newStatus = currentStatus; // Сохраняем текущий статус инициализации
+                        // WebRTC не подключен
+                        // Проверяем, не идет ли инициализация (чтобы не перезаписать статус "Initializing..." или "Connecting...")
+                        string currentStatus = StatusTextBlock?.Text ?? "";
+                        
+                        if (!currentStatus.Contains("Initializing") && 
+                            !currentStatus.Contains("Connecting") && 
+                            !currentStatus.Contains("Connected to WebRTC"))
+                        {
+                            newStatus = "Not connected";
+                        }
+                        else
+                        {
+                            newStatus = currentStatus; // Сохраняем текущий статус инициализации
+                        }
                     }
-                    // Отключаем кнопку вызова если WebRTC не готов
-                    CallButton.IsEnabled = false;
-                }
-            }
-            else
-            {
-                // SIP режим
-                if (isConnected)
-                {
-                    newStatus = "Connected with SIP";
-                    StatusTextBlock.Text = newStatus;
-                    UpdateStatusColor(true);
-                    // Включаем кнопку вызова при подключении SIP
-                    CallButton.IsEnabled = true;
                 }
                 else
                 {
-                    newStatus = "Not connected";
+                    // SIP режим
+                    if (isConnected)
+                    {
+                        newStatus = "Connected with SIP";
+                    }
+                    else
+                    {
+                        newStatus = "Not connected";
+                    }
+                }
+                
+                // Обновляем UI только если статус изменился
+                if (_lastConnectionStatus != newStatus && StatusTextBlock != null)
+                {
                     StatusTextBlock.Text = newStatus;
-                    UpdateStatusColor(false);
-                    // Отключаем кнопку вызова если SIP не подключен
-                    CallButton.IsEnabled = false;
+                    UpdateStatusColor(isConnected);
+                    
+                    // Обновляем кнопку вызова
+                    if (CallButton != null)
+                    {
+                        CallButton.IsEnabled = isConnected;
+                    }
+                    
+                    // Обновляем флаг последнего состояния подключения
+                    _lastIsConnected = isConnected;
+                    
+                    // Логируем только при изменении статуса
+                    Log($"[MainWindow] UpdateConnectionStatus: Status changed to '{newStatus}' (useWebRtc={useWebRtc}, isConnected={isConnected})");
+                    _lastConnectionStatus = newStatus;
+                    
+                    // Уведомляем SettingsWindow об изменении статуса для синхронизации
+                    OnConnectionStatusChanged?.Invoke(newStatus);
                 }
             }
-            
-            // Обновляем флаг последнего состояния подключения
-            _lastIsConnected = isConnected;
-            
-            // Логируем только при изменении статуса (для уменьшения избыточности логов)
-            if (_lastConnectionStatus != newStatus)
+            catch (Exception ex)
             {
-                Log($"[MainWindow] UpdateConnectionStatus: Status changed to '{newStatus}' (useWebRtc={useWebRtc}, isConnected={isConnected}, IsReadyForCalls={WebRtcService.Instance?.IsReadyForCalls ?? false})");
-                _lastConnectionStatus = newStatus;
-                
-                // ВАЖНО: Уведомляем SettingsWindow об изменении статуса для синхронизации
-                // Это гарантирует, что статус в Connection tab обновляется синхронно с MainWindow
-                OnConnectionStatusChanged?.Invoke(newStatus);
+                // Обрабатываем ошибки без блокировки UI
+                Log($"[MainWindow] Error in UpdateConnectionStatus: {ex.Message}");
             }
         }
         

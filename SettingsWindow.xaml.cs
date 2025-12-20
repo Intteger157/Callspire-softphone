@@ -364,6 +364,7 @@ namespace Softphone
             AudioSettingsView.Visibility = Visibility.Collapsed;
             GeneralSettingsView.Visibility = Visibility.Collapsed;
             AdvancedSettingsView.Visibility = Visibility.Collapsed;
+            AboutSettingsView.Visibility = Visibility.Collapsed;
 
             view.Visibility = Visibility.Visible;
             
@@ -588,11 +589,11 @@ namespace Softphone
             string currentVersion = GitHubVersionService.GetCurrentVersion();
             VersionTextBlock.Text = $"Version: {currentVersion}";
             
-            // Загружаем сохраненный GitHub токен (расшифровываем)
-            LoadGitHubToken();
+            // Загружаем настройки обновлений
+            LoadUpdateSettings();
         }
         
-        private void LoadGitHubToken()
+        private void LoadUpdateSettings()
         {
             try
             {
@@ -601,83 +602,117 @@ namespace Softphone
                     string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
                     
-                    if (settings != null && !string.IsNullOrEmpty(settings.GitHubTokenEncrypted))
+                    if (settings != null)
                     {
-                        // Расшифровываем токен перед отображением
-                        string decryptedToken = TokenEncryption.Decrypt(settings.GitHubTokenEncrypted);
-                        GitHubTokenPasswordBox.Password = decryptedToken;
+                        // Загружаем GitHub repository link
+                        if (!string.IsNullOrEmpty(settings.GitHubRepositoryLink))
+                        {
+                            GitHubRepositoryLinkTextBox.Text = settings.GitHubRepositoryLink;
+                        }
                         
-                        // Если токен уже сохранен, показываем кнопку "Check for Updates"
-                        UpdateTokenButtonState(true);
+                        // Загружаем GitHub токен (расшифровываем)
+                        if (!string.IsNullOrEmpty(settings.GitHubTokenEncrypted))
+                        {
+                            string decryptedToken = TokenEncryption.Decrypt(settings.GitHubTokenEncrypted);
+                            GitHubTokenPasswordBox.Password = decryptedToken;
+                        }
+                        
+                        // Проверяем, сохранены ли настройки
+                        bool settingsSaved = !string.IsNullOrEmpty(settings.GitHubRepositoryLink);
+                        UpdateUpdateSettingsButtonState(settingsSaved);
                     }
                     else
                     {
-                        // Если токен не сохранен, показываем кнопку "Save Token"
-                        UpdateTokenButtonState(false);
+                        UpdateUpdateSettingsButtonState(false);
                     }
                 }
                 else
                 {
-                    UpdateTokenButtonState(false);
+                    UpdateUpdateSettingsButtonState(false);
                 }
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[SettingsWindow] Error loading GitHub token: {ex.Message}");
-                UpdateTokenButtonState(false);
+                MainWindow.Log($"[SettingsWindow] Error loading update settings: {ex.Message}");
+                UpdateUpdateSettingsButtonState(false);
             }
         }
         
-        private void UpdateTokenButtonState(bool tokenSaved)
+        private void UpdateUpdateSettingsButtonState(bool settingsSaved)
         {
-            if (SaveTokenButton == null || CheckForUpdatesButton == null)
+            if (SaveUpdateSettingsButton == null || CheckForUpdatesButton == null)
                 return;
                 
-            if (tokenSaved)
+            if (settingsSaved)
             {
-                // Токен сохранен - показываем кнопку "Check for Updates"
-                SaveTokenButton.Visibility = Visibility.Collapsed;
+                // Настройки сохранены - показываем кнопку "Check for Updates"
+                SaveUpdateSettingsButton.Visibility = Visibility.Collapsed;
                 CheckForUpdatesButton.Visibility = Visibility.Visible;
             }
             else
             {
-                // Токен не сохранен - показываем кнопку "Save Token"
-                SaveTokenButton.Visibility = Visibility.Visible;
+                // Настройки не сохранены - показываем кнопку "Save"
+                SaveUpdateSettingsButton.Visibility = Visibility.Visible;
                 CheckForUpdatesButton.Visibility = Visibility.Collapsed;
             }
         }
         
-        private void SaveTokenButton_Click(object sender, RoutedEventArgs e)
+        private void GitHubRepositoryLinkTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            // Сбрасываем состояние кнопок при изменении ссылки
+            UpdateUpdateSettingsButtonState(false);
+        }
+        
+        private void GitHubTokenPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
+        {
+            // Сбрасываем состояние кнопок при изменении токена
+            UpdateUpdateSettingsButtonState(false);
+        }
+        
+        private void SaveUpdateSettingsButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                string tokenToSave = GitHubTokenPasswordBox.Password;
+                string repositoryLink = GitHubRepositoryLinkTextBox.Text.Trim();
                 
-                if (string.IsNullOrWhiteSpace(tokenToSave))
+                // Проверяем валидность ссылки на репозиторий
+                if (string.IsNullOrWhiteSpace(repositoryLink))
                 {
-                    CustomMessageBox.Show("Please enter a GitHub token before saving.", 
-                        "Token Required", MessageBoxButton.OK, MessageBoxImage.Information, this);
+                    CustomMessageBox.Show("Please enter a GitHub repository link.", 
+                        "Repository Link Required", MessageBoxButton.OK, MessageBoxImage.Information, this);
                     return;
                 }
                 
-                // Сохраняем токен (шифруем перед сохранением)
-                SaveGitHubToken();
+                var parsed = GitHubRepositoryParser.ParseRepositoryLink(repositoryLink);
+                if (parsed == null)
+                {
+                    CustomMessageBox.Show("Invalid GitHub repository link format.\n\n" +
+                        "Please use format: https://github.com/username/repository\n" +
+                        "Or: username/repository", 
+                        "Invalid Link", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    return;
+                }
+                
+                // Сохраняем настройки
+                SaveUpdateSettings();
                 
                 // Обновляем состояние кнопок
-                UpdateTokenButtonState(true);
+                UpdateUpdateSettingsButtonState(true);
                 
-                CustomMessageBox.Show("GitHub token saved successfully!\n\nThe token has been encrypted and stored securely.", 
-                    "Token Saved", MessageBoxButton.OK, MessageBoxImage.Information, this);
+                CustomMessageBox.Show("Update settings saved successfully!\n\n" +
+                    $"Repository: {parsed.Value.owner}/{parsed.Value.name}\n" +
+                    "Token: encrypted and stored securely.", 
+                    "Settings Saved", MessageBoxButton.OK, MessageBoxImage.Information, this);
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[SettingsWindow] Error saving token: {ex.Message}");
-                CustomMessageBox.Show($"Error saving token:\n\n{ex.Message}", 
+                MainWindow.Log($"[SettingsWindow] Error saving update settings: {ex.Message}");
+                CustomMessageBox.Show($"Error saving settings:\n\n{ex.Message}", 
                     "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
             }
         }
         
-        private void SaveGitHubToken()
+        private void SaveUpdateSettings()
         {
             try
             {
@@ -692,45 +727,34 @@ namespace Softphone
                     settings = new AppSettings();
                 }
 
-                // Шифруем токен перед сохранением
+                // Сохраняем GitHub repository link
+                settings.GitHubRepositoryLink = GitHubRepositoryLinkTextBox.Text.Trim();
+
+                // Шифруем и сохраняем токен
                 string tokenToSave = GitHubTokenPasswordBox.Password;
                 if (!string.IsNullOrEmpty(tokenToSave))
                 {
                     string encryptedToken = TokenEncryption.Encrypt(tokenToSave);
                     if (string.IsNullOrEmpty(encryptedToken))
                     {
-                        MainWindow.Log("[SettingsWindow] ERROR: Failed to encrypt token");
                         throw new Exception("Failed to encrypt token");
                     }
-                    
                     settings.GitHubTokenEncrypted = encryptedToken;
-                    
-                    // Проверяем, что токен правильно зашифровался (тест расшифровки)
-                    string testDecrypt = TokenEncryption.Decrypt(encryptedToken);
-                    if (testDecrypt != tokenToSave)
-                    {
-                        MainWindow.Log("[SettingsWindow] WARNING: Token encryption/decryption test failed!");
-                    }
-                    else
-                    {
-                        string tokenPreview = tokenToSave.Length > 10 
-                            ? tokenToSave.Substring(0, 10) + "..." 
-                            : tokenToSave.Substring(0, Math.Min(tokenToSave.Length, 10));
-                        MainWindow.Log($"[SettingsWindow] GitHub token saved (encrypted, preview: {tokenPreview}, length: {tokenToSave.Length})");
-                    }
                 }
                 else
                 {
                     settings.GitHubTokenEncrypted = null;
-                    MainWindow.Log("[SettingsWindow] GitHub token cleared");
                 }
 
                 string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
+                
+                MainWindow.Log("[SettingsWindow] Update settings saved successfully");
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[SettingsWindow] Error saving GitHub token: {ex.Message}");
+                MainWindow.Log($"[SettingsWindow] Error saving update settings: {ex.Message}");
+                throw;
             }
         }
         
@@ -741,27 +765,43 @@ namespace Softphone
                 CheckForUpdatesButton.IsEnabled = false;
                 CheckForUpdatesButton.Content = "Checking...";
                 
-                // Получаем данные репозитория
-                string repositoryOwner = GetRepositoryOwner();
-                string repositoryName = GetRepositoryName();
-                
-                if (repositoryOwner == "YOUR_GITHUB_USERNAME" || repositoryName == "YOUR_REPOSITORY_NAME")
+                // Получаем настройки из файла
+                if (!File.Exists(AppDataHelper.GetSettingsFilePath()))
                 {
-                    CustomMessageBox.Show(
-                        "GitHub repository is not configured.\n\n" +
-                        "Please update the repository settings in the code:\n" +
-                        "- SettingsWindow.xaml.cs: GetRepositoryOwner() and GetRepositoryName()\n" +
-                        "- MainWindow.xaml.cs: CheckForUpdatesOnStartupAsync()",
-                        "Repository Not Configured", 
-                        MessageBoxButton.OK, 
-                        MessageBoxImage.Information, 
-                        this);
+                    CustomMessageBox.Show("Update settings are not configured.\n\nPlease configure GitHub repository link and save settings.",
+                        "Settings Not Configured", MessageBoxButton.OK, MessageBoxImage.Information, this);
                     CheckForUpdatesButton.IsEnabled = true;
                     CheckForUpdatesButton.Content = "Check for Updates";
                     return;
                 }
                 
-                MainWindow.Log("[SettingsWindow] Manual update check initiated");
+                string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                
+                if (settings == null || string.IsNullOrEmpty(settings.GitHubRepositoryLink))
+                {
+                    CustomMessageBox.Show("GitHub repository is not configured.\n\nPlease enter repository link and save settings.",
+                        "Repository Not Configured", MessageBoxButton.OK, MessageBoxImage.Information, this);
+                    CheckForUpdatesButton.IsEnabled = true;
+                    CheckForUpdatesButton.Content = "Check for Updates";
+                    return;
+                }
+                
+                // Парсим ссылку на репозиторий
+                var parsed = GitHubRepositoryParser.ParseRepositoryLink(settings.GitHubRepositoryLink);
+                if (parsed == null)
+                {
+                    CustomMessageBox.Show("Invalid GitHub repository link format.\n\nPlease check your repository link in settings.",
+                        "Invalid Repository Link", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    CheckForUpdatesButton.IsEnabled = true;
+                    CheckForUpdatesButton.Content = "Check for Updates";
+                    return;
+                }
+                
+                string repositoryOwner = parsed.Value.owner;
+                string repositoryName = parsed.Value.name;
+                
+                MainWindow.Log($"[SettingsWindow] Manual update check initiated for {repositoryOwner}/{repositoryName}");
                 
                 // Получаем GitHub токен из настроек (расшифрованный)
                 string? githubToken = GitHubTokenProvider.GetToken();
@@ -778,8 +818,9 @@ namespace Softphone
                     if (comparison < 0)
                     {
                         // Новая версия доступна
-                        string repositoryUrl = $"https://github.com/Miomi228/Softphone";
-                        var updateWindow = new UpdateAvailableWindow(latestRelease, currentVersion, repositoryUrl)
+                        string repositoryUrl = settings.GitHubRepositoryLink;
+                        var updateWindow = new UpdateAvailableWindow(
+                            latestRelease, currentVersion, repositoryUrl, repositoryOwner, repositoryName, githubToken)
                         {
                             Owner = this
                         };
