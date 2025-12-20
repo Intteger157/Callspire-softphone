@@ -140,7 +140,7 @@ namespace Softphone
                     if (latestRelease != null)
                     {
                         string currentVersion = GitHubVersionService.GetCurrentVersion();
-                        string repositoryUrl = $"https://github.com/Miomi228/Softphone";
+                        string repositoryUrl = $"https://github.com/YOUR_Repository";
                         
                         // Показываем окно уведомления о новой версии
                         Dispatcher.Invoke(() =>
@@ -173,7 +173,7 @@ namespace Softphone
         /// </summary>
         private string GetRepositoryOwner()
         {
-            return "Miomi228";
+            return "USERNAME";
         }
         
         /// <summary>
