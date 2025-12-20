@@ -2,7 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ic="clr-namespace:FluentIcons.Wpf;assembly=FluentIcons.Wpf"
-        Title="Active Call" Height="450" Width="380" MinWidth="380" MinHeight="450"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="Active Call" Height="750" Width="380" MinWidth="380" MinHeight="750"
         WindowStyle="None" 
         AllowsTransparency="True"
         Background="Transparent"
@@ -14,13 +15,38 @@
             <ResourceDictionary.MergedDictionaries>
                 <ResourceDictionary Source="Themes/DarkTheme.xaml"/>
             </ResourceDictionary.MergedDictionaries>
+            
+            <!-- Анимация показа нумпада -->
+            <Storyboard x:Key="ShowKeypadStoryboard">
+                <DoubleAnimation Storyboard.TargetName="KeypadGrid"
+                                 Storyboard.TargetProperty="Opacity"
+                                 From="0" To="1"
+                                 Duration="0:0:0.18" />
+                <DoubleAnimation Storyboard.TargetName="KeypadTranslate"
+                                 Storyboard.TargetProperty="Y"
+                                 From="20" To="0"
+                                 Duration="0:0:0.18" />
+            </Storyboard>
+            
+            <!-- Анимация скрытия нумпада -->
+            <Storyboard x:Key="HideKeypadStoryboard">
+                <DoubleAnimation Storyboard.TargetName="KeypadGrid"
+                                 Storyboard.TargetProperty="Opacity"
+                                 From="1" To="0"
+                                 Duration="0:0:0.18" />
+                <DoubleAnimation Storyboard.TargetName="KeypadTranslate"
+                                 Storyboard.TargetProperty="Y"
+                                 From="0" To="20"
+                                 Duration="0:0:0.18" />
+            </Storyboard>
         </ResourceDictionary>
     </Window.Resources>
     
     <Border Background="{StaticResource BackgroundDarkBrush}" 
             CornerRadius="16" 
             BorderBrush="{StaticResource BorderBrush}" 
-            BorderThickness="1">
+            BorderThickness="1"
+            ClipToBounds="True">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -28,7 +54,9 @@
             </Grid.RowDefinitions>
 
             <!-- Title Bar -->
-            <Grid Grid.Row="0" Background="{StaticResource BackgroundMediumBrush}" MouseDown="TitleBar_MouseDown">
+            <Border Grid.Row="0" Background="{StaticResource BackgroundMediumBrush}" 
+                    CornerRadius="16,16,0,0" ClipToBounds="True">
+                <Grid MouseDown="TitleBar_MouseDown">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
                     <ColumnDefinition Width="Auto"/>
@@ -62,14 +90,16 @@
                         </Button.Style>
                     </Button>
                 </StackPanel>
-            </Grid>
+                </Grid>
+            </Border>
 
             <!-- Content -->
-            <Grid Grid.Row="1" Margin="24">
+            <Grid Grid.Row="1" Margin="24,24,24,40">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
@@ -89,116 +119,139 @@
                           FontSize="18"
                           FontWeight="SemiBold"
                           HorizontalAlignment="Center"
-                          Margin="0,0,0,36"/>
+                          Margin="0,0,0,24"/>
 
-                <!-- Control Buttons and Keypad -->
-                <Grid Grid.Row="2" VerticalAlignment="Center" Margin="0,0,0,32">
+                <!-- DTMF Keypad (появляется в центре) -->
+                <Grid Grid.Row="2"
+                      x:Name="KeypadGrid"
+                      Opacity="0"
+                      Visibility="Collapsed"
+                      HorizontalAlignment="Center"
+                      VerticalAlignment="Center"
+                      RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                        <TranslateTransform x:Name="KeypadTranslate" Y="20"/>
+                    </Grid.RenderTransform>
+
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
                     <Grid.ColumnDefinitions>
-                        <!-- Кнопки управления вызовом -->
                         <ColumnDefinition Width="Auto"/>
-                        <!-- Отступ -->
-                        <ColumnDefinition Width="32"/>
-                        <!-- Область под нумпад (фиксированная ширина, чтобы ничего не съезжало) -->
-                        <ColumnDefinition Width="220"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    
-                    <!-- Control Buttons -->
-                    <StackPanel Grid.Column="0"
-                                Name="ControlButtonsPanel"
-                                Orientation="Horizontal"
-                                HorizontalAlignment="Center"
-                                VerticalAlignment="Center">
-                        
-                        <Button Name="MuteButton"
-                                Content="&#xE720;"
-                                Style="{StaticResource CallControlButton}"
-                                ToolTip="Mute"
-                                Click="MuteButton_Click"
-                                Margin="8,0"/>
-                        
-                        <Button Name="HoldButton"
-                                Content="&#xE769;"
-                                Style="{StaticResource CallControlButton}"
-                                ToolTip="Hold"
-                                Click="HoldButton_Click"
-                                Margin="8,0"/>
-                        
-                        <Button Name="SpeakerButton"
-                                Content="&#xE767;"
-                                Style="{StaticResource CallControlButton}"
-                                ToolTip="Speaker"
-                                Click="SpeakerButton_Click"
-                                Margin="8,0"/>
-                        
-                        <Button Name="KeypadToggleButton"
-                               Style="{StaticResource CallControlButton}"
-                               Click="KeypadToggleButton_Click"
-                               ToolTip="Keypad"
-                               Margin="8,0">
-                            <ic:SymbolIcon Symbol="Dialpad"
-                                           Width="24"
-                                           Height="24"
-                                           IconVariant="Regular"
-                                           Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
-                        </Button>
-                        
-                    </StackPanel>
-                    
-                    <!-- Область под нумпад фиксированной ширины -->
-                    <Grid Grid.Column="2"
-                          Width="220"
-                          HorizontalAlignment="Left"
-                          VerticalAlignment="Center">
-                        
-                        <!-- DTMF Keypad -->
-                        <Grid x:Name="KeypadGrid"
-                              Opacity="0"
-                              Visibility="Collapsed"
-                              Margin="0"
-                              VerticalAlignment="Center"
-                              HorizontalAlignment="Left"
-                              RenderTransformOrigin="0.5,0.5">
-                            <Grid.RenderTransform>
-                                <TranslateTransform x:Name="KeypadTranslate" X="40"/>
-                            </Grid.RenderTransform>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            
-                            <Button Grid.Row="0" Grid.Column="0" Content="1" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="0" Grid.Column="1" Content="2" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="0" Grid.Column="2" Content="3" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="1" Grid.Column="0" Content="4" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="1" Grid.Column="1" Content="5" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="1" Grid.Column="2" Content="6" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="2" Grid.Column="0" Content="7" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="2" Grid.Column="1" Content="8" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="2" Grid.Column="2" Content="9" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="3" Grid.Column="0" Content="*" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="3" Grid.Column="1" Content="0" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                            <Button Grid.Row="3" Grid.Column="2" Content="#" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="4" Width="56" Height="56" FontSize="20"/>
-                        </Grid>
-                    </Grid>
+
+                    <Button Grid.Row="0" Grid.Column="0" Content="1" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="0" Grid.Column="1" Content="2" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="0" Grid.Column="2" Content="3" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+
+                    <Button Grid.Row="1" Grid.Column="0" Content="4" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="1" Grid.Column="1" Content="5" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="1" Grid.Column="2" Content="6" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+
+                    <Button Grid.Row="2" Grid.Column="0" Content="7" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="2" Grid.Column="1" Content="8" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="2" Grid.Column="2" Content="9" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+
+                    <Button Grid.Row="3" Grid.Column="0" Content="*" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="3" Grid.Column="1" Content="0" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                    <Button Grid.Row="3" Grid.Column="2" Content="#" Style="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
                 </Grid>
 
-                <!-- Hang Up Button -->
-                <Button Grid.Row="3" Name="HangupButton"
+                <!-- Кнопки управления вызовом (всегда внизу) -->
+                <StackPanel Grid.Row="3"
+                            Name="ControlButtonsPanel"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Bottom"
+                            Margin="0,0,0,16">
+
+                    <Button Name="MuteButton"
+                            Style="{StaticResource CallControlButton}"
+                            ToolTip="Mute"
+                            Click="MuteButton_Click"
+                            Margin="8,0">
+                        <TextBlock Text="&#xE720;" FontFamily="Segoe Fluent Icons" FontSize="24"/>
+                    </Button>
+
+                    <Button Name="HoldButton"
+                            Content="&#xE769;"
+                            Style="{StaticResource CallControlButton}"
+                            ToolTip="Hold"
+                            Click="HoldButton_Click"
+                            Margin="8,0"/>
+
+                    <Button Name="SpeakerButton"
+                            Content="&#xE767;"
+                            Style="{StaticResource CallControlButton}"
+                            ToolTip="Speaker"
+                            Click="SpeakerButton_Click"
+                            Margin="8,0"/>
+
+                    <Button Name="KeypadToggleButton"
+                            Style="{StaticResource CallControlButton}"
+                            Click="KeypadToggleButton_Click"
+                            ToolTip="Toggle keypad"
+                            Margin="8,0">
+
+                        <ic:SymbolIcon Symbol="Dialpad"
+                                       Width="24"
+                                       Height="24"
+                                       IconVariant="Regular"
+                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+
+                    </Button>
+
+                </StackPanel>
+
+                <!-- Hang Up Button (всегда внизу) -->
+                <Button Grid.Row="4" Name="HangupButton"
                         Style="{StaticResource EndCallButton}"
                         Click="HangupButton_Click"
                         HorizontalAlignment="Center"
                         VerticalAlignment="Bottom"
-                        Margin="0,0,0,24">
+                        Margin="0,0,0,32">
                     <ic:SymbolIcon Symbol="CallEnd" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
                 </Button>
+
+                <!-- Кнопки для входящего звонка -->
+                <StackPanel Grid.Row="4" Name="IncomingCallButtonsPanel"
+                            Orientation="Horizontal"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Bottom"
+                            Margin="0,0,0,32"
+                            Visibility="Collapsed">
+                    <Button Name="AnswerButton"
+                            Style="{StaticResource CallControlButton}"
+                            Click="AnswerButton_Click"
+                            Margin="8,0"
+                            Width="72"
+                            Height="72"
+                            Background="{StaticResource AccentGreenBrush}">
+                        <ic:SymbolIcon Symbol="Call" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
+                    </Button>
+                    
+                    <Button Name="RejectButton"
+                            Style="{StaticResource EndCallButton}"
+                            Click="RejectButton_Click"
+                            Margin="8,0">
+                        <ic:SymbolIcon Symbol="CallEnd" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
+                    </Button>
+                </StackPanel>
                 
+            </Grid>
+            
+            <!-- WebRTC Container (скрыт по умолчанию, поверх всего контента) -->
+            <Grid x:Name="WebRtcContainer" 
+                  Grid.Row="1" 
+                  Visibility="Collapsed" 
+                  Background="Transparent"
+                  Margin="24,24,24,40">
+                <wv2:WebView2 x:Name="WebRtcWebView" />
             </Grid>
         </Grid>
     </Border>

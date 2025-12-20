@@ -32,8 +32,13 @@ bld/
 *.snupkg
 **/packages/*
 
-# Settings file
+# Settings file (now in %LOCALAPPDATA%\Callspire)
+# Эти файлы хранятся в %LOCALAPPDATA%\Callspire\ и НЕ должны попадать в репозиторий
 settings.json
+call_history.json
+
+# User data directory (если случайно создан в корне проекта)
+Callspire/
 
 # MSTest test Results
 [Tt]est[Rr]esult*/

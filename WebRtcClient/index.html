@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Softphone WebRTC</title>
+    <script src="https://cdn.jsdelivr.net/npm/jssip/dist/jssip.min.js"></script>
+    <script src="phone.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #status {
+            display: none; /* Скрываем статус, так как он управляется из C# */
+        }
+    </style>
+</head>
+<body>
+    <div id="status">Initializing...</div>
+    <!-- Скрытый аудио элемент для воспроизведения входящего аудио -->
+    <audio id="remoteAudio" autoplay playsinline muted="false"></audio>
+    <script>
+        // Обработчик сообщений от C# для команд (initUA, makeCall, answer, hangup)
+        if (window.chrome && window.chrome.webview) {
+            window.chrome.webview.addEventListener('message', (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.cmd === 'initUA') {
+                        window.SoftphoneWebRtc.initUA({
+                            wsUri: data.wsUri,
+                            sipUri: data.sipUri,
+                            user: data.user,
+                            pass: data.pass
+                        });
+                    } else if (data.cmd === 'makeCall') {
+                        window.SoftphoneWebRtc.makeCall(data.number);
+                    } else if (data.cmd === 'answer') {
+                        window.SoftphoneWebRtc.answer();
+                    } else if (data.cmd === 'hangup') {
+                        window.SoftphoneWebRtc.hangup();
+                    }
+                } catch (e) {
+                    console.error('[WebRTC] Error processing message:', e);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
+
