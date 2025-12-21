@@ -26,7 +26,7 @@
 ## 🖼️ Screenshots
 
 ### Dial pad
-<img width="1100" height="700" alt="image" src="https://github.com/user-attachments/assets/521047d9-706a-4977-b566-9ab33f2330ac" />
+<img width="1100" height="700" alt="image" src="https://github.com/user-attachments/assets/6cd4e26c-13b3-4c08-b2f0-6b35eaec1ca2" />
 
 
 ### Active call
