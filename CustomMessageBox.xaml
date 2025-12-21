@@ -97,8 +97,9 @@
                 
                 <!-- Message with ScrollViewer -->
                 <ScrollViewer Grid.Column="1" 
-                              VerticalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Hidden"
                               HorizontalScrollBarVisibility="Disabled"
+                              PanningMode="VerticalOnly"
                               Padding="0"
                               Margin="0"
                               MaxHeight="600">

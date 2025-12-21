@@ -478,7 +478,17 @@ namespace Softphone
 
                 if (script != null)
                 {
-                    MainWindow.Log($"[WebRtcEngineHost] SendAsync: Executing script: {script}");
+                    // Avoid log spam from watchdog heartbeat (ping/pong) and periodic stats polling.
+                    // These run frequently and make the log window unusable.
+                    bool isNoisyHeartbeat =
+                        cmdValue == "ping" || cmdValue == "getStats" ||
+                        script.Contains("window.SoftphoneWebRtc.ping()", StringComparison.OrdinalIgnoreCase) ||
+                        script.Contains("window.SoftphoneWebRtc.getStats()", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isNoisyHeartbeat)
+                    {
+                        MainWindow.Log($"[WebRtcEngineHost] SendAsync: Executing script: {script}");
+                    }
                     
                     try
                     {
@@ -528,7 +538,10 @@ namespace Softphone
                             }
                         }
                         
-                        MainWindow.Log($"[WebRtcEngineHost] SendAsync: Script executed, result: {result ?? "null"}");
+                        if (!isNoisyHeartbeat)
+                        {
+                            MainWindow.Log($"[WebRtcEngineHost] SendAsync: Script executed, result: {result ?? "null"}");
+                        }
                     }
                     catch (ObjectDisposedException)
                     {
@@ -689,6 +702,37 @@ namespace Softphone
                 _engine = engine;
                 _engine.EngineEvent += OnEngineEvent;
                 MainWindow.Log($"[WebRtcService] AttachEngine: engine attached, IsInitialized={engine.IsInitialized}");
+            }
+        }
+
+        /// <summary>
+        /// Detaches the current engine and resets WebRTC runtime state (used when switching to SIP mode).
+        /// </summary>
+        public void DetachEngine(bool resetState = true)
+        {
+            lock (_lock)
+            {
+                try
+                {
+                    if (_engine != null)
+                    {
+                        _engine.EngineEvent -= OnEngineEvent;
+                    }
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                _engine = null;
+
+                if (resetState)
+                {
+                    _registered = false;
+                    _activeSessionId = null;
+                    _ringingSessionId = null;
+                    _state = WebRtcCallState.Idle;
+                }
             }
         }
 
@@ -1113,15 +1157,15 @@ namespace Softphone
                                 if (_engine != null && _engine.IsInitialized)
                                 {
                                     _lastPongTimeUtc = DateTime.UtcNow;
-                                    // Диагностическое сообщение хотя бы 1 раз в минуту (в первые 5 секунд каждой минуты)
-                                    if (DateTime.UtcNow.Second < 5)
-                                    {
-                                        MainWindow.Log($"[WebRtcService] OnEngineEvent: pong received, lastPong updated");
-                                    }
+                                    // Don't log successful pongs: watchdog runs frequently and this is very noisy.
                                 }
                                 else
                                 {
-                                    MainWindow.Log("[WebRtcService] OnEngineEvent: pong ignored (engine not initialized or null)");
+                                    // Log "ignored" rarely to avoid spam if something is miswired.
+                                    if (DateTime.UtcNow.Second < 5)
+                                    {
+                                        MainWindow.Log("[WebRtcService] OnEngineEvent: pong ignored (engine not initialized or null)");
+                                    }
                                 }
                             }
                             break;

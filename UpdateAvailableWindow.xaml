@@ -19,6 +19,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- Title Bar -->
@@ -57,8 +58,13 @@
                 </Grid>
             </Border>
 
-            <!-- Content -->
-            <Grid Grid.Row="1" Margin="24">
+            <!-- Content (wheel scroll, no visible scrollbars) -->
+            <ScrollViewer Grid.Row="1"
+                          Name="ContentScrollViewer"
+                          VerticalScrollBarVisibility="Hidden"
+                          HorizontalScrollBarVisibility="Disabled"
+                          PanningMode="VerticalOnly"
+                          Margin="24">
                 <StackPanel>
                     <TextBlock Name="UpdateMessageTextBlock"
                               Text="A new version is available!"
@@ -105,32 +111,37 @@
                               Foreground="{StaticResource TextPrimaryBrush}"
                               Margin="0,0,0,8"/>
                     
-                    <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+                    <Border Background="{StaticResource BackgroundMediumBrush}"
+                            CornerRadius="6"
+                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="1"
+                            Padding="12">
                         <TextBlock Name="ReleaseNotesContentTextBlock"
                                   FontSize="12"
                                   Foreground="{StaticResource TextSecondaryBrush}"
-                                  TextWrapping="Wrap"
-                                  Margin="0,0,8,0"/>
-                    </ScrollViewer>
-
-                    <!-- Download progress (shown when downloading update) -->
-                    <StackPanel Name="DownloadProgressPanel" Visibility="Collapsed" Margin="0,16,0,0">
-                        <TextBlock Name="DownloadStatusTextBlock"
-                                  FontSize="12"
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  Margin="0,0,0,8"
                                   TextWrapping="Wrap"/>
-                        <ProgressBar Name="DownloadProgressBar"
-                                     Height="6"
-                                     Minimum="0"
-                                     Maximum="100"
-                                     Value="0"/>
-                    </StackPanel>
+                    </Border>
                 </StackPanel>
-            </Grid>
+            </ScrollViewer>
+
+            <!-- Download progress (fixed area so it's always visible while downloading) -->
+            <StackPanel Grid.Row="2" Name="DownloadProgressPanel" Visibility="Collapsed" Margin="24,0,24,12">
+                <TextBlock Name="DownloadStatusTextBlock"
+                          FontSize="12"
+                          Foreground="{StaticResource TextSecondaryBrush}"
+                          Margin="0,0,0,8"
+                          TextWrapping="Wrap"/>
+                <ProgressBar Name="DownloadProgressBar"
+                             Height="10"
+                             Minimum="0"
+                             Maximum="100"
+                             Value="0"
+                             Background="{StaticResource BackgroundMediumBrush}"
+                             Foreground="{StaticResource AccentBlueBrush}"/>
+            </StackPanel>
 
             <!-- Buttons -->
-            <Border Grid.Row="2" Background="{StaticResource BackgroundMediumBrush}" 
+            <Border Grid.Row="3" Background="{StaticResource BackgroundMediumBrush}" 
                     CornerRadius="0,0,8,8" Padding="16">
                 <Grid>
                     <Grid.ColumnDefinitions>

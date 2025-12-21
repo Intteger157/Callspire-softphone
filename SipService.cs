@@ -44,7 +44,7 @@ namespace Softphone
         private Task<bool>? _activeCallTask; // Задача активного звонка для возможности отмены
         private System.Threading.CancellationTokenSource? _callCancellationTokenSource; // Для отмены звонка
         private bool _isCallCancelled = false; // Флаг отмены звонка пользователем (чтобы не воспроизводить гудки для последующих ответов)
-        private RtpCallRecorder? _callRecorder; // Рекордер для записи звонков через RTP потоки
+        // NOTE: SIP call recording is disabled. Recording is supported for WebRTC calls only.
         
         /// <summary>
         /// Создает ToneGenerator при первом использовании (ленивая инициализация)
@@ -91,7 +91,7 @@ namespace Softphone
         public bool IsInCall => _userAgent?.IsCallActive == true;
         public bool IsMuted { get; private set; }
         public bool IsOnHold { get; private set; }
-        public string? CurrentRecordingFilePath => _callRecorder?.RecordingFilePath; // Путь к текущей записи
+        public string? CurrentRecordingFilePath => null; // SIP recording disabled (WebRTC-only)
         
         /// <summary>
         /// Отправляет DTMF-тон во время активного звонка.
@@ -518,21 +518,14 @@ namespace Softphone
                             MainWindow.Log($"[TapAudioSource] FIRST tap sample: rate={rate}, dur={durationMs}, len={samples?.Length ?? 0}, peak={(samples != null && samples.Length > 0 ? samples.Max(s => Math.Abs(s)) : 0)}");
                         }
                         
-                        if (_callRecorder != null && samples != null && samples.Length > 0)
-                        {
-                            _callRecorder.ProcessOutboundSamples(rate, durationMs, samples);
-                        }
+                        // SIP recording disabled (WebRTC-only)
                     };
                     
                     mediaEndPoints.AudioSource = tapAudioSource;
                     MainWindow.Log("[SipService] AudioSource chain: WindowsAudioEndPoint → AmplifiedAudioSource → TapAudioSource → VoIPMediaSession");
                 }
                 
-                // Обертываем AudioSink для перехвата inbound RTP (через GotAudioRtp)
-                if (mediaEndPoints.AudioSink != null)
-                {
-                    mediaEndPoints.AudioSink = new RecordingAudioSink(mediaEndPoints.AudioSink, this);
-                }
+                // SIP recording disabled (WebRTC-only): do not wrap AudioSink.
                 
                 _voipMediaSession = new VoIPMediaSession(mediaEndPoints)
                 {
@@ -990,8 +983,7 @@ namespace Softphone
                             // Игнорируем ошибки при закрытии медиа-сессии
                         }
                         
-                        // Останавливаем запись звонка
-                        StopCallRecording();
+                        // SIP recording disabled (WebRTC-only).
                         
                         // Уведомляем UI о завершении звонка через Dispatcher
                         System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
@@ -1000,8 +992,7 @@ namespace Softphone
                     {
                         SetStatus($"Error handling BYE: {ex.Message}");
                         MainWindow.Log($"[SipService] Error handling BYE: {ex.Message}");
-                        // Останавливаем запись звонка
-                        StopCallRecording();
+                        // SIP recording disabled (WebRTC-only).
                         // Все равно вызываем OnCallEnded через Dispatcher
                         System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
                     }
@@ -1336,9 +1327,9 @@ namespace Softphone
                 }
             };
 
-            // 3. Аудио и медиа-сессия.
-            // Создаем аудио эндпоинт с кодировщиком (только если не в WebRTC режиме)
-            InitializeAudio();
+            // 3. Audio/media session initialization can be expensive (device enumeration, endpoint creation).
+            // We defer it to the moment a SIP call is actually made/answered to speed up registration,
+            // especially when switching from WebRTC -> SIP.
 
             // 4. Регистрация на SIP-сервере (MikoPBX).
             // ПРОВЕРКА: Если включен WebRTC для звонков, не регистрируемся на SIP сервере
@@ -1432,8 +1423,8 @@ namespace Softphone
             SetStatus("Registering on SIP server...");
             _regUserAgent.Start();
 
-            // ��������� �����, ����� ���� ����������� ���� ����������.
-            await Task.Delay(500);
+            // Small delay to allow registration to begin; keep it short to improve UX.
+            await Task.Delay(150);
         }
 
         /// <summary>
@@ -1441,6 +1432,14 @@ namespace Softphone
         /// </summary>
         public async Task CallAsync(string number)
         {
+            // IMPORTANT: When WebRTC mode is enabled, SIP outgoing calls must be blocked.
+            if (ShouldUseWebRtc())
+            {
+                MainWindow.Log($"[SipService] SIP outgoing call to {number} blocked: WebRTC mode is enabled");
+                SetStatus("SIP calls are disabled (WebRTC mode enabled)");
+                return;
+            }
+
             if (_userAgent == null)
             {
                 SetStatus("SIP not initialized. Click Connect.");
@@ -1680,18 +1679,7 @@ namespace Softphone
                     SetStatus($"[{callEndTime:HH:mm:ss.fff}] Call connected! (took {callDuration:F2} seconds)");
                     _wasCallActive = true; // Устанавливаем флаг при успешном подключении
                     
-                    // Запускаем запись звонка, если включена
-                    StartCallRecording(number, callStartTime);
-                    
-                    // Сбрасываем флаг попытки подписки на outbound RTP
-                    _outboundRtpSubscriptionAttempted = false;
-                    
-                    // Пытаемся подписаться на outbound RTP для записи (с задержкой, так как канал может быть еще не создан)
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(1000); // Даем 1 секунду на инициализацию RTP канала
-                        TrySubscribeToOutboundRtp();
-                    });
+                    // SIP recording disabled (WebRTC-only).
                     
                     // После успешного подключения проверяем, что медиа-сессия запущена
                     try
@@ -2015,18 +2003,7 @@ namespace Softphone
                         SetStatus("Media session started for incoming call");
                     }
                     
-                    // Запускаем запись звонка, если включена
-                    StartCallRecording(savedCaller ?? "Unknown", DateTime.Now);
-                    
-                    // Сбрасываем флаг попытки подписки на outbound RTP
-                    _outboundRtpSubscriptionAttempted = false;
-                    
-                    // Пытаемся подписаться на outbound RTP для записи (с задержкой, так как канал может быть еще не создан)
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(1000); // Даем 1 секунду на инициализацию RTP канала
-                        TrySubscribeToOutboundRtp();
-                    });
+                    // SIP recording disabled (WebRTC-only).
                     
                     // Получаем медиа-эндпоинты
                     var mediaEndPoints = _audioEndPoint?.ToMediaEndPoints();
@@ -2281,8 +2258,7 @@ namespace Softphone
                     // Это критично для стабильности при множественных звонках (100+ в день)
                     // _audioEndPoint будет закрыт только при полном Dispose() сервиса
                     
-                    // Останавливаем запись звонка (асинхронно)
-                    StopCallRecording();
+                    // SIP recording disabled (WebRTC-only).
                     
                     SetStatus("Call ended");
                     // Вызываем OnCallEnded через Dispatcher, чтобы не блокировать UI поток
@@ -2352,8 +2328,7 @@ namespace Softphone
                 _callCancellationTokenSource?.Dispose();
                 _callCancellationTokenSource = null;
                 
-                // Останавливаем запись звонка
-                StopCallRecording();
+                // SIP recording disabled (WebRTC-only).
                 
                 SetStatus("Call cancelled");
                 System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
@@ -2744,7 +2719,6 @@ namespace Softphone
                         OnOutboundRtpPacket(packet);
                     };
                     eventInfo.AddEventHandler(rtpChannel, handler);
-                    _outboundRtpSubscriptionAttempted = true;
                     MainWindow.Log("[SipService] ✓ Subscribed to RTP send event (Action<RTPPacket>) - outbound RTP interception active!");
                 }
                 else if (handlerType.IsGenericType && handlerType.GetGenericTypeDefinition() == typeof(Action<>))
@@ -2833,33 +2807,7 @@ namespace Softphone
         /// </summary>
         private void OnOutboundRtpPacket(SIPSorcery.Net.RTPPacket packet)
         {
-            try
-            {
-                if (_callRecorder == null || !_callRecorder.IsRecording)
-                    return;
-
-                if (packet == null || packet.Payload == null || packet.Payload.Length == 0)
-                    return;
-
-                byte payloadType = (byte)packet.Header.PayloadType;
-                
-                // Определяем sample rate по payload type
-                int sourceRateHz = payloadType switch
-                {
-                    0 => 8000,  // PCMU (G.711 μ-law)
-                    8 => 8000,  // PCMA (G.711 A-law)
-                    9 => 16000, // G.722
-                    111 => 48000, // Opus
-                    _ => 8000   // По умолчанию
-                };
-
-                // Записываем outbound RTP payload
-                RecordOutboundRtpPayload(payloadType, packet.Payload, sourceRateHz);
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[SipService] Error in OnOutboundRtpPacket: {ex.Message}");
-            }
+            // SIP recording disabled (WebRTC-only).
         }
 
         /// <summary>
@@ -2986,16 +2934,7 @@ namespace Softphone
             {
                 // ignore
             }
-            
-            try
-            {
-                _callRecorder?.Dispose();
-                _callRecorder = null;
-            }
-            catch
-            {
-                // ignore
-            }
+            // SIP recording disabled (WebRTC-only).
 
             try
             {
@@ -3010,24 +2949,7 @@ namespace Softphone
         /// <summary>
         /// Проверяет, включена ли запись звонков в настройках
         /// </summary>
-        private bool IsCallRecordingEnabled()
-        {
-            try
-            {
-                string settingsFilePath = AppDataHelper.GetSettingsFilePath();
-                if (File.Exists(settingsFilePath))
-                {
-                    string json = File.ReadAllText(settingsFilePath);
-                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                    return settings?.EnableCallRecording ?? false;
-                }
-            }
-            catch
-            {
-                // Игнорируем ошибки
-            }
-            return false;
-        }
+        private bool IsCallRecordingEnabled() => false; // SIP recording disabled (WebRTC-only)
         
         /// <summary>
         /// Получает путь к папке Recordings в %LOCALAPPDATA%\Callspire\Recordings
@@ -3040,62 +2962,20 @@ namespace Softphone
         /// <summary>
         /// Записывает inbound RTP пакет (удаленная сторона)
         /// </summary>
-        private static int _recordInboundRtpCallCount = 0;
-        private bool _outboundRtpSubscriptionAttempted = false;
+        // SIP recording disabled (WebRTC-only).
         
         public void RecordInboundRtp(IPEndPoint remoteEndPoint, uint ssrc, uint seqnum, uint timestamp, int payloadID, bool marker, byte[]? payload)
         {
-            // Логируем первые несколько вызовов для диагностики
-            if (++_recordInboundRtpCallCount <= 5)
-            {
-                MainWindow.Log($"[SipService] RecordInboundRtp called #{_recordInboundRtpCallCount}: timestamp={timestamp}, payloadID={payloadID}, payloadSize={payload?.Length ?? 0}, recorder null={_callRecorder == null}, isRecording={_callRecorder?.IsRecording ?? false}");
-            }
-            
-            // Пытаемся подписаться на outbound RTP после получения первого inbound RTP пакета
-            // (когда RTP канал точно создан и активен)
-            // Делаем несколько попыток с задержкой, так как канал может создаваться после DTLS/ICE шагов
-            if (!_outboundRtpSubscriptionAttempted && _recordInboundRtpCallCount == 1)
-            {
-                MainWindow.Log("[SipService] First inbound RTP received - attempting to subscribe to outbound RTP (5 attempts with delays)...");
-                _ = Task.Run(async () =>
-                {
-                    for (int i = 0; i < 5; i++)
-                    {
-                        await Task.Delay(150 * (i + 1)); // 150ms, 300ms, 450ms, 600ms, 750ms
-                        MainWindow.Log($"[SipService] TrySubscribe attempt #{i + 1}/5");
-                        TrySubscribeToOutboundRtp();
-                        
-                        // Если подписка успешна, прекращаем попытки
-                        if (_outboundRtpSubscriptionAttempted)
-                        {
-                            break;
-                        }
-                    }
-                });
-            }
-            
-            if (payload != null)
-            {
-                _callRecorder?.ProcessInboundRtp(remoteEndPoint, ssrc, seqnum, timestamp, payloadID, marker, payload);
-            }
+            // SIP recording disabled (WebRTC-only).
         }
         
 
         /// <summary>
         /// Записывает outbound RTP payload (локальная сторона - то, что отправляется в сеть)
         /// </summary>
-        private static int _recordOutboundRtpCallCount = 0;
         public void RecordOutboundRtpPayload(byte payloadType, byte[] payload, int sourceRateHz)
         {
-            // Логируем первые несколько вызовов для диагностики
-            if (++_recordOutboundRtpCallCount <= 5)
-            {
-                MainWindow.Log($"[SipService] RecordOutboundRtpPayload called #{_recordOutboundRtpCallCount}: payloadType={payloadType}, payloadSize={payload?.Length ?? 0}, sourceRate={sourceRateHz}Hz, recorder null={_callRecorder == null}, isRecording={_callRecorder?.IsRecording ?? false}");
-            }
-            if (payload != null && payload.Length > 0)
-            {
-                _callRecorder?.ProcessOutboundRtpPayload(payloadType, payload, sourceRateHz);
-            }
+            // SIP recording disabled (WebRTC-only).
         }
 
         /// <summary>
@@ -3105,37 +2985,10 @@ namespace Softphone
         /// Записывает outbound PCM аудио (локальная сторона) - устаревший метод
         /// Теперь используется TapAudioSource напрямую
         /// </summary>
-        private static int _recordOutboundPcmCallCount = 0;
         [Obsolete("Use TapAudioSource.OnTapRawSample instead")]
         public void RecordOutboundPcm(byte[]? pcmData, int sampleRate)
         {
-            // Этот метод больше не используется, так как TapAudioSource вызывает ProcessOutboundSamples напрямую
-            // Оставлен для обратной совместимости
-            if (++_recordOutboundPcmCallCount <= 5)
-            {
-                MainWindow.Log($"[SipService] RecordOutboundPcm called #{_recordOutboundPcmCallCount} (OBSOLETE - use TapAudioSource): sampleRate={sampleRate}, pcmData.Length={pcmData?.Length ?? 0}");
-            }
-            
-            // Конвертируем byte[] в short[] и вызываем новый метод
-            if (pcmData != null && pcmData.Length > 0 && _callRecorder != null)
-            {
-                int sampleCount = pcmData.Length / 2;
-                short[] samples = new short[sampleCount];
-                Buffer.BlockCopy(pcmData, 0, samples, 0, pcmData.Length);
-                
-                // Конвертируем sampleRate в AudioSamplingRatesEnum
-                // AudioSamplingRatesEnum имеет только Rate8KHz и Rate16KHz
-                // Для 48kHz и других значений используем Rate16KHz (ProcessOutboundSamples сделает ресемплинг до 48kHz)
-                AudioSamplingRatesEnum rate = sampleRate switch
-                {
-                    8000 => AudioSamplingRatesEnum.Rate8KHz,
-                    16000 => AudioSamplingRatesEnum.Rate16KHz,
-                    _ => AudioSamplingRatesEnum.Rate16KHz // Для 48kHz и других используем Rate16KHz
-                };
-                
-                uint durationMs = (uint)(samples.Length * 1000 / sampleRate);
-                _callRecorder.ProcessOutboundSamples(rate, durationMs, samples);
-            }
+            // SIP recording disabled (WebRTC-only).
         }
 
         /// <summary>
@@ -3143,22 +2996,7 @@ namespace Softphone
         /// </summary>
         private void StartCallRecording(string phoneNumber, DateTime callStartTime)
         {
-            if (!IsCallRecordingEnabled())
-            {
-                return;
-            }
-            
-            try
-            {
-                _callRecorder?.Dispose();
-                _callRecorder = new RtpCallRecorder();
-                _callRecorder.StartRecording(phoneNumber, callStartTime, GetRecordingsDirectory());
-                MainWindow.Log($"[SipService] Call recording started for {phoneNumber}");
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[SipService] Error starting call recording: {ex.Message}");
-            }
+            // SIP recording disabled (WebRTC-only).
         }
         
         /// <summary>
@@ -3166,46 +3004,7 @@ namespace Softphone
         /// </summary>
         private void StopCallRecording()
         {
-            if (_callRecorder != null)
-            {
-                try
-                {
-                    // Сохраняем путь к записи ДО асинхронной остановки, так как после StopRecordingAsync() путь может быть потерян
-                    string? recordingFilePath = _callRecorder.RecordingFilePath;
-                    var recorderToDispose = _callRecorder; // Сохраняем ссылку для Dispose
-                    _callRecorder = null; // Сразу обнуляем ссылку, чтобы следующий звонок мог создать новый рекордер
-
-                    // Выполняем остановку записи асинхронно, чтобы не блокировать UI поток
-                    _ = System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await recorderToDispose.StopRecordingAsync();
-                            if (!string.IsNullOrEmpty(recordingFilePath))
-                            {
-                                MainWindow.Log($"[SipService] Call recording stopped. File: {recordingFilePath}");
-                            }
-                            else
-                            {
-                                MainWindow.Log($"[SipService] Call recording stopped, but file path was not available");
-                            }
-                            
-                            // Dispose рекордера после завершения записи
-                            recorderToDispose.Dispose();
-                        }
-                        catch (Exception ex)
-                        {
-                            MainWindow.Log($"[SipService] Error stopping call recording: {ex.Message}");
-                            // Все равно пытаемся Dispose
-                            try { recorderToDispose?.Dispose(); } catch { }
-                        }
-                    });
-                }
-                catch (Exception ex)
-                {
-                    MainWindow.Log($"[SipService] Error stopping call recording: {ex.Message}");
-                }
-            }
+            // SIP recording disabled (WebRTC-only).
         }
         
         /// <summary>

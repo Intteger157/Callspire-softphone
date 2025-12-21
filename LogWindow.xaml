@@ -159,10 +159,11 @@
                 </Grid>
             </Border>
 
-            <!-- Log Content -->
+            <!-- Log Content (wheel scroll, no visible scrollbars) -->
             <ScrollViewer Grid.Row="1" 
-                         VerticalScrollBarVisibility="Auto" 
+                         VerticalScrollBarVisibility="Hidden" 
                          HorizontalScrollBarVisibility="Disabled"
+                         PanningMode="VerticalOnly"
                          Margin="16">
                 <TextBox Name="LogTextBox" 
                         IsReadOnly="True" 
@@ -172,7 +173,7 @@
                         FontFamily="Consolas"
                         FontSize="12"
                         BorderThickness="0"
-                        VerticalScrollBarVisibility="Auto"
+                        VerticalScrollBarVisibility="Hidden"
                         HorizontalScrollBarVisibility="Disabled"
                         HorizontalContentAlignment="Left"
                         VerticalContentAlignment="Top"

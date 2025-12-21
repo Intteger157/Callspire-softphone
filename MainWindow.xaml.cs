@@ -90,8 +90,12 @@ namespace Softphone
             // Пытаемся подключиться и проверяем статус подключения
             _ = TryConnectAndCheckStatus();
             
-            // Предварительно инициализируем WebView2 Environment для ускорения последующей инициализации
-            _ = PreInitializeWebView2Environment();
+            // Предварительно инициализируем WebView2 Environment только если WebRTC реально включен.
+            // Иначе это создает лишнюю нагрузку и шум в логах при SIP режиме/переключении.
+            if (ShouldUseWebRtc())
+            {
+                _ = PreInitializeWebView2Environment();
+            }
             
             // Подписываемся на Loaded для инициализации singleton WebView2
             Loaded += MainWindow_Loaded;
@@ -142,9 +146,6 @@ namespace Softphone
                     if (latestRelease != null)
                     {
                         string currentVersion = GitHubVersionService.GetCurrentVersion();
-
-                        string repositoryUrl = $"https://github.com/YOUR_Repository";
-
                         
                         // Получаем URL репозитория из настроек
                         string settingsFilePath = AppDataHelper.GetSettingsFilePath();
@@ -190,17 +191,6 @@ namespace Softphone
         /// </summary>
         private (string owner, string name)? GetRepositoryFromSettings()
         {
-<<<<<<< HEAD
-            return "USERNAME";
-        }
-        
-        /// <summary>
-        /// Получает название репозитория GitHub
-        /// </summary>
-        private string GetRepositoryName()
-        {
-            return "Softphone";
-=======
             try
             {
                 string settingsFilePath = AppDataHelper.GetSettingsFilePath();
@@ -224,11 +214,17 @@ namespace Softphone
                 Log($"[MainWindow] Error getting repository from settings: {ex.Message}");
                 return null;
             }
->>>>>>> 7636c95 (The update function has been redesigned)
         }
         
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            // Не трогаем WebRTC/WebView2, если WebRTC режим выключен.
+            // Инициализация будет выполнена при включении WebRTC (ReconnectFromSettingsAsync / Advanced settings).
+            if (!ShouldUseWebRtc())
+            {
+                return;
+            }
+
             // Инициализируем WebRTC сервис после загрузки окна с ApplicationIdle приоритетом
             // Это гарантирует, что окно полностью загружено и визуальное дерево готово
             Log("[MainWindow] MainWindow_Loaded: Scheduling WebRTC initialization with ApplicationIdle priority...");
@@ -265,12 +261,13 @@ namespace Softphone
                     return;
                 }
                 
-                Log($"[MainWindow] InitializeWebRtcServiceAsync: Settings loaded - UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri={(string.IsNullOrEmpty(settings.WebRtcWsUri) ? "empty" : "set")}, SipUsername={(string.IsNullOrEmpty(settings.SipUsername) ? "empty" : "set")}, SipPassword={(string.IsNullOrEmpty(settings.SipPassword) ? "empty" : "set")}");
+                string? sipPassword = SipPasswordProvider.GetPassword(settings);
+                Log($"[MainWindow] InitializeWebRtcServiceAsync: Settings loaded - UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri={(string.IsNullOrEmpty(settings.WebRtcWsUri) ? "empty" : "set")}, SipUsername={(string.IsNullOrEmpty(settings.SipUsername) ? "empty" : "set")}, SipPasswordEncrypted={(string.IsNullOrEmpty(settings.SipPasswordEncrypted) ? "empty" : "set")}");
                 
                 if (!settings.UseWebRtcAudio || 
                     string.IsNullOrEmpty(settings.WebRtcWsUri) ||
                     string.IsNullOrEmpty(settings.SipUsername) || 
-                    string.IsNullOrEmpty(settings.SipPassword))
+                    string.IsNullOrEmpty(sipPassword))
                 {
                     Log("[MainWindow] WebRTC not enabled or not configured, skipping service initialization");
                     return;
@@ -366,7 +363,7 @@ namespace Softphone
                         config.WsUri,
                         config.SipUri,
                         settings.SipUsername ?? "",
-                        settings.SipPassword ?? ""
+                        sipPassword ?? ""
                     );
                     Log("[MainWindow] initUA command sent via ReinitializeUAAsync");
                     
@@ -654,6 +651,7 @@ namespace Softphone
                 {
                     string json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    string? sipPassword = SipPasswordProvider.GetPassword(settings);
                     
                     if (useWebRtc)
                     {
@@ -661,7 +659,7 @@ namespace Softphone
                         hasConnectionSettings = settings != null && 
                             !string.IsNullOrEmpty(settings.WebRtcWsUri) && 
                             !string.IsNullOrEmpty(settings.SipUsername) && 
-                            !string.IsNullOrEmpty(settings.SipPassword);
+                            !string.IsNullOrEmpty(sipPassword);
                     }
                     else
                     {
@@ -669,7 +667,7 @@ namespace Softphone
                         hasConnectionSettings = settings != null && 
                             !string.IsNullOrEmpty(settings.SipServer) && 
                             !string.IsNullOrEmpty(settings.SipUsername) && 
-                            !string.IsNullOrEmpty(settings.SipPassword);
+                            !string.IsNullOrEmpty(sipPassword);
                     }
                 }
                 
@@ -864,9 +862,22 @@ namespace Softphone
                 {
                     string json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    if (settings != null)
+                    {
+                        SipPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsFilePath, settings);
+                    }
+                    string? sipPassword = SipPasswordProvider.GetPassword(settings);
+
+                    // IMPORTANT: If WebRTC mode is enabled, SIP must be fully disabled (no registration, no SIP calls).
+                    if (settings?.UseWebRtcAudio == true)
+                    {
+                        _sipService?.Dispose();
+                        _sipService = null;
+                        return;
+                    }
                     
                     if (settings != null && !string.IsNullOrEmpty(settings.SipServer) && 
-                        !string.IsNullOrEmpty(settings.SipUsername) && !string.IsNullOrEmpty(settings.SipPassword))
+                        !string.IsNullOrEmpty(settings.SipUsername) && !string.IsNullOrEmpty(sipPassword))
                     {
                         // Автоматически подключаемся при запуске, если есть настройки
                         await ConnectWithSettings(settings);
@@ -883,6 +894,16 @@ namespace Softphone
         {
             try
             {
+                // IMPORTANT: If WebRTC mode is enabled, SIP must be fully disabled.
+                if (settings.UseWebRtcAudio)
+                {
+                    _sipService?.Dispose();
+                    _sipService = null;
+                    UpdateConnectionStatus();
+                    UpdateWebRtcIndicator();
+                    return;
+                }
+
                 int port = 5060;
                 if (!string.IsNullOrEmpty(settings.SipServer) && settings.SipServer.Contains(":"))
                 {
@@ -897,7 +918,7 @@ namespace Softphone
 
                 _sipService = new SipService(
                     settings.SipUsername ?? "", 
-                    settings.SipPassword ?? "", 
+                    SipPasswordProvider.GetPassword(settings) ?? "", 
                     settings.SipServer?.Split(':')[0] ?? settings.SipServer ?? "", 
                     port,
                     settings.MicrophoneDeviceNumber, 
@@ -1275,11 +1296,15 @@ namespace Softphone
                     Log("[MainWindow] ReconnectFromSettingsAsync: Settings is null");
                     return;
                 }
+
+                // Migrate legacy plaintext SIP password to encrypted (best-effort)
+                SipPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsFilePath, settings);
+                string? sipPassword = SipPasswordProvider.GetPassword(settings);
                 
                 bool useWebRtc = settings.UseWebRtcAudio && 
                                  !string.IsNullOrEmpty(settings.WebRtcWsUri) &&
                                  !string.IsNullOrEmpty(settings.SipUsername) && 
-                                 !string.IsNullOrEmpty(settings.SipPassword);
+                                 !string.IsNullOrEmpty(sipPassword);
                 
                 if (useWebRtc)
                 {
@@ -1295,25 +1320,9 @@ namespace Softphone
                         Log("[MainWindow] ReconnectFromSettingsAsync: Status reset to 'Initializing WebRTC...' for WebRTC mode");
                     });
                     
-                    // Останавливаем SIP регистрацию (если была активна)
-                    // При следующем вызове StartAsync() SIP не зарегистрируется (проверка ShouldUseWebRtc())
-                    // Но старая регистрация может остаться активной, поэтому лучше явно переподключить
-                    // Это вызовет StartAsync(), который проверит WebRTC режим и не зарегистрируется
-                    if (_sipService != null)
-                    {
-                        try
-                        {
-                            Log("[MainWindow] ReconnectFromSettingsAsync: Reconnecting SIP to stop registration (WebRTC mode enabled)...");
-                            // Вызываем TryConnectFromSettings, который вызовет StartAsync()
-                            // StartAsync() проверит ShouldUseWebRtc() и не зарегистрируется
-                            await TryConnectFromSettings();
-                            Log("[MainWindow] ReconnectFromSettingsAsync: SIP reconnected (registration skipped due to WebRTC mode)");
-                        }
-                        catch (Exception ex)
-                        {
-                            Log($"[MainWindow] ReconnectFromSettingsAsync: Error reconnecting SIP: {ex.Message}");
-                        }
-                    }
+                    // IMPORTANT: Fully stop SIP in WebRTC mode (no transport, no registration, no incoming/outgoing SIP).
+                    _sipService?.Dispose();
+                    _sipService = null;
                     
                     // Инициализируем или переинициализируем WebRTC
                     Log("[MainWindow] ReconnectFromSettingsAsync: Initializing/Reinitializing WebRTC UA...");
@@ -1361,7 +1370,7 @@ namespace Softphone
                                 config.WsUri,
                                 config.SipUri,
                                 settings.SipUsername ?? "",
-                                settings.SipPassword ?? ""
+                                sipPassword ?? ""
                             );
                             Log("[MainWindow] ReconnectFromSettingsAsync: WebRTC UA reinitialized");
                         }
@@ -1392,6 +1401,9 @@ namespace Softphone
                 {
                     // SIP режим - отключаем WebRTC и подключаем SIP
                     Log("[MainWindow] ReconnectFromSettingsAsync: SIP mode enabled, connecting SIP...");
+
+                    // Stop/unload WebRTC in parallel so SIP can connect quickly and UI isn't spammed by WebRTC logs.
+                    _ = ShutdownWebRtcAsync();
                     
                     // Переподключаем SIP сервис
                     await TryConnectFromSettings();
@@ -1411,6 +1423,49 @@ namespace Softphone
             }
         }
 
+        private async Task ShutdownWebRtcAsync()
+        {
+            try
+            {
+                // Stop watchdog first (prevents periodic ping/getStats).
+                try { WebRtcService.Instance.StopWatchdog(); } catch { }
+
+                // Unsubscribe events + detach engine state.
+                try { WebRtcService.Instance.Event -= OnWebRtcEvent; } catch { }
+                try { WebRtcService.Instance.DetachEngine(resetState: true); } catch { }
+
+                // Dispose WebView2 on UI thread.
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    try
+                    {
+                        if (_webRtcEngine != null)
+                        {
+                            if (WebRtcHostGrid != null && WebRtcHostGrid.Children.Contains(_webRtcEngine))
+                            {
+                                WebRtcHostGrid.Children.Remove(_webRtcEngine);
+                            }
+                            _webRtcEngine.Dispose();
+                            _webRtcEngine = null;
+                            Log("[MainWindow] WebRTC WebView2 disposed (switched to SIP mode)");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[MainWindow] Error disposing WebRTC WebView2: {ex.Message}");
+                        _webRtcEngine = null;
+                    }
+
+                    // Refresh indicators after unloading.
+                    UpdateWebRtcIndicator();
+                }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Error in ShutdownWebRtcAsync: {ex.Message}");
+            }
+        }
+
         public async void ReconnectFromSettings()
         {
             await ReconnectFromSettingsAsync();
@@ -1421,6 +1476,13 @@ namespace Softphone
             try
             {
                 Log($"HandleIncomingCall called with callerNumber: {callerNumber}");
+
+                // IMPORTANT: When WebRTC mode is enabled, SIP incoming calls must be ignored/disabled.
+                if (ShouldUseWebRtc())
+                {
+                    Log($"[MainWindow] HandleIncomingCall: SIP incoming call from {callerNumber} ignored: WebRTC mode enabled");
+                    return;
+                }
                 
             if (_sipService == null)
                 {
@@ -1453,8 +1515,6 @@ namespace Softphone
             DateTime incomingCallStartTime = DateTime.Now;
             
             // Открываем окно для входящего звонка с флагом isIncomingCall = true
-            // ВАЖНО: Входящие звонки через SIPSorcery всегда обрабатываются через SIPSorcery,
-            // даже если включен WebRTC режим. WebRTC используется только для исходящих звонков.
             Log($"[MainWindow] HandleIncomingCall: Creating CallWindow instance...");
             CallWindow callWindow;
             try
@@ -1640,32 +1700,16 @@ namespace Softphone
                     }
                     else
                     {
-                        Log($"[Call][SIP] WebRTC config is null, falling back to SIPSorcery for call to {number}");
-                        // Fallback на SIPSorcery
-                        if (_sipService == null)
-                        {
-                            Log("[Call][SIP] ERROR: _sipService is null, cannot create CallWindow");
-                            CallButton.IsEnabled = true;
-                            return;
-                        }
-                        
-                        // Добавляем запись в историю звонков (исходящий SIP звонок через fallback)
-                        var outgoingCallItem = new CallHistoryItem
-                        {
-                            PhoneNumber = number,
-                            CallTime = callStartTime,
-                            Status = CallStatus.Calling,
-                            IsIncoming = false,
-                            Transport = CallTransport.Sip
-                        };
-                        _callHistoryService.AddCall(outgoingCallItem);
-                        LoadCallHistory();
-                        currentCallHistoryItem = outgoingCallItem;
-                        
-                        callWindow = new CallWindow(_sipService, number, isIncomingCall: false, callStartTime: callStartTime)
-                        {
-                            Owner = this
-                        };
+                        Log($"[Call][WebRTC] ERROR: WebRTC mode enabled but WebRTC config is missing. Blocking call to {number}.");
+                        CustomMessageBox.Show(
+                            "WebRTC is enabled, but WebRTC settings are incomplete.\n\n" +
+                            "Please open Settings → Advanced and configure WebSocket URI and credentials.",
+                            "WebRTC Not Configured",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning,
+                            this);
+                        CallButton.IsEnabled = true;
+                        return;
                     }
                 }
                 else
@@ -1977,8 +2021,10 @@ namespace Softphone
             string status = technicalStatus.ToLower();
 
             // Статусы подключения к серверу
+            // Registration success should be reflected by UpdateConnectionStatus() as "Connected with SIP".
+            // Returning null prevents this helper from overwriting the connection-status label.
             if (status.Contains("registration successful"))
-                return "Connected to server";
+                return null;
             
             if (status.Contains("registration failed") || status.Contains("registration temporary failure"))
             {
@@ -2090,15 +2136,6 @@ namespace Softphone
         /// </summary>
         public void UpdateConnectionStatus()
         {
-            // Throttling: предотвращаем слишком частые вызовы
-            var now = DateTime.Now;
-            if ((now - _lastStatusUpdateTime).TotalMilliseconds < STATUS_UPDATE_THROTTLE_MS && _lastConnectionStatus != null)
-            {
-                // Пропускаем обновление, если прошло меньше 500мс с последнего
-                return;
-            }
-            _lastStatusUpdateTime = now;
-            
             try
             {
                 bool useWebRtc = ShouldUseWebRtc();
@@ -2143,6 +2180,15 @@ namespace Softphone
                     }
                 }
                 
+                // Throttling: skip only if we would not change anything and the call is too frequent.
+                var now = DateTime.Now;
+                if (_lastConnectionStatus == newStatus &&
+                    (now - _lastStatusUpdateTime).TotalMilliseconds < STATUS_UPDATE_THROTTLE_MS)
+                {
+                    return;
+                }
+                _lastStatusUpdateTime = now;
+
                 // Обновляем UI только если статус изменился
                 if (_lastConnectionStatus != newStatus && StatusTextBlock != null)
                 {
@@ -2220,9 +2266,10 @@ namespace Softphone
                 {
                     string json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    string? sipPassword = SipPasswordProvider.GetPassword(settings);
                     
                     if (settings != null && !string.IsNullOrEmpty(settings.WebRtcWsUri) &&
-                        !string.IsNullOrEmpty(settings.SipUsername) && !string.IsNullOrEmpty(settings.SipPassword))
+                        !string.IsNullOrEmpty(settings.SipUsername) && !string.IsNullOrEmpty(sipPassword))
                     {
                         // Формируем SIP URI из настроек
                         // Для MikoPBX WebRTC нужно добавить суффикс -WS к имени пользователя
@@ -2263,14 +2310,14 @@ namespace Softphone
                         {
                             WsUri = settings.WebRtcWsUri,
                             SipUri = sipUri,
-                            Password = settings.SipPassword
+                            Password = sipPassword
                         };
                         Log($"[MainWindow] GetWebRtcConfig: Created config - WsUri={config.WsUri}, SipUri={config.SipUri}");
                         return config;
                     }
                     else
                     {
-                        Log($"[MainWindow] GetWebRtcConfig: Missing required settings - WebRtcWsUri={(string.IsNullOrEmpty(settings?.WebRtcWsUri) ? "empty" : "set")}, SipUsername={(string.IsNullOrEmpty(settings?.SipUsername) ? "empty" : "set")}, SipPassword={(string.IsNullOrEmpty(settings?.SipPassword) ? "empty" : "set")}");
+                        Log($"[MainWindow] GetWebRtcConfig: Missing required settings - WebRtcWsUri={(string.IsNullOrEmpty(settings?.WebRtcWsUri) ? "empty" : "set")}, SipUsername={(string.IsNullOrEmpty(settings?.SipUsername) ? "empty" : "set")}, SipPassword={(string.IsNullOrEmpty(sipPassword) ? "empty" : "set")}");
                     }
                 }
             }

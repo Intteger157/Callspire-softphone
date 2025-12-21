@@ -54,8 +54,7 @@ namespace Softphone
         private string? _webRtcRecordingFilePath; // Сохраняем путь к файлу записи для Call Details
         private bool _isStoppingRecording = false; // Флаг для предотвращения повторных вызовов StopWebRtcRecording
         
-        // SIP call recording file path
-        private string? _sipRecordingFilePath; // Сохраняем путь к файлу записи SIP звонка для Call Details
+        // SIP call recording removed (WebRTC-only)
         
         // Call context with transport information
         private CallContext _callContext = null!; // Инициализируется в конструкторах
@@ -260,15 +259,7 @@ namespace Softphone
             // Используем BeginInvoke вместо Invoke, чтобы не блокировать поток
             Dispatcher.BeginInvoke(new Action(() =>
             {
-                // Сохраняем путь к записи SIP звонка перед остановкой записи
-                if (_sipService != null && string.IsNullOrEmpty(_sipRecordingFilePath))
-                {
-                    _sipRecordingFilePath = _sipService.CurrentRecordingFilePath;
-                    if (!string.IsNullOrEmpty(_sipRecordingFilePath))
-                    {
-                        MainWindow.Log($"[CallWindow] SIP recording file path saved: {_sipRecordingFilePath}");
-                    }
-                }
+                // SIP call recording removed (WebRTC-only)
                 
                 // Останавливаем ringback tone при завершении звонка
                 _toneGenerator?.Stop();
@@ -523,15 +514,7 @@ namespace Softphone
                 }
                 else if (status.Contains("Call ended") || status.Contains("Hanging up") || status.Contains("Call failed"))
                 {
-                    // Сохраняем путь к записи SIP звонка перед завершением
-                    if (_sipService != null && string.IsNullOrEmpty(_sipRecordingFilePath))
-                    {
-                        _sipRecordingFilePath = _sipService.CurrentRecordingFilePath;
-                        if (!string.IsNullOrEmpty(_sipRecordingFilePath))
-                        {
-                            MainWindow.Log($"[CallWindow] SIP recording file path saved (from status): {_sipRecordingFilePath}");
-                        }
-                    }
+                    // SIP call recording removed (WebRTC-only)
                     
                     // При завершении вызова закрываем окно
                     if (!_isClosing)
@@ -1331,15 +1314,7 @@ namespace Softphone
             // Отписываемся от событий SipService
             if (_sipService != null)
             {
-                // Сохраняем путь к записи SIP звонка перед отправкой деталей
-                if (string.IsNullOrEmpty(_sipRecordingFilePath))
-                {
-                    _sipRecordingFilePath = _sipService.CurrentRecordingFilePath;
-                    if (!string.IsNullOrEmpty(_sipRecordingFilePath))
-                    {
-                        MainWindow.Log($"[CallWindow] SIP recording file path saved (OnClosed): {_sipRecordingFilePath}");
-                    }
-                }
+                // SIP call recording removed (WebRTC-only)
                 
                 _sipService.OnStatusChanged -= UpdateCallStatus;
                 _sipService.OnCallEnded -= OnCallEnded;
@@ -1426,8 +1401,8 @@ namespace Softphone
             
             // Получаем путь к записи
             string? recordingFilePath = CallWindowHelpers.GetRecordingFilePath(
-                _sipRecordingFilePath,
-                _sipService?.CurrentRecordingFilePath,
+                null,
+                null,
                 _webRtcRecorder?.RecordingFilePath,
                 _webRtcRecordingFilePath);
             
@@ -1439,10 +1414,8 @@ namespace Softphone
             }
             else
             {
-                MainWindow.Log($"{logPrefix} SendCallDetails: WARNING - Recording file path is null or empty " +
-                    $"(sipRecordingFilePath={_sipRecordingFilePath ?? "null"}, " +
-                    $"sipService.CurrentRecordingFilePath={_sipService?.CurrentRecordingFilePath ?? "null"}, " +
-                    $"webRtcRecorder.RecordingFilePath={_webRtcRecorder?.RecordingFilePath ?? "null"}, " +
+                MainWindow.Log($"{logPrefix} SendCallDetails: Recording file path is null or empty " +
+                    $"(webRtcRecorder.RecordingFilePath={_webRtcRecorder?.RecordingFilePath ?? "null"}, " +
                     $"webRtcRecordingFilePath={_webRtcRecordingFilePath ?? "null"})");
             }
             

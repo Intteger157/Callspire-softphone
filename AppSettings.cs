@@ -1,10 +1,18 @@
+using Newtonsoft.Json;
+
 namespace Softphone
 {
     public class AppSettings
     {
         public string? SipServer { get; set; }
         public string? SipUsername { get; set; }
+
+        // Legacy plaintext password (kept only for backward compatibility / migration).
+        // Do not persist it when null so settings.json doesn't contain "SipPassword": null.
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
         public string? SipPassword { get; set; }
+
+        public string? SipPasswordEncrypted { get; set; } // Зашифрованный пароль SIP (PBX)
         
         // Audio device settings
         public string? MicrophoneDeviceGuid { get; set; }

@@ -124,8 +124,13 @@
                     </Grid>
                 </Border>
 
-                    <!-- Content Area -->
-                <Grid Grid.Column="1" Background="{StaticResource BackgroundDarkBrush}">
+                <!-- Content Area (wheel scroll, no visible scrollbars) -->
+                <ScrollViewer Grid.Column="1"
+                              Background="{StaticResource BackgroundDarkBrush}"
+                              VerticalScrollBarVisibility="Hidden"
+                              HorizontalScrollBarVisibility="Disabled"
+                              PanningMode="VerticalOnly">
+                <Grid Background="{StaticResource BackgroundDarkBrush}">
                     <!-- About View -->
                     <Grid Name="AboutSettingsView" Visibility="Collapsed" Margin="30,20">
                         <Grid.RowDefinitions>
@@ -654,12 +659,12 @@
                                           Foreground="{StaticResource TextPrimaryBrush}"
                                           FontSize="14"
                                           Margin="0,0,0,4"/>
-                                <TextBlock Text="Record all calls automatically" 
+                                <TextBlock Text="Record WebRTC calls automatically" 
                                           Foreground="{StaticResource TextSecondaryBrush}"
                                           FontSize="12"
                                           Margin="0,0,0,4"/>
-                                <TextBlock Text="⚠ Warning: Call recording may work unstably. Some calls may not be recorded correctly." 
-                                          Foreground="{StaticResource AccentRedBrush}"
+                                <TextBlock Text="Recording is available in WebRTC mode only." 
+                                          Foreground="{StaticResource AccentBlueBrush}"
                                           FontSize="11"
                                           TextWrapping="Wrap"
                                           Opacity="0.85"
@@ -847,6 +852,7 @@
                         </Button>
                     </Grid>
                 </Grid>
+                </ScrollViewer>
             </Grid>
             
             <!-- Hidden WebView2 for WebRTC testing (always in the visual tree) -->

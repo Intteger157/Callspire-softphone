@@ -149,8 +149,9 @@
 
             <!-- Content -->
             <ScrollViewer Grid.Row="1" 
-                         VerticalScrollBarVisibility="Auto" 
+                         VerticalScrollBarVisibility="Hidden" 
                          HorizontalScrollBarVisibility="Disabled"
+                         PanningMode="VerticalOnly"
                          Margin="16">
                 <StackPanel>
                     <!-- Call Information -->

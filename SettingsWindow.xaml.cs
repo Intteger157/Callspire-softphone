@@ -11,6 +11,7 @@ namespace Softphone
 {
     public partial class SettingsWindow : Window
     {
+        private bool _suppressRecordingToggleEvent = false;
         private WebRtcStatusService? _webRtcStatusService;
         private static WebRtcStatusService? _sharedWebRtcStatusService; // Общий экземпляр для всех окон
         
@@ -105,6 +106,10 @@ namespace Softphone
                     UpdateWebRtcStatus();
                 }
                 TestWebRtcConnectionButton.IsEnabled = false;
+
+                // IMPORTANT: Call recording is available only in WebRTC mode.
+                // If WebRTC is turned off, force-disable call recording immediately and persist it.
+                DisableCallRecordingBecauseWebRtcIsOff();
             };
             WebRtcWsUriTextBox.TextChanged += (s, e) => 
             {
@@ -484,8 +489,10 @@ namespace Softphone
                     
                     if (settings != null && EnableCallRecordingCheckBox != null)
                     {
+                        _suppressRecordingToggleEvent = true;
                         EnableCallRecordingCheckBox.IsChecked = settings.EnableCallRecording;
                         UpdateCallRecordingToggleColor();
+                        _suppressRecordingToggleEvent = false;
                     }
                 }
             }
@@ -497,12 +504,51 @@ namespace Softphone
         
         private void EnableCallRecordingCheckBox_Checked(object sender, RoutedEventArgs e)
         {
+            if (_suppressRecordingToggleEvent) return;
+
+            // Recording is supported only in WebRTC mode
+            try
+            {
+                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
+                {
+                    string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    bool useWebRtc = settings?.UseWebRtcAudio ?? false;
+
+                    if (!useWebRtc)
+                    {
+                        CustomMessageBox.Show(
+                            "Call recording is available in WebRTC mode.",
+                            "Recording Not Available",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Information,
+                            this);
+
+                        _suppressRecordingToggleEvent = true;
+                        EnableCallRecordingCheckBox.IsChecked = false;
+                        UpdateCallRecordingToggleColor();
+                        _suppressRecordingToggleEvent = false;
+                        return;
+                    }
+                }
+            }
+            catch
+            {
+                // If we can't read settings, fail safe: don't enable.
+                _suppressRecordingToggleEvent = true;
+                EnableCallRecordingCheckBox.IsChecked = false;
+                UpdateCallRecordingToggleColor();
+                _suppressRecordingToggleEvent = false;
+                return;
+            }
+
             UpdateCallRecordingToggleColor();
             SaveCallRecordingSetting();
         }
         
         private void EnableCallRecordingCheckBox_Unchecked(object sender, RoutedEventArgs e)
         {
+            if (_suppressRecordingToggleEvent) return;
             UpdateCallRecordingToggleColor();
             SaveCallRecordingSetting();
         }
@@ -1033,11 +1079,12 @@ namespace Softphone
                 // Включаем кнопку тестирования если WebRTC включен и настроен
                 if (TestWebRtcConnectionButton != null)
                 {
+                    string? sipPassword = settings != null ? SipPasswordProvider.GetPassword(settings) : null;
                     bool canTest = !string.IsNullOrWhiteSpace(wsUri) && 
                                    wsUri != "wss://pbx.example.com:8089/ws" &&
                                    settings != null && 
                                    !string.IsNullOrWhiteSpace(settings.SipUsername) && 
-                                   !string.IsNullOrWhiteSpace(settings.SipPassword);
+                                   !string.IsNullOrWhiteSpace(sipPassword);
                     TestWebRtcConnectionButton.IsEnabled = canTest;
                 }
                 
@@ -1057,7 +1104,8 @@ namespace Softphone
                     return;
                 }
                 
-                if (settings == null || string.IsNullOrWhiteSpace(settings.SipUsername) || string.IsNullOrWhiteSpace(settings.SipPassword))
+                string? sipPasswordForConfig = settings != null ? SipPasswordProvider.GetPassword(settings) : null;
+                if (settings == null || string.IsNullOrWhiteSpace(settings.SipUsername) || string.IsNullOrWhiteSpace(sipPasswordForConfig))
                 {
                     WebRtcStatusTextBlock.Text = "WebRTC Status: Not configured (SIP credentials missing)";
                     WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
@@ -1126,7 +1174,7 @@ namespace Softphone
                     UseWebRtcAudio = true,
                     WebRtcWsUri = wsUri,
                     SipUsername = settings.SipUsername,
-                    SipPassword = settings.SipPassword,
+                    SipPassword = sipPasswordForConfig,
                     SipServer = settings.SipServer
                 };
                 
@@ -1217,7 +1265,7 @@ namespace Softphone
                 {
                     WsUri = wsUri,
                     SipUri = sipUri,
-                    Password = settings.SipPassword ?? ""
+                    Password = SipPasswordProvider.GetPassword(settings) ?? ""
                 };
                 
                 // Логируем только кратко для тестирования в настройках
@@ -1339,6 +1387,20 @@ namespace Softphone
                 // Сохраняем WebRTC настройки
                 settings.UseWebRtcAudio = UseWebRtcCheckBox.IsChecked ?? false;
                 settings.WebRtcWsUri = WebRtcWsUriTextBox.Text.Trim();
+
+                // IMPORTANT: Recording is available only in WebRTC mode.
+                // When WebRTC is disabled, ensure recording is disabled and the UI toggle is reset.
+                if (!settings.UseWebRtcAudio)
+                {
+                    settings.EnableCallRecording = false;
+                    _suppressRecordingToggleEvent = true;
+                    if (EnableCallRecordingCheckBox != null)
+                    {
+                        EnableCallRecordingCheckBox.IsChecked = false;
+                        UpdateCallRecordingToggleColor();
+                    }
+                    _suppressRecordingToggleEvent = false;
+                }
                 
                 System.Diagnostics.Debug.WriteLine($"SaveGeneralSettings: Saving UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri='{settings.WebRtcWsUri}'");
 
@@ -1375,6 +1437,44 @@ namespace Softphone
             {
                 CustomMessageBox.Show($"Error saving general settings: {ex.Message}", "Error", 
                     MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+
+        private void DisableCallRecordingBecauseWebRtcIsOff()
+        {
+            try
+            {
+                // Update UI toggle (if available)
+                if (EnableCallRecordingCheckBox != null && EnableCallRecordingCheckBox.IsChecked == true)
+                {
+                    _suppressRecordingToggleEvent = true;
+                    EnableCallRecordingCheckBox.IsChecked = false;
+                    UpdateCallRecordingToggleColor();
+                    _suppressRecordingToggleEvent = false;
+                }
+
+                // Persist setting off
+                AppSettings settings;
+                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
+                {
+                    string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+                }
+                else
+                {
+                    settings = new AppSettings();
+                }
+
+                if (settings.EnableCallRecording)
+                {
+                    settings.EnableCallRecording = false;
+                    string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                    File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
+                }
+            }
+            catch
+            {
+                // best-effort; ignore
             }
         }
         
@@ -1420,7 +1520,8 @@ namespace Softphone
                     settings = JsonConvert.DeserializeObject<AppSettings>(json);
                 }
                 
-                if (settings == null || string.IsNullOrWhiteSpace(settings.SipUsername) || string.IsNullOrWhiteSpace(settings.SipPassword))
+                string? sipPassword = SipPasswordProvider.GetPassword(settings);
+                if (settings == null || string.IsNullOrWhiteSpace(settings.SipUsername) || string.IsNullOrWhiteSpace(sipPassword))
                 {
                     CustomMessageBox.Show("Please configure SIP credentials in the 'Connection' tab first.", "WebRTC Test", 
                         MessageBoxButton.OK, MessageBoxImage.Warning, this);
@@ -1466,7 +1567,7 @@ namespace Softphone
                 {
                     WsUri = wsUri,
                     SipUri = sipUri,
-                    Password = settings.SipPassword ?? ""
+                    Password = sipPassword ?? ""
                 };
                 
                 // Используем общий сервис для тестирования (он уже создан в конструкторе)
@@ -1644,13 +1745,15 @@ namespace Softphone
                 {
                     string json = File.ReadAllText(settingsPath);
                     MainWindow.Log($"[SettingsWindow] LoadSettings: File exists, JSON length={json.Length}");
-                    MainWindow.Log($"[SettingsWindow] LoadSettings: JSON content={json}");
                     
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
                     
                     if (settings != null)
                     {
-                        MainWindow.Log($"[SettingsWindow] LoadSettings: Settings loaded - SipServer='{settings.SipServer}', SipUsername='{settings.SipUsername}', SipPassword length={settings.SipPassword?.Length ?? 0}");
+                        // Migrate legacy plaintext password to encrypted (best-effort)
+                        SipPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsPath, settings);
+                        
+                        MainWindow.Log($"[SettingsWindow] LoadSettings: Settings loaded - SipServer='{settings.SipServer}', SipUsername='{settings.SipUsername}', SipPasswordEncrypted={(string.IsNullOrEmpty(settings.SipPasswordEncrypted) ? "empty" : "set")}");
                         
                         // Парсим server:port если есть
                         string server = settings.SipServer ?? "";
@@ -1668,7 +1771,7 @@ namespace Softphone
                         string finalServer = server;
                         string finalPort = port;
                         string finalUsername = settings.SipUsername ?? "";
-                        string finalPassword = settings.SipPassword ?? "";
+                        string finalPassword = SipPasswordProvider.GetPassword(settings) ?? "";
                         
                         // Устанавливаем значения напрямую, так как мы уже в UI потоке (вызвано из Loaded)
                         if (SipServerTextBox != null)
@@ -1797,7 +1900,8 @@ namespace Softphone
                 // Обновляем настройки подключения
                 settings.SipServer = serverWithPort;
                 settings.SipUsername = username;
-                settings.SipPassword = password;
+                settings.SipPasswordEncrypted = TokenEncryption.Encrypt(password);
+                settings.SipPassword = null; // do not persist plaintext
 
                 string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), json);
