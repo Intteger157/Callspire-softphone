@@ -54,7 +54,3 @@ Requirements
 - .NET SDK **8.0**
 - WebView2 Runtime (Evergreen)
 
-Build
-```bash
-dotnet restore
-dotnet build -c Release
