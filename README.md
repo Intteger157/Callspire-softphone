@@ -26,15 +26,15 @@
 ## 🖼️ Screenshots
 
 ### Dial pad
-<img width="1095" height="698" alt="image" src="https://github.com/user-attachments/assets/3213305d-4a80-4913-8435-d47b16811d73" />
+<img width="1100" height="700" alt="image" src="https://github.com/user-attachments/assets/521047d9-706a-4977-b566-9ab33f2330ac" />
 
 
 ### Active call
-<img width="376" height="760" alt="image" src="https://github.com/user-attachments/assets/ebe2c7d9-831b-411d-9866-07141268a3c9" />
+<img width="380" height="750" alt="image" src="https://github.com/user-attachments/assets/7809ed47-d1e9-4a85-a3d1-03975669829f" />
 
 
 ### Call details
-<img width="891" height="690" alt="image" src="https://github.com/user-attachments/assets/39c4d059-5bae-4b6f-8f1f-fe8f202a14b8" />
+<img width="1103" height="807" alt="image" src="https://github.com/user-attachments/assets/06823fe3-25d1-46de-8847-906b50be6381" />
 
 
 ---
