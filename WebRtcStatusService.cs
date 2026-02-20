@@ -28,6 +28,9 @@ namespace Softphone
         private CancellationTokenSource? _cts;
         private bool _disposed = false;
         private bool _isStopped = false; // Флаг для предотвращения множественных остановок
+
+        // Keep delegates so we can unsubscribe (prevents WebView2/event-handler leaks when reattaching views).
+        private EventHandler<CoreWebView2InitializationCompletedEventArgs>? _coreInitCompletedHandler;
         
         // Singleton для Environment
         private static CoreWebView2Environment? _sharedEnv;
@@ -46,8 +49,49 @@ namespace Softphone
         
         public void AttachWebView(WebView2 webView)
         {
+            // If we are reattaching to a different WebView2 (e.g. SettingsWindow reopened),
+            // detach handlers from the previous instance to avoid leaks and duplicate events.
+            try
+            {
+                DetachWebViewHandlersNoThrow();
+            }
+            catch { }
+
             _webView = webView;
             MainWindow.Log("[WebRTC] WebView2 attached from XAML");
+        }
+
+        private void DetachWebViewHandlersNoThrow()
+        {
+            try
+            {
+                if (_webView == null) return;
+
+                try { _webView.NavigationCompleted -= WebView_NavigationCompleted; } catch { }
+
+                try
+                {
+                    if (_coreInitCompletedHandler != null)
+                    {
+                        _webView.CoreWebView2InitializationCompleted -= _coreInitCompletedHandler;
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    var core = _webView.CoreWebView2;
+                    if (core != null)
+                    {
+                        core.WebMessageReceived -= WebView_WebMessageReceived;
+                    }
+                }
+                catch { }
+            }
+            catch
+            {
+                // ignore
+            }
         }
         
         private static async Task<CoreWebView2Environment> GetEnvironmentAsync()
@@ -173,16 +217,11 @@ namespace Softphone
                     return;
                 }
                 
-                // Подписываемся на событие завершения инициализации (до Ensure)
-                _webView.CoreWebView2InitializationCompleted += (s, e) =>
-                {
-                    if (!e.IsSuccess)
-                    {
-                        MainWindow.Log($"[WebRTC] ERROR: WebView2 initialization failed: {e.InitializationException?.Message ?? "Unknown error"}");
-                        UpdateStatus(WebRtcConnectionStatus.Error);
-                    }
-                    // Успешная инициализация логируется в NavigationCompleted
-                };
+                // Подписываемся на событие завершения инициализации (до Ensure).
+                // Держим delegate в поле, чтобы потом корректно отписаться в Dispose/reattach.
+                _coreInitCompletedHandler ??= WebView_CoreWebView2InitializationCompleted;
+                try { _webView.CoreWebView2InitializationCompleted -= _coreInitCompletedHandler; } catch { }
+                _webView.CoreWebView2InitializationCompleted += _coreInitCompletedHandler;
                 
                 // Подписываемся на NavigationCompleted на уровне WebView2 (до Source)
                 _webView.NavigationCompleted += WebView_NavigationCompleted;
@@ -450,7 +489,37 @@ namespace Softphone
             }
             
             // Настраиваем виртуальный хост
-            var webRtcClientPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WebRtcClient");
+            // КРИТИЧНО: В single-file режиме AppDomain.CurrentDomain.BaseDirectory указывает на временную папку распаковки
+            // Используем AppContext.BaseDirectory для правильного пути к exe в single-file режиме
+            // В single-file режиме Assembly.Location всегда пустая строка, поэтому используем AppContext.BaseDirectory
+            string baseDirectory = AppContext.BaseDirectory;
+            
+            // Дополнительная проверка: если AppContext.BaseDirectory указывает на временную папку,
+            // пробуем получить путь к exe через Process.GetCurrentProcess().MainModule.FileName
+            if (baseDirectory.Contains("Temp") || baseDirectory.Contains(".net"))
+            {
+                try
+                {
+                    var processPath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+                    if (!string.IsNullOrEmpty(processPath))
+                    {
+                        var exeDirectory = Path.GetDirectoryName(processPath);
+                        if (!string.IsNullOrEmpty(exeDirectory) && Directory.Exists(exeDirectory))
+                        {
+                            baseDirectory = exeDirectory;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Оставляем AppContext.BaseDirectory
+                }
+            }
+            
+            var webRtcClientPath = Path.Combine(baseDirectory, "WebRtcClient");
+            MainWindow.Log($"[WebRTC] Base directory: {baseDirectory}");
+            MainWindow.Log($"[WebRTC] WebRtcClient path: {webRtcClientPath}");
+            
             if (Directory.Exists(webRtcClientPath) && _webView?.CoreWebView2 != null)
             {
                 MainWindow.Log($"[WebRTC] Setting virtual host mapping: softphone.local -> {webRtcClientPath}");
@@ -466,6 +535,13 @@ namespace Softphone
             else
             {
                 MainWindow.Log($"[WebRTC] WARNING: WebRtcClient folder not found at: {webRtcClientPath}");
+                MainWindow.Log($"[WebRTC] Checking if directory exists: {Directory.Exists(webRtcClientPath)}");
+                
+                // Пробуем альтернативные пути
+                var altPath1 = Path.Combine(AppContext.BaseDirectory, "WebRtcClient");
+                var altPath2 = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WebRtcClient");
+                MainWindow.Log($"[WebRTC] Alternative path 1 (AppContext): {altPath1}, exists: {Directory.Exists(altPath1)}");
+                MainWindow.Log($"[WebRTC] Alternative path 2 (AppDomain): {altPath2}, exists: {Directory.Exists(altPath2)}");
                 // Не устанавливаем Error - возможно, папка появится позже
                 // Статус остается InitializingWebView2
                 // Скрываем обратно при ошибке
@@ -478,11 +554,29 @@ namespace Softphone
             }
             
             // Подписываемся на сообщения
+            try { _webView.CoreWebView2.WebMessageReceived -= WebView_WebMessageReceived; } catch { }
             _webView.CoreWebView2.WebMessageReceived += WebView_WebMessageReceived;
             
             // Статус будет обновлен в InitWebRtcClientAsync -> InitializingJsSIP
             // и затем в WebView_WebMessageReceived при получении ua_started -> ConnectingToWebSocket
             MainWindow.Log("[WebRTC] Status: Loading WebRTC client page...");
+        }
+
+        private void WebView_CoreWebView2InitializationCompleted(object? sender, CoreWebView2InitializationCompletedEventArgs e)
+        {
+            try
+            {
+                if (!e.IsSuccess)
+                {
+                    MainWindow.Log($"[WebRTC] ERROR: WebView2 initialization failed: {e.InitializationException?.Message ?? "Unknown error"}");
+                    UpdateStatus(WebRtcConnectionStatus.Error);
+                }
+                // Success is logged in NavigationCompleted.
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[WebRTC] ERROR in CoreWebView2InitializationCompleted handler: {ex.Message}");
+            }
         }
         
         private async void WebView_NavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs e)
@@ -570,8 +664,6 @@ namespace Softphone
                     MainWindow.Log("[WebRTC] Received empty message from WebView2");
                     return;
                 }
-                
-                MainWindow.Log($"[WebRTC] Received event from WebView2: {json}");
                 
                 WebRtcEvent? evt = null;
                 try
@@ -793,44 +885,74 @@ namespace Softphone
                 
                 // Отменяем текущую инициализацию
                 _cts?.Cancel();
-                
-                // Ждем завершения инициализации (с таймаутом) синхронно
+
+                // Best-effort: don't block UI thread waiting for init; cancel + give it a short window off-UI.
                 if (_initTask != null && !_initTask.IsCompleted)
                 {
                     try
                     {
-                        // Используем синхронное ожидание с таймаутом
-                        var waitTask = Task.WhenAny(_initTask, Task.Delay(2000));
-                        waitTask.Wait(TimeSpan.FromSeconds(2.5)); // Ждем максимум 2.5 секунды
+                        if (!Application.Current.Dispatcher.CheckAccess())
+                        {
+                            _initTask.Wait(TimeSpan.FromMilliseconds(500));
+                        }
                     }
                     catch { }
                 }
                 
                 if (_webView != null)
                 {
+                    // Detach handlers to avoid leaks / duplicate events on reattach.
+                    try { DetachWebViewHandlersNoThrow(); } catch { }
+
                     // Удаляем WebView2 из визуального дерева перед Dispose
                     if (_parentWindow != null && _parentWindow.IsLoaded)
                     {
-                        Application.Current.Dispatcher.Invoke(() =>
+                        try
                         {
-                            if (_parentWindow.Content is System.Windows.Controls.Grid mainGrid)
+                            if (Application.Current.Dispatcher.CheckAccess())
                             {
-                                // Находим и удаляем контейнер с WebView2
-                                for (int i = mainGrid.Children.Count - 1; i >= 0; i--)
+                                if (_parentWindow.Content is System.Windows.Controls.Grid mainGrid)
                                 {
-                                    if (mainGrid.Children[i] is System.Windows.Controls.Grid container && 
-                                        container.Children.Contains(_webView))
+                                    for (int i = mainGrid.Children.Count - 1; i >= 0; i--)
                                     {
-                                        container.Children.Remove(_webView);
-                                        mainGrid.Children.Remove(container);
-                                        break;
+                                        if (mainGrid.Children[i] is System.Windows.Controls.Grid container &&
+                                            container.Children.Contains(_webView))
+                                        {
+                                            container.Children.Remove(_webView);
+                                            mainGrid.Children.Remove(container);
+                                            break;
+                                        }
                                     }
                                 }
                             }
-                        });
+                            else
+                            {
+                                // Don't deadlock: schedule removal and wait briefly at most.
+                                var removeTask = Application.Current.Dispatcher.InvokeAsync(() =>
+                                {
+                                    if (_parentWindow?.Content is System.Windows.Controls.Grid mainGrid)
+                                    {
+                                        for (int i = mainGrid.Children.Count - 1; i >= 0; i--)
+                                        {
+                                            if (mainGrid.Children[i] is System.Windows.Controls.Grid container &&
+                                                _webView != null &&
+                                                container.Children.Contains(_webView))
+                                            {
+                                                container.Children.Remove(_webView);
+                                                mainGrid.Children.Remove(container);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }, DispatcherPriority.Background);
+
+                                try { removeTask.Task.Wait(TimeSpan.FromMilliseconds(500)); } catch { }
+                            }
+                        }
+                        catch { }
                     }
                     
-                    _webView.Dispose();
+                    try { _webView.Dispose(); } catch { }
                     _webView = null;
                 }
                 

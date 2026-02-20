@@ -26,6 +26,14 @@ namespace Softphone
         WebRtc
     }
 
+    public enum AmoCrmUploadStatus
+    {
+        NotUploaded,    // Не загружено (по умолчанию)
+        Uploaded,       // Успешно загружено
+        Cancelled,      // Отменено пользователем (закрыл окно выбора лида)
+        Failed          // Ошибка загрузки
+    }
+
     /// <summary>
     /// Контекст звонка с информацией о транспорте и идентификаторах
     /// </summary>
@@ -36,14 +44,19 @@ namespace Softphone
         public string? WebRtcSessionId { get; init; }
         public string RemoteNumber { get; init; } = "";
         public DateTime StartedAt { get; init; }
+        public long? AmoCrmLeadId { get; init; } // ID лида в AmoCRM, если звонок инициирован из браузера
         
-        public CallContext(CallTransport transport, string remoteNumber, DateTime startedAt, string? sipCallId = null, string? webRtcSessionId = null)
+        public CallContext(CallTransport transport, string remoteNumber, DateTime startedAt, string? sipCallId = null, string? webRtcSessionId = null, long? amoCrmLeadId = null)
         {
             Transport = transport;
             RemoteNumber = remoteNumber;
             StartedAt = startedAt;
             SipCallId = sipCallId;
             WebRtcSessionId = webRtcSessionId;
+            AmoCrmLeadId = amoCrmLeadId;
+            
+            // Логируем создание контекста с leadId для диагностики
+            MainWindow.Log($"[CallContext] Created: Transport={transport}, RemoteNumber={remoteNumber}, AmoCrmLeadId={amoCrmLeadId?.ToString() ?? "null"}");
         }
     }
 
@@ -69,6 +82,9 @@ namespace Softphone
         public CallEndedBy EndedBy { get; set; } = CallEndedBy.Unknown; // Кто завершил звонок
         public List<string> TechnicalDetails { get; set; } = new List<string>(); // Технические детали из логов
         public string? RecordingFilePath { get; set; } // Путь к файлу записи звонка
+        public long? AmoCrmLeadId { get; set; } // ID лида в AmoCRM/Kommo, к которому прикреплён звонок
+        public AmoCrmUploadStatus AmoCrmUploadStatus { get; set; } = AmoCrmUploadStatus.NotUploaded; // Статус загрузки записи в AmoCRM
+        public string? AmoCrmUploadReason { get; set; } // Причина статуса (например, "File not found", "User cancelled", "Upload failed: ...")
         
         // На будущее: можно добавить
         // public string? AudioCodec { get; set; } // opus / pcmu / g722

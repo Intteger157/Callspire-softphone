@@ -16,6 +16,7 @@ namespace Softphone
         public WebRtcAudioDeviceDialog(List<WebRtcAudioDevice> inputs, List<WebRtcAudioDevice> outputs)
         {
             InitializeComponent();
+            NativeWindowAppearanceManager.Attach(this);
             _inputs = inputs;
             _outputs = outputs;
             

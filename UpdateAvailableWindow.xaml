@@ -4,17 +4,17 @@
         xmlns:ic="clr-namespace:FluentIcons.Wpf;assembly=FluentIcons.Wpf"
         Title="Update Available" Height="400" Width="550"
         WindowStyle="None" 
-        AllowsTransparency="True"
+        AllowsTransparency="False"
         Background="Transparent"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner">
     
-    <Border Background="{StaticResource BackgroundDarkBrush}" 
-            CornerRadius="8" 
-            BorderBrush="{StaticResource BorderBrush}" 
-            BorderThickness="1"
-            ClipToBounds="True">
-        <Grid>
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Border x:Name="WindowSurface"
+                Background="{DynamicResource BackgroundDarkBrush}" 
+                CornerRadius="16" 
+                ClipToBounds="True">
+            <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -23,8 +23,11 @@
             </Grid.RowDefinitions>
 
             <!-- Title Bar -->
-            <Border Grid.Row="0" Background="{StaticResource BackgroundMediumBrush}" 
-                    CornerRadius="8,8,0,0" ClipToBounds="True">
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}" 
+                    CornerRadius="16,16,0,0"
+                    ClipToBounds="True">
                 <Grid MouseDown="TitleBar_MouseDown">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -32,29 +35,18 @@
                     </Grid.ColumnDefinitions>
                     <StackPanel Grid.Column="0" Orientation="Horizontal" Margin="16,12,0,12">
                         <ic:SymbolIcon Symbol="ArrowDownload" Width="20" Height="20" IconVariant="Regular" 
-                                       Foreground="{StaticResource AccentBlueBrush}" 
+                                       Foreground="{DynamicResource AccentBlueBrush}" 
                                        VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <TextBlock Text="Update Available" 
                                   FontSize="16" FontWeight="SemiBold" 
-                                  Foreground="{StaticResource TextPrimaryBrush}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   VerticalAlignment="Center"/>
                     </StackPanel>
-                    <Button Grid.Column="1" Content="✕" Width="46" Height="36" 
-                           Background="Transparent" Foreground="{StaticResource TextSecondaryBrush}"
-                           BorderThickness="0" Click="CloseButton_Click"
-                           FontSize="16" Cursor="Hand">
-                        <Button.Style>
-                            <Style TargetType="Button">
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Style.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="{StaticResource AccentRedBrush}"/>
-                                        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Button.Style>
-                    </Button>
+                    <Button Grid.Column="1"
+                            Content="✕"
+                            Click="CloseButton_Click"
+                            Style="{DynamicResource TitleBarCloseButtonStyle}"
+                            Height="36"/>
                 </Grid>
             </Border>
 
@@ -70,18 +62,18 @@
                               Text="A new version is available!"
                               FontSize="16"
                               FontWeight="SemiBold"
-                              Foreground="{StaticResource TextPrimaryBrush}"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
                               Margin="0,0,0,16"
                               TextWrapping="Wrap"/>
                     
                     <TextBlock Name="CurrentVersionTextBlock"
                               FontSize="13"
-                              Foreground="{StaticResource TextSecondaryBrush}"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
                               Margin="0,0,0,4"/>
                     
                     <TextBlock Name="LatestVersionTextBlock"
                               FontSize="13"
-                              Foreground="{StaticResource TextSecondaryBrush}"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
                               Margin="0,0,0,12"/>
                     
                     <!-- Admin Warning -->
@@ -92,7 +84,7 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="⚠" 
                                       FontSize="16"
-                                      Foreground="{StaticResource AccentRedBrush}"
+                                      Foreground="{DynamicResource AccentRedBrush}"
                                       VerticalAlignment="Center"
                                       Margin="0,0,8,0"/>
                             <TextBlock Text="Administrator rights may be required for update installation."
@@ -108,17 +100,17 @@
                               Text="Release notes:"
                               FontSize="13"
                               FontWeight="SemiBold"
-                              Foreground="{StaticResource TextPrimaryBrush}"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
                               Margin="0,0,0,8"/>
                     
-                    <Border Background="{StaticResource BackgroundMediumBrush}"
+                    <Border Background="{DynamicResource BackgroundMediumBrush}"
                             CornerRadius="6"
-                            BorderBrush="{StaticResource BorderBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
                             BorderThickness="1"
                             Padding="12">
                         <TextBlock Name="ReleaseNotesContentTextBlock"
                                   FontSize="12"
-                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  Foreground="{DynamicResource TextSecondaryBrush}"
                                   TextWrapping="Wrap"/>
                     </Border>
                 </StackPanel>
@@ -128,7 +120,7 @@
             <StackPanel Grid.Row="2" Name="DownloadProgressPanel" Visibility="Collapsed" Margin="24,0,24,12">
                 <TextBlock Name="DownloadStatusTextBlock"
                           FontSize="12"
-                          Foreground="{StaticResource TextSecondaryBrush}"
+                          Foreground="{DynamicResource TextSecondaryBrush}"
                           Margin="0,0,0,8"
                           TextWrapping="Wrap"/>
                 <ProgressBar Name="DownloadProgressBar"
@@ -136,12 +128,12 @@
                              Minimum="0"
                              Maximum="100"
                              Value="0"
-                             Background="{StaticResource BackgroundMediumBrush}"
-                             Foreground="{StaticResource AccentBlueBrush}"/>
+                             Background="{DynamicResource BackgroundMediumBrush}"
+                             Foreground="{DynamicResource AccentBlueBrush}"/>
             </StackPanel>
 
             <!-- Buttons -->
-            <Border Grid.Row="3" Background="{StaticResource BackgroundMediumBrush}" 
+            <Border Grid.Row="3" Background="{DynamicResource BackgroundMediumBrush}" 
                     CornerRadius="0,0,8,8" Padding="16">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -152,8 +144,8 @@
                     
                     <Button Grid.Column="1" Name="LaterButton"
                            Content="Update Later"
-                           Background="{StaticResource BackgroundDarkBrush}"
-                           Foreground="{StaticResource TextPrimaryBrush}"
+                           Background="{DynamicResource BackgroundDarkBrush}"
+                           Foreground="{DynamicResource TextPrimaryBrush}"
                            BorderThickness="0"
                            Padding="20,8"
                            FontSize="13"
@@ -174,7 +166,7 @@
                                             </Border>
                                             <ControlTemplate.Triggers>
                                                 <Trigger Property="IsMouseOver" Value="True">
-                                                    <Setter Property="Background" Value="{StaticResource HoverBackgroundBrush}"/>
+                                                    <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
                                                 </Trigger>
                                             </ControlTemplate.Triggers>
                                         </ControlTemplate>
@@ -186,7 +178,7 @@
                     
                     <Button Grid.Column="2" Name="UpdateButton"
                            Content="Update Now"
-                           Background="{StaticResource AccentBlueBrush}"
+                           Background="{DynamicResource AccentBlueBrush}"
                            Foreground="White"
                            BorderThickness="0"
                            Padding="20,8"
@@ -218,7 +210,15 @@
                     </Button>
                 </Grid>
             </Border>
-        </Grid>
-    </Border>
+            </Grid>
+        </Border>
+
+        <Border x:Name="WindowStroke"
+                Background="Transparent"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                IsHitTestVisible="False"/>
+    </Grid>
 </Window>
 

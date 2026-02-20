@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
@@ -52,6 +53,7 @@ namespace Softphone
         Task MakeCallAsync(string number);
         Task AnswerAsync(string? sessionId = null);
         Task HangupAsync(string? sessionId = null);
+        Task SetHoldAsync(bool hold, string? sessionId = null);
         Task ResetEngineAsync();
     }
 
@@ -62,6 +64,9 @@ namespace Softphone
     {
         private readonly WebView2 _webView;
         private bool _initialized = false;
+        private static readonly TimeSpan DefaultScriptTimeout = TimeSpan.FromSeconds(6);
+        private static readonly TimeSpan HeartbeatScriptTimeout = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan StatsScriptTimeout = TimeSpan.FromSeconds(3);
 
         public event Action<string>? EngineEvent;
 
@@ -89,10 +94,12 @@ namespace Softphone
                 if (!System.Windows.Application.Current.Dispatcher.CheckAccess())
                 {
                     MainWindow.Log("[WebRtcEngineHost] WARNING: Not on UI thread, switching...");
-                    await System.Windows.Application.Current.Dispatcher.InvokeAsync(async () =>
-                    {
-                        await EnsureCoreWebView2WithTimeoutAsync(env);
-                    });
+                    // IMPORTANT: don't pass an async lambda to InvokeAsync without unwrapping;
+                    // otherwise we'd only await the delegate *scheduling*, not its completion.
+                    await System.Windows.Application.Current.Dispatcher
+                        .InvokeAsync(() => EnsureCoreWebView2WithTimeoutAsync(env))
+                        .Task
+                        .Unwrap();
                 }
                 else
                 {
@@ -136,7 +143,37 @@ namespace Softphone
                 MainWindow.Log("[WebRtcEngineHost] PermissionRequested handler subscribed");
                 
                 // Настраиваем виртуальный хост
-                var webRtcClientPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WebRtcClient");
+                // КРИТИЧНО: В single-file режиме AppDomain.CurrentDomain.BaseDirectory указывает на временную папку распаковки
+                // Используем AppContext.BaseDirectory для правильного пути к exe в single-file режиме
+                // В single-file режиме Assembly.Location всегда пустая строка, поэтому используем AppContext.BaseDirectory
+                string baseDirectory = AppContext.BaseDirectory;
+                
+                // Дополнительная проверка: если AppContext.BaseDirectory указывает на временную папку,
+                // пробуем получить путь к exe через Process.GetCurrentProcess().MainModule.FileName
+                if (baseDirectory.Contains("Temp") || baseDirectory.Contains(".net"))
+                {
+                    try
+                    {
+                        var processPath = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName;
+                        if (!string.IsNullOrEmpty(processPath))
+                        {
+                            var exeDirectory = System.IO.Path.GetDirectoryName(processPath);
+                            if (!string.IsNullOrEmpty(exeDirectory) && System.IO.Directory.Exists(exeDirectory))
+                            {
+                                baseDirectory = exeDirectory;
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        // Оставляем AppContext.BaseDirectory
+                    }
+                }
+                
+                var webRtcClientPath = System.IO.Path.Combine(baseDirectory, "WebRtcClient");
+                MainWindow.Log($"[WebRtcEngineHost] Base directory: {baseDirectory}");
+                MainWindow.Log($"[WebRtcEngineHost] WebRtcClient path: {webRtcClientPath}");
+                
                 if (System.IO.Directory.Exists(webRtcClientPath))
                 {
                     MainWindow.Log($"[WebRtcEngineHost] Setting virtual host mapping: softphone.local -> {webRtcClientPath}");
@@ -149,6 +186,13 @@ namespace Softphone
                 else
                 {
                     MainWindow.Log($"[WebRtcEngineHost] ERROR: WebRtcClient directory not found: {webRtcClientPath}");
+                    MainWindow.Log($"[WebRtcEngineHost] Checking if directory exists: {System.IO.Directory.Exists(webRtcClientPath)}");
+                    
+                    // Пробуем альтернативные пути
+                    var altPath1 = System.IO.Path.Combine(AppContext.BaseDirectory, "WebRtcClient");
+                    var altPath2 = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "WebRtcClient");
+                    MainWindow.Log($"[WebRtcEngineHost] Alternative path 1 (AppContext): {altPath1}, exists: {System.IO.Directory.Exists(altPath1)}");
+                    MainWindow.Log($"[WebRtcEngineHost] Alternative path 2 (AppDomain): {altPath2}, exists: {System.IO.Directory.Exists(altPath2)}");
                 }
 
                 // Подписываемся на сообщения ДО загрузки страницы
@@ -161,6 +205,10 @@ namespace Softphone
                     }
                 };
                 MainWindow.Log("[WebRtcEngineHost] WebMessageReceived handler subscribed");
+                
+                // КРИТИЧНО: Для перехвата console.log из JavaScript используем DevTools Protocol
+                // Но это требует дополнительной настройки. Вместо этого полагаемся на postMessage события (js_log)
+                // которые уже реализованы в phone.js через sendEvent('js_log', { message: ... })
 
                 // Ждем загрузки страницы перед установкой флага _initialized
                 // ВАЖНО: подписываемся ДО установки Source, иначе событие может быть пропущено
@@ -358,14 +406,94 @@ namespace Softphone
                             number = numberProp?.GetValue(command)?.ToString() ?? "";
                         }
                         MainWindow.Log($"[WebRtcEngineHost] SendAsync: Sending makeCall command for number '{number}'");
-                        script = $"window.SoftphoneWebRtc.makeCall('{number}');";
+                        // КРИТИЧНО: Очищаем все старые сессии перед новым звонком для предотвращения блокировок
+                        script = $"window.SoftphoneWebRtc.cleanupSessions(); window.SoftphoneWebRtc.makeCall('{number}');";
                         MainWindow.Log($"[WebRtcEngineHost] SendAsync: Script prepared: {script}");
+                        break;
+                    case "cleanupSessions":
+                        script = "window.SoftphoneWebRtc.cleanupSessions();";
                         break;
                     case "answer":
                         script = "window.SoftphoneWebRtc.answer();";
                         break;
                     case "hangup":
-                        script = "window.SoftphoneWebRtc.hangup();";
+                        // КРИТИЧНО: Передаем sessionId в hangup для правильного завершения сессии
+                        string? hangupSessionId = null;
+                        if (command is Dictionary<string, object> hangupDict && hangupDict.TryGetValue("sessionId", out var hangupSessionIdObj))
+                        {
+                            hangupSessionId = hangupSessionIdObj?.ToString() ?? "";
+                        }
+                        else
+                        {
+                            var hangupCmdType = command.GetType();
+                            var sessionIdProp = hangupCmdType.GetProperty("sessionId");
+                            hangupSessionId = sessionIdProp?.GetValue(command)?.ToString() ?? "";
+                        }
+                        
+                        if (!string.IsNullOrEmpty(hangupSessionId))
+                        {
+                            // Экранируем sessionId для JavaScript
+                            var escapedSid = hangupSessionId.Replace("\\", "\\\\").Replace("'", "\\'");
+                            script = $"window.SoftphoneWebRtc.hangup('{escapedSid}');";
+                        }
+                        else
+                        {
+                            script = "window.SoftphoneWebRtc.hangup();";
+                        }
+                        break;
+                    case "setHold":
+                        bool holdValue = false;
+                        bool holdFound = false;
+                        string? holdSessionId = null;
+
+                        if (command is Dictionary<string, object> holdDictCmd)
+                        {
+                            if (holdDictCmd.TryGetValue("hold", out var holdObj))
+                            {
+                                holdValue = Convert.ToBoolean(holdObj);
+                                holdFound = true;
+                            }
+                            if (holdDictCmd.TryGetValue("sessionId", out var sidObj))
+                            {
+                                holdSessionId = sidObj?.ToString();
+                            }
+                        }
+                        else
+                        {
+                            var holdCmdType = command.GetType();
+                            var holdProp = holdCmdType.GetProperty("hold");
+                            if (holdProp != null)
+                            {
+                                var v = holdProp.GetValue(command);
+                                if (v != null)
+                                {
+                                    holdValue = Convert.ToBoolean(v);
+                                    holdFound = true;
+                                }
+                            }
+                            var sidProp = holdCmdType.GetProperty("sessionId");
+                            if (sidProp != null)
+                            {
+                                holdSessionId = sidProp.GetValue(command)?.ToString();
+                            }
+                        }
+
+                        if (!holdFound)
+                        {
+                            MainWindow.Log("[WebRtcEngineHost] SendAsync: setHold command missing 'hold' property/key");
+                            return;
+                        }
+
+                        if (!string.IsNullOrEmpty(holdSessionId))
+                        {
+                            // Escape for JS string literal
+                            var escapedSid = holdSessionId.Replace("\\", "\\\\").Replace("'", "\\'");
+                            script = $"window.SoftphoneWebRtc.setHold({holdValue.ToString().ToLowerInvariant()}, '{escapedSid}');";
+                        }
+                        else
+                        {
+                            script = $"window.SoftphoneWebRtc.setHold({holdValue.ToString().ToLowerInvariant()});";
+                        }
                         break;
                     case "resetEngine":
                         script = "window.SoftphoneWebRtc.resetEngine();";
@@ -375,6 +503,47 @@ namespace Softphone
                         break;
                     case "getStats":
                         script = "window.SoftphoneWebRtc.getStats();";
+                        break;
+                    case "checkCallActivity":
+                        string? checkSessionId = null;
+                        if (command is Dictionary<string, object> checkDict && checkDict.TryGetValue("sessionId", out var sessionIdObj))
+                        {
+                            checkSessionId = sessionIdObj?.ToString() ?? "";
+                        }
+                        else
+                        {
+                            var checkCmdType = command.GetType();
+                            var sessionIdProp = checkCmdType.GetProperty("sessionId");
+                            checkSessionId = sessionIdProp?.GetValue(command)?.ToString() ?? "";
+                        }
+                        if (!string.IsNullOrEmpty(checkSessionId))
+                        {
+                            var escapedSid = checkSessionId.Replace("\\", "\\\\").Replace("'", "\\'");
+                            script = $"window.SoftphoneWebRtc.checkCallActivity('{escapedSid}');";
+                        }
+                        else
+                        {
+                            script = "window.SoftphoneWebRtc.checkCallActivity();";
+                        }
+                        break;
+                    case "executeScript":
+                        // Выполнение произвольного JavaScript кода (для критичных операций)
+                        if (command is Dictionary<string, object> execDict && execDict.TryGetValue("script", out var scriptObj))
+                        {
+                            script = scriptObj?.ToString() ?? "";
+                        }
+                        else
+                        {
+                            var execCmdType = command.GetType();
+                            var scriptProp = execCmdType.GetProperty("script");
+                            script = scriptProp?.GetValue(command)?.ToString() ?? "";
+                        }
+                        if (string.IsNullOrEmpty(script))
+                        {
+                            MainWindow.Log("[WebRtcEngineHost] SendAsync: executeScript command missing 'script' property");
+                            return;
+                        }
+                        // script уже установлен, будет выполнен ниже
                         break;
                     case "setMute":
                         // Команда setMute приходит как Dictionary с полем mute
@@ -485,7 +654,12 @@ namespace Softphone
                         script.Contains("window.SoftphoneWebRtc.ping()", StringComparison.OrdinalIgnoreCase) ||
                         script.Contains("window.SoftphoneWebRtc.getStats()", StringComparison.OrdinalIgnoreCase);
 
-                    if (!isNoisyHeartbeat)
+                    // Never log initUA script: it includes credentials in JSON.
+                    bool isSensitive =
+                        cmdValue == "initUA" ||
+                        script.Contains("window.SoftphoneWebRtc.initUA(", StringComparison.OrdinalIgnoreCase);
+
+                    if (!isNoisyHeartbeat && !isSensitive)
                     {
                         MainWindow.Log($"[WebRtcEngineHost] SendAsync: Executing script: {script}");
                     }
@@ -495,26 +669,43 @@ namespace Softphone
                         // ВАЖНО: выполнять ExecuteScriptAsync на UI thread
                         // Это гарантирует безопасность при вызове из watchdog или других потоков
                         string? result = null;
+                        var timeout =
+                            cmdValue == "ping" ? HeartbeatScriptTimeout :
+                            cmdValue == "getStats" ? StatsScriptTimeout :
+                            DefaultScriptTimeout;
                         if (!_webView.Dispatcher.CheckAccess())
                         {
                             try
                             {
-                                // Используем Invoke для синхронного выполнения на UI thread
-                                // Внутри вызываем async метод и ждем его завершения
-                                result = _webView.Dispatcher.Invoke(async () =>
-                                {
-                                    try
+                                // IMPORTANT: never block the UI thread by synchronously waiting on ExecuteScriptAsync.
+                                // Use InvokeAsync + Unwrap to keep the UI responsive and avoid deadlocks.
+                                var execTask = _webView.Dispatcher
+                                    .InvokeAsync(async () =>
                                     {
-                                        if (_webView.CoreWebView2 == null)
+                                        try
+                                        {
+                                            if (_webView.CoreWebView2 == null)
+                                                return (string?)null;
+                                            return await _webView.CoreWebView2.ExecuteScriptAsync(script);
+                                        }
+                                        catch (ObjectDisposedException)
+                                        {
+                                            MainWindow.Log("[WebRtcEngineHost] SendAsync: CoreWebView2 is disposed");
                                             return (string?)null;
-                                        return await _webView.CoreWebView2.ExecuteScriptAsync(script);
-                                    }
-                                    catch (ObjectDisposedException)
+                                        }
+                                    })
+                                    .Task
+                                    .Unwrap();
+                                var completed = await Task.WhenAny(execTask, Task.Delay(timeout));
+                                if (completed != execTask)
+                                {
+                                    if (!isNoisyHeartbeat)
                                     {
-                                        MainWindow.Log("[WebRtcEngineHost] SendAsync: CoreWebView2 is disposed");
-                                        return (string?)null;
+                                        MainWindow.Log($"[WebRtcEngineHost] SendAsync: WARNING - ExecuteScriptAsync timed out after {timeout.TotalSeconds:F1}s (cmd={cmdValue})");
                                     }
-                                }).GetAwaiter().GetResult();
+                                    return;
+                                }
+                                result = await execTask;
                             }
                             catch (ObjectDisposedException)
                             {
@@ -528,7 +719,17 @@ namespace Softphone
                             {
                                 if (_webView.CoreWebView2 != null)
                                 {
-                                    result = await _webView.CoreWebView2.ExecuteScriptAsync(script);
+                                    var execTask = _webView.CoreWebView2.ExecuteScriptAsync(script);
+                                    var completed = await Task.WhenAny(execTask, Task.Delay(timeout));
+                                    if (completed != execTask)
+                                    {
+                                        if (!isNoisyHeartbeat)
+                                        {
+                                            MainWindow.Log($"[WebRtcEngineHost] SendAsync: WARNING - ExecuteScriptAsync timed out after {timeout.TotalSeconds:F1}s (cmd={cmdValue})");
+                                        }
+                                        return;
+                                    }
+                                    result = await execTask;
                                 }
                             }
                             catch (ObjectDisposedException)
@@ -584,18 +785,22 @@ namespace Softphone
                     {
                         try
                         {
-                            return _webView.Dispatcher.Invoke(() =>
+                            var t = _webView.Dispatcher.InvokeAsync(() =>
                             {
-                                try
-                                {
-                                    return _webView.CoreWebView2 != null;
-                                }
+                                try { return _webView.CoreWebView2 != null; }
                                 catch (ObjectDisposedException)
                                 {
                                     MainWindow.Log("[WebRtcEngineHost] IsInitialized: WebView2 is disposed");
                                     return false;
                                 }
-                            });
+                            }).Task;
+
+                            // Never block indefinitely waiting for UI thread.
+                            if (!t.Wait(TimeSpan.FromMilliseconds(250)))
+                            {
+                                return false;
+                            }
+                            return t.Result;
                         }
                         catch (ObjectDisposedException)
                         {
@@ -644,10 +849,340 @@ namespace Softphone
         private bool _registered = false;
         private DateTime _lastRegisteredUtc = DateTime.MinValue; // Время последней успешной регистрации
         private DateTime _lastPongTimeUtc = DateTime.MinValue;
+        private DateTime _lastEngineEventUtc = DateTime.MinValue; // any event from JS (fallback liveness)
         private bool _isResetting = false;
         private DateTime _lastResetUtc = DateTime.MinValue;
         private readonly ConcurrentDictionary<string, DateTime> _incomingCallDedup = new();
         private System.Threading.Timer? _watchdogTimer;
+        private int _watchdogInFlight = 0;
+        private int _reconnectInFlight = 0;
+
+        // Auto-reconnect (keeps WebRTC "ironclad" connected after network blips).
+        private int _reinitInFlight = 0; // prevents duplicate initUA loops (e.g., Save&Connect + timer)
+        private DateTime _suppressAutoReconnectUntilUtc = DateTime.MinValue; // grace window after initUA
+        private DateTime _lastInitUaSentUtc = DateTime.MinValue;
+
+        private sealed class UaConfigSnapshot
+        {
+            public string WsUri { get; init; } = "";
+            public string SipUri { get; init; } = "";
+            public string Username { get; init; } = "";
+            public string Password { get; init; } = ""; // in-memory only
+        }
+
+        private UaConfigSnapshot? _lastUaConfig;
+        private System.Threading.Timer? _reconnectTimer;
+        private int _reconnectAttempt = 0;
+        private DateTime _nextReconnectUtc = DateTime.MinValue;
+        private readonly Random _rng = new Random();
+
+        public bool AutoReconnectEnabled { get; set; } = true;
+        /// <summary>
+        /// Управляет объемом логирования WebRTC.
+        /// При false подавляются подробные js_log и часть детализированных сообщений.
+        /// По умолчанию выключено, чтобы логи не захламляли файл — для отладки можно включить вручную.
+        /// </summary>
+        public bool DebugEnabled { get; set; } = false;
+
+        private void CancelScheduledReconnectLocked(string reason)
+        {
+            try
+            {
+                _nextReconnectUtc = DateTime.MinValue;
+                // Stop any pending timer firing; keep the timer instance for reuse.
+                _reconnectTimer?.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
+            }
+            catch { }
+        }
+
+        private void TriggerReconnectNow(string reason)
+        {
+            // Fire-and-forget reconnect attempt with reentrancy guard.
+            UaConfigSnapshot? cfg;
+            WebRtcEngineHost? engine;
+            WebRtcCallState state;
+            bool canAttempt;
+            var nowUtc = DateTime.UtcNow;
+
+            lock (_lock)
+            {
+                cfg = _lastUaConfig;
+                engine = _engine;
+                state = _state;
+                canAttempt =
+                    AutoReconnectEnabled &&
+                    cfg != null &&
+                    engine != null &&
+                    !_isResetting &&
+                    state != WebRtcCallState.Connected &&
+                    !_registered &&
+                    nowUtc >= _suppressAutoReconnectUntilUtc;
+            }
+
+            if (!canAttempt) return;
+
+            if (Interlocked.Exchange(ref _reconnectInFlight, 1) == 1)
+            {
+                return;
+            }
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    MainWindow.Log($"[WebRtcService] AutoReconnect: starting immediate attempt (reason={reason})");
+                    await TryReconnectAsync();
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[WebRtcService] AutoReconnect: immediate attempt failed: {ex.Message}");
+                }
+                finally
+                {
+                    Interlocked.Exchange(ref _reconnectInFlight, 0);
+                }
+            });
+        }
+
+        private void ScheduleReconnect(string reason, bool immediate = false)
+        {
+            UaConfigSnapshot? cfg;
+            WebRtcCallState state;
+            bool enginePresent;
+            string? activeSessionId;
+            WebRtcEngineHost? engine;
+
+            lock (_lock)
+            {
+                if (DateTime.UtcNow < _suppressAutoReconnectUntilUtc)
+                {
+                    // We are in a grace window right after initUA; ignore transient unregistered/disconnect events.
+                    return;
+                }
+
+                cfg = _lastUaConfig;
+                state = _state;
+                activeSessionId = _activeSessionId;
+                // After sleep/resume, IsInitialized can transiently report false; don't block reconnect on that.
+                enginePresent = _engine != null;
+                engine = _engine;
+
+                // Don't spam if disabled or we have no credentials yet.
+                if (!AutoReconnectEnabled || cfg == null || string.IsNullOrEmpty(cfg.WsUri) || string.IsNullOrEmpty(cfg.SipUri) || string.IsNullOrEmpty(cfg.Username) || string.IsNullOrEmpty(cfg.Password))
+                {
+                    return;
+                }
+
+                // Don't kill an active connected call: wait for call to end.
+                // Проверяем реальную активность звонка асинхронно вне lock блока
+                if (state == WebRtcCallState.Connected || state == WebRtcCallState.Calling || state == WebRtcCallState.Ringing)
+                {
+                    // Проверяем реальную активность звонка асинхронно (вне lock)
+                    _ = CheckCallActivityAndScheduleReconnect(reason, immediate, state, activeSessionId, engine);
+                    return; // Временно откладываем переподключение до проверки активности
+                }
+
+                // If we are already registered/ready, do not schedule reconnect loops.
+                if (_registered)
+                {
+                    return;
+                }
+
+                // If engine isn't initialized, we can't do anything here; MainWindow initialization will handle it.
+                if (!enginePresent)
+                {
+                    return;
+                }
+
+                // "Immediate" still gets a tiny delay to prevent tight reconnect loops on flapping networks/servers.
+                var delay = immediate ? TimeSpan.FromMilliseconds(250) : ComputeReconnectDelayLocked();
+                var dueUtc = DateTime.UtcNow + delay;
+
+                // If we already scheduled a sooner reconnect, keep it.
+                if (_nextReconnectUtc != DateTime.MinValue && _nextReconnectUtc <= dueUtc)
+                {
+                    return;
+                }
+
+                _nextReconnectUtc = dueUtc;
+
+                _reconnectTimer ??= new System.Threading.Timer(_ =>
+                {
+                    // Never overlap reconnect attempts (timer can re-enter if init is slow).
+                    TriggerReconnectNow("timer");
+                });
+
+                _reconnectTimer.Change(delay, System.Threading.Timeout.InfiniteTimeSpan);
+
+                MainWindow.Log($"[WebRtcService] AutoReconnect: scheduled in {delay.TotalSeconds:F1}s (attempt={_reconnectAttempt}, state={state}, reason={reason})");
+            }
+        }
+
+        // Асинхронная проверка активности звонка перед переподключением
+        private async Task CheckCallActivityAndScheduleReconnect(string reason, bool immediate, WebRtcCallState state, string? activeSessionId, WebRtcEngineHost? engine)
+        {
+            bool isActuallyActive = false;
+            
+            try
+            {
+                if (engine != null && engine.IsInitialized && !string.IsNullOrEmpty(activeSessionId))
+                {
+                    // Используем SendAsync для проверки активности через новую команду
+                    var checkCommand = new { cmd = "checkCallActivity", sessionId = activeSessionId };
+                    
+                    // Создаем TaskCompletionSource для получения результата
+                    var tcs = new TaskCompletionSource<bool>();
+                    
+                    // Подписываемся на событие один раз для получения результата
+                    Action<WebRtcEventDto>? handler = null;
+                    handler = (dto) =>
+                    {
+                        if (dto.Type == "call_activity_check" && dto.SessionId == activeSessionId)
+                        {
+                            if (dto.Data.HasValue && dto.Data.Value.ValueKind == System.Text.Json.JsonValueKind.Object)
+                            {
+                                if (dto.Data.Value.TryGetProperty("active", out var activeEl))
+                                {
+                                    isActuallyActive = activeEl.GetBoolean();
+                                }
+                            }
+                            Event -= handler;
+                            tcs.TrySetResult(true);
+                        }
+                    };
+                    
+                    Event += handler;
+                    
+                    // Отправляем команду проверки
+                    await engine.SendAsync(checkCommand);
+                    
+                    // Ждем результат с таймаутом
+                    var timeoutTask = Task.Delay(TimeSpan.FromSeconds(2));
+                    var completedTask = await Task.WhenAny(tcs.Task, timeoutTask);
+                    
+                    if (completedTask == timeoutTask)
+                    {
+                        Event -= handler;
+                        MainWindow.Log($"[WebRtcService] CheckCallActivity: Timeout waiting for activity check result");
+                        // При таймауте считаем звонок активным для безопасности
+                        isActuallyActive = true;
+                    }
+                    else
+                    {
+                        // Результат получен через событие, isActuallyActive уже установлен в handler
+                        await tcs.Task; // Ждем завершения обработки
+                    }
+                }
+            }
+            catch (Exception checkEx)
+            {
+                MainWindow.Log($"[WebRtcService] CheckCallActivity: Error checking call activity: {checkEx.Message}");
+                // В случае ошибки проверки, полагаемся на состояние из кода
+                isActuallyActive = true; // Безопаснее предположить, что звонок активен
+            }
+            
+            if (isActuallyActive)
+            {
+                MainWindow.Log($"[WebRtcService] CheckCallActivity: Active call detected (state={state}, sessionId={activeSessionId}), deferring reconnect");
+                return; // Не переподключаемся, если звонок активен
+            }
+            else
+            {
+                MainWindow.Log($"[WebRtcService] CheckCallActivity: Call state is {state} but call is NOT actually active, proceeding with reconnect");
+                // Звонок не активен реально, можно переподключаться
+                ScheduleReconnect(reason, immediate);
+            }
+        }
+
+        private TimeSpan ComputeReconnectDelayLocked()
+        {
+            // Exponential-ish backoff with cap + jitter.
+            // 0, 1, 2, 4, 8, 15, 30, 30, ...
+            int attempt = Math.Max(0, _reconnectAttempt);
+            int baseSeconds = attempt switch
+            {
+                // Avoid 0s loops; even the first retry should yield a small pause to prevent reconnect storms.
+                0 => 1,
+                1 => 1,
+                2 => 2,
+                3 => 4,
+                4 => 8,
+                5 => 15,
+                _ => 30
+            };
+
+            // ±20% jitter
+            double jitter = 0.8 + (_rng.NextDouble() * 0.4);
+            var seconds = Math.Min(30, Math.Max(0, (int)Math.Round(baseSeconds * jitter)));
+            return TimeSpan.FromSeconds(seconds);
+        }
+
+        private async Task TryReconnectAsync()
+        {
+            UaConfigSnapshot? cfg;
+            WebRtcEngineHost? engine;
+            WebRtcCallState state;
+            bool shouldReconnect;
+            int attemptSnapshot;
+
+            lock (_lock)
+            {
+                cfg = _lastUaConfig;
+                engine = _engine;
+                state = _state;
+                shouldReconnect =
+                    AutoReconnectEnabled &&
+                    cfg != null &&
+                    engine != null &&
+                    !_isResetting &&
+                    state != WebRtcCallState.Connected &&
+                    !_registered &&
+                    DateTime.UtcNow >= _suppressAutoReconnectUntilUtc;
+
+                // Clear schedule marker so subsequent failures can schedule again.
+                _nextReconnectUtc = DateTime.MinValue;
+
+                if (shouldReconnect)
+                {
+                    _reconnectAttempt = Math.Min(_reconnectAttempt + 1, 1000);
+                }
+                attemptSnapshot = _reconnectAttempt;
+            }
+
+            if (!shouldReconnect || cfg == null)
+            {
+                return;
+            }
+
+            try
+            {
+                MainWindow.Log($"[WebRtcService] AutoReconnect: attempting initUA (attempt={_reconnectAttempt}, state={state}, wsUri={(string.IsNullOrEmpty(cfg.WsUri) ? "empty" : "set")}, sipUri={cfg.SipUri})");
+                await ReinitializeUAAsync(cfg.WsUri, cfg.SipUri, cfg.Username, cfg.Password);
+
+                // If no events arrive (e.g., WS down or JS stuck), schedule a follow-up attempt only if
+                // we are still not registered after a short grace period.
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(6));
+                        lock (_lock)
+                        {
+                            if (!_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected && _reconnectAttempt == attemptSnapshot)
+                            {
+                                ScheduleReconnect("post_initUA_check", immediate: false);
+                            }
+                        }
+                    }
+                    catch { }
+                });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[WebRtcService] AutoReconnect: attempt failed: {ex.Message}");
+                ScheduleReconnect("exception", immediate: false);
+            }
+        }
 
         public bool IsReadyForCalls
         {
@@ -710,6 +1245,9 @@ namespace Softphone
         /// </summary>
         public void DetachEngine(bool resetState = true)
         {
+            System.Threading.Timer? watchdogToDispose = null;
+            System.Threading.Timer? reconnectToDispose = null;
+
             lock (_lock)
             {
                 try
@@ -726,6 +1264,16 @@ namespace Softphone
 
                 _engine = null;
 
+                // Stop timers when detaching engine (prevents idle leaks and reconnect loops after switching to SIP).
+                watchdogToDispose = _watchdogTimer;
+                _watchdogTimer = null;
+                reconnectToDispose = _reconnectTimer;
+                _reconnectTimer = null;
+                _nextReconnectUtc = DateTime.MinValue;
+                _reconnectAttempt = 0;
+                System.Threading.Interlocked.Exchange(ref _watchdogInFlight, 0);
+                System.Threading.Interlocked.Exchange(ref _reconnectInFlight, 0);
+
                 if (resetState)
                 {
                     _registered = false;
@@ -734,6 +1282,9 @@ namespace Softphone
                     _state = WebRtcCallState.Idle;
                 }
             }
+
+            try { watchdogToDispose?.Dispose(); } catch { }
+            try { reconnectToDispose?.Dispose(); } catch { }
         }
 
         // Безопасное чтение строки из JsonElement
@@ -756,6 +1307,12 @@ namespace Softphone
         {
             try
             {
+                // Any event from JS indicates the WebView2 runtime is alive (even if pong is missing).
+                lock (_lock)
+                {
+                    _lastEngineEventUtc = DateTime.UtcNow;
+                }
+
                 var evt = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(json);
                 
                 // Поддержка обоих форматов: type и cmd (для совместимости)
@@ -775,21 +1332,61 @@ namespace Softphone
                     return;
                 }
                 
-                // ДИАГНОСТИКА: логируем только важные события (регистрация, ошибки)
-                if (type == "registered" || type == "ua_registered" || type == "reg_failed" || type == "ua_registration_failed" || 
-                    type == "ua_connected" || type == "ws_connected" || type == "error")
+                // Логируем только критичные события (без полного JSON)
+                if (type == "reg_failed" || type == "ua_registration_failed" || type == "error" || type == "ws_disconnected")
                 {
-                    MainWindow.Log($"[WebRtcService] OnEngineEvent: Received JSON: {json}");
-                    MainWindow.Log($"[WebRtcService] OnEngineEvent: Processing event type='{type}'");
+                    MainWindow.Log($"[WebRtcService] Event: {type}");
                 }
                 
-                // Логируем только важные события (регистрация, ошибки, pong, аудио для диагностики)
-                // ВАЖНО: Добавляем "ua_registered" и "ua_connected" для полного логирования
-                if (type == "registered" || type == "ua_registered" || type == "reg_failed" || type == "unregistered" || 
-                    type == "ua_connected" || type == "ws_disconnected" || type == "error" || type == "pong" || 
-                    type == "audio_connected" || type == "audio_track_info")
+                // Обработка события js_log для логирования сообщений из JavaScript
+                // КРИТИЧНО: Всегда логируем js_log с level='critical', даже если DebugEnabled=false
+                if (type == "js_log")
                 {
-                    MainWindow.Log($"[WebRtcService] OnEngineEvent: {type}");
+                    try
+                    {
+                        if (evt.TryGetProperty("data", out var logDataEl) && logDataEl.ValueKind == JsonValueKind.Object)
+                        {
+                            string? logLevel = null;
+                            if (logDataEl.TryGetProperty("level", out var levelEl))
+                            {
+                                logLevel = GetAsString(levelEl);
+                            }
+                            
+                            if (logDataEl.TryGetProperty("message", out var msgEl))
+                            {
+                                string? logMessage = GetAsString(msgEl);
+                                if (!string.IsNullOrEmpty(logMessage))
+                                {
+                                    // КРИТИЧНО: Всегда логируем critical сообщения, остальные только при DebugEnabled
+                                    if (logLevel == "critical" || DebugEnabled)
+                                    {
+                                        MainWindow.Log($"[WebRTC JS] {logMessage}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception logEx)
+                    {
+                        MainWindow.Log($"[WebRtcService] Error processing js_log event: {logEx.Message}");
+                    }
+                }
+                
+                // Логируем только важные события (регистрация, ошибки, аудио для диагностики)
+                // ВАЖНО: Добавляем "ua_registered" и "ua_connected" для полного логирования.
+                // При выключенном DebugEnabled оставляем только самые критичные события.
+                if (type == "registered" || type == "ua_registered" || type == "reg_failed" || type == "unregistered" || 
+                    type == "ua_connected" || type == "ws_disconnected" || type == "error" || 
+                    type == "audio_connected" || type == "audio_playing" || type == "audio_track_info" ||
+                    type == "call_accepted" || type == "call_confirmed")
+                {
+                    if (DebugEnabled ||
+                        type == "error" ||
+                        type == "reg_failed" ||
+                        type == "ws_disconnected")
+                    {
+                        MainWindow.Log($"[WebRtcService] OnEngineEvent: {type}");
+                    }
                 }
                 
                 // Логируем все события записи для отладки (без вывода всего JSON, чтобы не логировать массивы audioData)
@@ -874,6 +1471,9 @@ namespace Softphone
                         case "ua_registered":
                             _registered = true;
                             _lastRegisteredUtc = DateTime.UtcNow;
+                            _reconnectAttempt = 0;
+                            _nextReconnectUtc = DateTime.MinValue;
+                            CancelScheduledReconnectLocked("registered");
                             MainWindow.Log($"[WebRtcService] OnEngineEvent: UA registered ({type}), setting _registered=true, _lastRegisteredUtc={_lastRegisteredUtc:HH:mm:ss.fff}, IsReadyForCalls={IsReadyForCalls}");
                             break;
                         case "reg_failed":
@@ -917,43 +1517,86 @@ namespace Softphone
                                 }
                             }
                             
-                            // Если регистрации не было недавно, сбрасываем статус
+                            // КРИТИЧНО: Если есть активный звонок, проверяем реальную активность перед отменой переподключения
+                            // Активные звонки могут продолжаться даже при временных проблемах с регистрацией
+                            if (_state == WebRtcCallState.Connected || _state == WebRtcCallState.Calling || _state == WebRtcCallState.Ringing)
+                            {
+                                // Проверяем реальную активность звонка асинхронно (вне обработчика события)
+                                var currentState = _state;
+                                var currentSessionId = _activeSessionId;
+                                var currentEngine = _engine;
+                                _ = Task.Run(async () =>
+                                {
+                                    bool isActuallyActive = false;
+                                    try
+                                    {
+                                        if (currentEngine != null && currentEngine.IsInitialized && !string.IsNullOrEmpty(currentSessionId))
+                                        {
+                                            var checkCommand = new { cmd = "checkCallActivity", sessionId = currentSessionId };
+                                            await currentEngine.SendAsync(checkCommand);
+                                            // Результат будет получен через событие call_activity_check
+                                            // Пока что полагаемся на базовую проверку состояния
+                                            isActuallyActive = true; // Безопаснее предположить активность
+                                        }
+                                    }
+                                    catch (Exception checkEx)
+                                    {
+                                        MainWindow.Log($"[WebRtcService] Error checking call activity: {checkEx.Message}");
+                                        isActuallyActive = true; // Безопаснее предположить, что звонок активен
+                                    }
+                                    
+                                    if (!isActuallyActive)
+                                    {
+                                        MainWindow.Log($"[WebRtcService] OnEngineEvent: UA registration failed ({type}) during call (state={currentState}), but call is NOT actually active, proceeding with reconnect");
+                                        ScheduleReconnect(type ?? "reg_failed", immediate: true);
+                                    }
+                                });
+                                
+                                MainWindow.Log($"[WebRtcService] OnEngineEvent: UA registration failed ({type}) during active call (state={_state}), deferring reconnect to avoid call interruption");
+                                // НЕ сбрасываем _registered, чтобы звонок мог продолжаться
+                                // Запланируем переподключение после завершения звонка
+                                dto.Message = regErrorDetails ?? "Registration failed (deferred - active call)";
+                                // НЕ вызываем ScheduleReconnect здесь синхронно - это переинициализирует UA и прервет звонок
+                                break;
+                            }
+                            
+                            // Если регистрации не было недавно и нет активного звонка, сбрасываем статус
                             _registered = false;
                             _lastRegisteredUtc = DateTime.MinValue;
                             MainWindow.Log($"[WebRtcService] OnEngineEvent: UA registration failed ({type})" + 
                                 (string.IsNullOrEmpty(regErrorDetails) ? "" : $" - {regErrorDetails}"));
                             dto.Message = regErrorDetails ?? "Registration failed";
+                            // Auto-reconnect quickly if credentials are known.
+                            // Schedule a reconnect; ScheduleReconnect already dedupes earlier attempts.
+                            // Avoid also triggering an immediate attempt here to prevent reconnect storms.
+                            ScheduleReconnect(type ?? "reg_failed", immediate: true);
                             break;
                         case "unregistered":
                         case "ua_unregistered":
+                            // Ignore transient unregistered events right after an intentional initUA.
+                            if (DateTime.UtcNow < _suppressAutoReconnectUntilUtc)
+                            {
+                                MainWindow.Log("[WebRtcService] AutoReconnect: suppressed (ua_unregistered during initUA grace window)");
+                                break;
+                            }
                             _registered = false;
                             _lastRegisteredUtc = DateTime.MinValue;
                             MainWindow.Log($"[WebRtcService] OnEngineEvent: UA unregistered ({type})");
+                            ScheduleReconnect(type ?? "ua_unregistered", immediate: true);
                             break;
                         case "ws_disconnected":
-                            // ws_disconnected не сбрасывает _registered сразу, если регистрация была недавно
-                            // Это позволяет переподключению WebSocket не сбрасывать состояние готовности
-                            // Увеличиваем окно до 10 секунд для более стабильной работы
-                            if (_lastRegisteredUtc != DateTime.MinValue)
+                            // Ignore transient WS disconnect events right after an intentional initUA.
+                            if (DateTime.UtcNow < _suppressAutoReconnectUntilUtc)
                             {
-                                var secondsSinceRegistration = (DateTime.UtcNow - _lastRegisteredUtc).TotalSeconds;
-                                if (secondsSinceRegistration > 10)
-                                {
-                                    _registered = false;
-                                    MainWindow.Log($"[WebRtcService] OnEngineEvent: ws_disconnected - registration was old ({secondsSinceRegistration:F1}s ago), resetting registered state");
-                                }
-                                else
-                                {
-                                    // Сохраняем статус регистрации при временном отключении WebSocket
-                                    MainWindow.Log($"[WebRtcService] OnEngineEvent: ws_disconnected - keeping registered state (recent registration, {secondsSinceRegistration:F1}s ago)");
-                                }
+                                MainWindow.Log("[WebRtcService] AutoReconnect: suppressed (ws_disconnected during initUA grace window)");
+                                break;
                             }
-                            else
-                            {
-                                // Если регистрации никогда не было или она была сброшена, сбрасываем статус
-                                _registered = false;
-                                MainWindow.Log($"[WebRtcService] OnEngineEvent: ws_disconnected - no recent registration, resetting registered state");
-                            }
+                            // WS disconnect means we are not healthy/ready for calls. Always drop registered state so
+                            // auto-reconnect can proceed deterministically (prevents reconnect loops while "registered=true").
+                            _registered = false;
+                            _lastRegisteredUtc = DateTime.MinValue;
+                            MainWindow.Log($"[WebRtcService] OnEngineEvent: ws_disconnected - resetting registered state");
+                            ScheduleReconnect("ws_disconnected", immediate: true);
                             break;
                         case "incoming":
                             HandleIncomingCall(evt, sessionId, dto);
@@ -1048,7 +1691,8 @@ namespace Softphone
                         case "call_accepted":
                         case "call_confirmed":
                             // Если sessionId не был извлечен из data, пробуем еще раз
-                            if (string.IsNullOrEmpty(sessionId) && evt.TryGetProperty("data", out var acceptedDataEl) && acceptedDataEl.ValueKind == JsonValueKind.Object)
+                            JsonElement acceptedDataEl = default;
+                            if (string.IsNullOrEmpty(sessionId) && evt.TryGetProperty("data", out acceptedDataEl) && acceptedDataEl.ValueKind == JsonValueKind.Object)
                             {
                                 if (acceptedDataEl.TryGetProperty("sessionId", out var acceptedSessionIdEl))
                                 {
@@ -1064,10 +1708,79 @@ namespace Softphone
                                 }
                                 _state = WebRtcCallState.Connected;
                                 MainWindow.Log($"[WebRtcService] OnEngineEvent: {type} for sessionId: {sessionId}");
+                                
+                                // Извлекаем source для логирования
+                                string? source = null;
+                                if (evt.TryGetProperty("data", out acceptedDataEl) && acceptedDataEl.ValueKind == JsonValueKind.Object && acceptedDataEl.TryGetProperty("source", out var sourceEl))
+                                {
+                                    source = GetAsString(sourceEl);
+                                }
+                                if (!string.IsNullOrEmpty(source))
+                                {
+                                    MainWindow.Log($"[WebRtcService] OnEngineEvent: call_accepted source: {source}");
+                                }
+                            }
+                            break;
+                        case "audio_connected":
+                            // КРИТИЧНО: Для исходящих звонков audio_connected означает, что удаленный аудио трек подключен
+                            // Это первый признак принятия звонка - отправляем call_accepted напрямую
+                            if (string.IsNullOrEmpty(sessionId) && evt.TryGetProperty("data", out var audioDataEl) && audioDataEl.ValueKind == JsonValueKind.Object)
+                            {
+                                if (audioDataEl.TryGetProperty("sessionId", out var audioSessionIdEl))
+                                {
+                                    sessionId = GetAsString(audioSessionIdEl);
+                                    dto.SessionId = sessionId;
+                                }
+                            }
+                            
+                            // Если это активная сессия и звонок еще не принят, отправляем call_accepted напрямую
+                            if ((sessionId == _activeSessionId || string.IsNullOrEmpty(_activeSessionId)) && 
+                                (_state == WebRtcCallState.Calling || _state == WebRtcCallState.Ringing))
+                            {
+                                MainWindow.Log($"[WebRtcService] OnEngineEvent: audio_connected for session {sessionId} during calling state, sending call_accepted directly");
+                                
+                                // Отправляем call_accepted напрямую как событие (JavaScript уже должен был отправить, но на всякий случай)
+                                // Создаем событие call_accepted и отправляем его подписчикам
+                                JsonElement? audioConnectedData = null;
+                                if (evt.TryGetProperty("data", out var audioConnectedDataEl))
+                                {
+                                    audioConnectedData = audioConnectedDataEl;
+                                }
+                                
+                                var acceptedDto = new WebRtcEventDto
+                                {
+                                    Type = "call_accepted",
+                                    SessionId = sessionId ?? _activeSessionId,
+                                    Data = audioConnectedData
+                                };
+                                
+                                // Отправляем событие подписчикам
+                                var acceptedHandlers = Event;
+                                if (acceptedHandlers != null)
+                                {
+                                    foreach (var d in acceptedHandlers.GetInvocationList())
+                                    {
+                                        if (d is Action<WebRtcEventDto> h)
+                                        {
+                                            try
+                                            {
+                                                h(acceptedDto);
+                                            }
+                                            catch (Exception cbEx)
+                                            {
+                                                MainWindow.Log($"[WebRtcService] ERROR: WebRTC event subscriber threw for call_accepted: {cbEx.Message}");
+                                            }
+                                        }
+                                    }
+                                }
                             }
                             break;
                         case "call_failed":
                         case "call_ended":
+                            // КРИТИЧНО: Останавливаем все звуки при завершении/неудаче звонка
+                            try { RingtoneService.Instance.Stop(); } catch { }
+                            try { RingbackToneService.Instance.Stop(); } catch { }
+
                             // Если sessionId не был извлечен из data, пробуем еще раз
                             if (string.IsNullOrEmpty(sessionId) && evt.TryGetProperty("data", out var endedDataEl) && endedDataEl.ValueKind == JsonValueKind.Object)
                             {
@@ -1088,6 +1801,7 @@ namespace Softphone
                                 if (failedDataEl.TryGetProperty("cause", out var causeEl))
                                 {
                                     causeStr = GetAsString(causeEl);
+                                    dto.Cause = causeStr;
                                 }
                                 if (failedDataEl.TryGetProperty("originator", out var originatorEl))
                                 {
@@ -1101,6 +1815,10 @@ namespace Softphone
                                 {
                                     reasonPhraseStr = GetAsString(reasonPhraseEl);
                                 }
+                                if (failedDataEl.TryGetProperty("message", out var msgEl))
+                                {
+                                    dto.Message = GetAsString(msgEl);
+                                }
                             }
                             
                             // Детальное логирование причины завершения звонка
@@ -1111,17 +1829,54 @@ namespace Softphone
                             if (!string.IsNullOrEmpty(reasonPhraseStr)) reasonParts.Add($"reason={reasonPhraseStr}");
                             var reasonDetails = reasonParts.Count > 0 ? " (" + string.Join(", ", reasonParts) + ")" : "";
                             
-                            // Всегда сбрасываем состояние при call_ended или call_failed
+                            // КРИТИЧНО: Всегда сбрасываем состояние при call_ended или call_failed
+                            // Это важно для возможности нового звонка
                             MainWindow.Log($"[WebRtcService] Call {type} for session {sessionId ?? "null"}{reasonDetails}, resetting state to Idle");
-                            _state = WebRtcCallState.Idle;
-                            _activeSessionId = null;
-                            _ringingSessionId = null;
+                            lock (_lock)
+                            {
+                                // КРИТИЧНО: Принудительно очищаем все состояния при завершении звонка
+                                _state = WebRtcCallState.Idle;
+                                _activeSessionId = null;
+                                _ringingSessionId = null;
+                                
+                                // Также очищаем дедупликацию входящих звонков для этого sessionId
+                                if (!string.IsNullOrEmpty(sessionId))
+                                {
+                                    _incomingCallDedup.TryRemove(sessionId, out _);
+                                }
+                            }
+                            
+                            // После завершения звонка проверяем, нужно ли переподключение
+                            // Если была проблема с регистрацией во время звонка, теперь можно переподключиться
+                            if (!_registered && _lastRegisteredUtc == DateTime.MinValue)
+                            {
+                                MainWindow.Log("[WebRtcService] Call ended, scheduling reconnect if needed");
+                                ScheduleReconnect("post_call_reconnect", immediate: false);
+                            }
                             break;
                         case "ping":
                             // Событие ping от JS не должно обрабатываться здесь
                             // Ping отправляется из C# в JS, а pong приходит обратно как событие
                             // Если это событие пришло, просто игнорируем его
                             MainWindow.Log("[WebRtcService] OnEngineEvent: Received ping event from JS (unexpected, ignoring)");
+                            break;
+                        case "call_activity_check":
+                            // Результат проверки активности звонка
+                            // Это событие используется для асинхронной проверки реальной активности звонка
+                            // перед переподключением при reg_failed
+                            if (evt.TryGetProperty("data", out var activityDataEl) && activityDataEl.ValueKind == JsonValueKind.Object)
+                            {
+                                bool? isActive = null;
+                                if (activityDataEl.TryGetProperty("active", out var activeEl))
+                                {
+                                    if (activeEl.ValueKind == JsonValueKind.True || activeEl.ValueKind == JsonValueKind.False)
+                                    {
+                                        isActive = activeEl.GetBoolean();
+                                    }
+                                }
+                                MainWindow.Log($"[WebRtcService] OnEngineEvent: call_activity_check - active={isActive}, sessionId={sessionId}");
+                            }
+                            // Это событие обрабатывается асинхронно в CheckCallActivityAndScheduleReconnect
                             break;
                         case "mute_applied":
                         case "mute_changed":
@@ -1161,11 +1916,7 @@ namespace Softphone
                                 }
                                 else
                                 {
-                                    // Log "ignored" rarely to avoid spam if something is miswired.
-                                    if (DateTime.UtcNow.Second < 5)
-                                    {
-                                        MainWindow.Log("[WebRtcService] OnEngineEvent: pong ignored (engine not initialized or null)");
-                                    }
+                                    // Don't log pongs at all; watchdog will handle missing pongs.
                                 }
                             }
                             break;
@@ -1225,6 +1976,8 @@ namespace Softphone
                                 if (_state == WebRtcCallState.Calling || _state == WebRtcCallState.Connected)
                                 {
                                     MainWindow.Log($"[WebRtcService] Fatal error during call, resetting state from {_state} to Idle");
+                                    try { RingbackToneService.Instance.Stop(); } catch { }
+                                    try { RingtoneService.Instance.Stop(); } catch { }
                                     _state = WebRtcCallState.Idle;
                                     _activeSessionId = null;
                                     _ringingSessionId = null;
@@ -1273,14 +2026,33 @@ namespace Softphone
                     }
                 }
 
-                // ДИАГНОСТИКА: логируем перед вызовом Event?.Invoke только для важных событий
-                if (dto.Type == "registered" || dto.Type == "ua_registered" || dto.Type == "reg_failed" || dto.Type == "ua_registration_failed" ||
-                    dto.Type == "ua_connected" || dto.Type == "ws_connected")
+                // Event handlers are user-code; one buggy subscriber must not prevent others from receiving critical events
+                // (e.g., CallWindow must always receive call_failed/call_ended to stop ringback and close).
+                var handlers = Event;
+                if (handlers != null)
                 {
-                    MainWindow.Log($"[WebRtcService] OnEngineEvent: Invoking Event for type='{dto.Type}', registered={_registered}, IsReadyForCalls={IsReadyForCalls}");
+                    // DIAGNOSTICS: log only for a few important event types to avoid spam.
+                    if (dto.Type == "registered" || dto.Type == "ua_registered" || dto.Type == "reg_failed" || dto.Type == "ua_registration_failed" ||
+                        dto.Type == "ua_connected" || dto.Type == "ws_connected" || dto.Type == "call_failed" || dto.Type == "call_ended")
+                    {
+                        MainWindow.Log($"[WebRtcService] OnEngineEvent: Dispatching {handlers.GetInvocationList().Length} subscriber(s) for type='{dto.Type}', registered={_registered}, IsReadyForCalls={IsReadyForCalls}");
+                    }
+
+                    foreach (var d in handlers.GetInvocationList())
+                    {
+                        if (d is Action<WebRtcEventDto> h)
+                        {
+                            try
+                            {
+                                h(dto);
+                            }
+                            catch (Exception cbEx)
+                            {
+                                MainWindow.Log($"[WebRtcService] ERROR: WebRTC event subscriber threw for type='{dto.Type}': {cbEx.Message}");
+                            }
+                        }
+                    }
                 }
-                
-                Event?.Invoke(dto);
             }
             catch (Exception ex)
             {
@@ -1308,11 +2080,37 @@ namespace Softphone
                 }
             }
 
-            // Проверяем активный звонок
-            if (_state != WebRtcCallState.Idle && _state != WebRtcCallState.Ended)
+            // КРИТИЧНО: Если предыдущий звонок завершился некорректно, очищаем состояние перед новым входящим звонком
+            lock (_lock)
             {
-                MainWindow.Log($"[WebRtcService] Incoming call {sessionId} ignored (active call in state {_state})");
-                return;
+                if (_state == WebRtcCallState.Ending || _state == WebRtcCallState.Ended)
+                {
+                    MainWindow.Log($"[WebRtcService] HandleIncomingCall: Resetting state from {_state} to Idle before processing incoming call");
+                    _state = WebRtcCallState.Idle;
+                    _activeSessionId = null;
+                    _ringingSessionId = null;
+                }
+            }
+
+            // КРИТИЧНО: Проверяем активный звонок и принудительно очищаем состояние Ringing/Connected если оно "зависло"
+            lock (_lock)
+            {
+                // Если состояние Ringing или Connected, но нет активной сессии - это "зависшее" состояние
+                // Очищаем его перед обработкой нового входящего звонка
+                if ((_state == WebRtcCallState.Ringing || _state == WebRtcCallState.Connected || _state == WebRtcCallState.Calling) 
+                    && string.IsNullOrEmpty(_activeSessionId) && string.IsNullOrEmpty(_ringingSessionId))
+                {
+                    MainWindow.Log($"[WebRtcService] HandleIncomingCall: Clearing stuck state {_state} (no active session)");
+                    _state = WebRtcCallState.Idle;
+                    _activeSessionId = null;
+                    _ringingSessionId = null;
+                }
+                
+                if (_state != WebRtcCallState.Idle && _state != WebRtcCallState.Ended)
+                {
+                    MainWindow.Log($"[WebRtcService] Incoming call {sessionId} ignored (active call in state {_state})");
+                    return;
+                }
             }
 
             _incomingCallDedup[sessionId] = DateTime.Now;
@@ -1340,14 +2138,38 @@ namespace Softphone
 
         public async Task MakeCallAsync(string number)
         {
+            // Extra guard: MainWindow should already block calls when IsReadyForCalls=false, but keep this here
+            // so calls from other places can't create a "ghost" outgoing call that never reaches PBX.
+            // Also log enough state to diagnose "PBX sees no attempt".
             lock (_lock)
             {
-                // Если состояние Ending или Ended, сбрасываем в Idle (предыдущий звонок завершен)
-                if (_state == WebRtcCallState.Ending || _state == WebRtcCallState.Ended)
+                // КРИТИЧНО: Если состояние Ending, Ended, Calling или Ringing - принудительно очищаем его
+                // Это важно для случаев, когда предыдущий звонок не завершился корректно
+                if (_state == WebRtcCallState.Ending || _state == WebRtcCallState.Ended || 
+                    _state == WebRtcCallState.Calling || _state == WebRtcCallState.Ringing)
                 {
-                    MainWindow.Log($"[WebRtcService] MakeCallAsync: Resetting state from {_state} to Idle");
+                    MainWindow.Log($"[WebRtcService] MakeCallAsync: Resetting state from {_state} to Idle (previous call may not have completed properly)");
                     _state = WebRtcCallState.Idle;
                     _activeSessionId = null;
+                    _ringingSessionId = null;
+                    
+                    // КРИТИЧНО: Принудительно очищаем сессии в JavaScript перед новым звонком
+                    // Это предотвращает блокировку нового звонка из-за "зависших" сессий
+                    if (_engine != null && _engine.IsInitialized)
+                    {
+                        _ = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await _engine.SendAsync(new { cmd = "cleanupSessions" });
+                                MainWindow.Log("[WebRtcService] MakeCallAsync: cleanupSessions command sent");
+                            }
+                            catch (Exception cleanupEx)
+                            {
+                                MainWindow.Log($"[WebRtcService] MakeCallAsync: Error sending cleanupSessions: {cleanupEx.Message}");
+                            }
+                        });
+                    }
                 }
                 
                 if (_state != WebRtcCallState.Idle)
@@ -1371,12 +2193,32 @@ namespace Softphone
             MainWindow.Log($"[WebRtcService] MakeCallAsync: Sending makeCall command for number {number}");
             if (_engine != null)
             {
-                await _engine.SendAsync(new { cmd = "makeCall", number });
-                MainWindow.Log($"[WebRtcService] MakeCallAsync: Command sent successfully");
+                try
+                {
+                    await _engine.SendAsync(new { cmd = "makeCall", number });
+                    MainWindow.Log($"[WebRtcService] MakeCallAsync: Command sent successfully");
+                }
+                catch (Exception ex)
+                {
+                    // If we fail to execute the JS call, PBX will not see any INVITE attempt.
+                    lock (_lock)
+                    {
+                        _state = WebRtcCallState.Idle;
+                        _activeSessionId = null;
+                    }
+                    MainWindow.Log($"[WebRtcService] MakeCallAsync: ERROR sending makeCall command: {ex.Message}");
+                    throw;
+                }
             }
             else
             {
                 MainWindow.Log($"[WebRtcService] MakeCallAsync: ERROR - engine is null");
+                lock (_lock)
+                {
+                    _state = WebRtcCallState.Idle;
+                    _activeSessionId = null;
+                }
+                throw new InvalidOperationException("WebRTC engine is null");
             }
         }
 
@@ -1601,6 +2443,10 @@ namespace Softphone
 
         public async Task HangupAsync(string? sessionId = null)
         {
+            // Stop app-side ringtone immediately when we initiate hangup.
+            try { RingtoneService.Instance.Stop(); } catch { }
+            try { RingbackToneService.Instance.Stop(); } catch { }
+
             lock (_lock)
             {
                 if (_state == WebRtcCallState.Ending || _state == WebRtcCallState.Ended)
@@ -1628,6 +2474,8 @@ namespace Softphone
                         if (_state == WebRtcCallState.Ending)
                         {
                             MainWindow.Log("[WebRtcService] HangupAsync: Timeout - call_ended event not received, resetting state to Idle");
+                            try { RingbackToneService.Instance.Stop(); } catch { }
+                            try { RingtoneService.Instance.Stop(); } catch { }
                             _state = WebRtcCallState.Idle;
                             _activeSessionId = null;
                             _ringingSessionId = null;
@@ -1638,6 +2486,8 @@ namespace Softphone
             else
             {
                 MainWindow.Log("[WebRtcService] HangupAsync: Engine is null, resetting state to Idle");
+                try { RingbackToneService.Instance.Stop(); } catch { }
+                try { RingtoneService.Instance.Stop(); } catch { }
                 lock (_lock)
                 {
                     _state = WebRtcCallState.Idle;
@@ -1645,6 +2495,30 @@ namespace Softphone
                     _ringingSessionId = null;
                 }
             }
+        }
+
+        public async Task SetHoldAsync(bool hold, string? sessionId = null)
+        {
+            if (_engine == null || !_engine.IsInitialized)
+            {
+                throw new InvalidOperationException("WebRTC engine not initialized");
+            }
+
+            // Prefer explicit session id; otherwise fallback to the service-tracked session.
+            sessionId ??= _activeSessionId ?? _ringingSessionId;
+
+            var cmd = new Dictionary<string, object>
+            {
+                { "cmd", "setHold" },
+                { "hold", hold }
+            };
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                cmd["sessionId"] = sessionId!;
+            }
+
+            await _engine.SendAsync(cmd);
+            MainWindow.Log($"[WebRtcService] SetHoldAsync: {(hold ? "hold" : "resume")} command sent (sessionId={sessionId ?? "null"})");
         }
 
         public async Task ResetEngineAsync()
@@ -1693,22 +2567,52 @@ namespace Softphone
         /// </summary>
         public async Task ReinitializeUAAsync(string wsUri, string sipUri, string username, string password)
         {
-            if (_engine == null || !_engine.IsInitialized)
+            // After sleep/resume IsInitialized can transiently return false; try anyway.
+            if (_engine == null)
             {
                 MainWindow.Log("[WebRtcService] ReinitializeUAAsync: Engine not initialized, skipping");
                 return;
             }
 
+            // Guard against duplicate initUA loops (e.g. Save&Connect triggers initUA while reconnect timer is firing).
+            if (System.Threading.Interlocked.Exchange(ref _reinitInFlight, 1) == 1)
+            {
+                MainWindow.Log("[WebRtcService] ReinitializeUAAsync: initUA already in-flight, skipping");
+                return;
+            }
+
             try
             {
-                MainWindow.Log($"[WebRtcService] ReinitializeUAAsync: Reinitializing UA with new credentials (user={username}, sipUri={sipUri})");
+                // Store last config for auto-reconnect.
+                lock (_lock)
+                {
+                    _lastUaConfig = new UaConfigSnapshot
+                    {
+                        WsUri = wsUri ?? "",
+                        SipUri = sipUri ?? "",
+                        Username = username ?? "",
+                        Password = password ?? ""
+                    };
+
+                    // Grace window: JsSIP often emits ua_unregistered/ws_disconnected during intentional re-init.
+                    // During this window we must not schedule auto-reconnect attempts, otherwise we create loops.
+                    _lastInitUaSentUtc = DateTime.UtcNow;
+                    _suppressAutoReconnectUntilUtc = _lastInitUaSentUtc + TimeSpan.FromSeconds(4);
+
+                    // Cancel any scheduled reconnect timers from previous failures.
+                    CancelScheduledReconnectLocked("manual_reinit");
+                    _reconnectAttempt = 0;
+                }
+
+                MainWindow.Log($"[WebRtcService] ReinitializeUAAsync: Reinitializing UA with new credentials (user={username}, sipUri={sipUri}, debug={DebugEnabled})");
                 await _engine.SendAsync(new
                 {
                     cmd = "initUA",
                     wsUri = wsUri,
                     sipUri = sipUri,
                     user = username,
-                    pass = password
+                    pass = password,
+                    enableDebug = DebugEnabled
                 });
                 MainWindow.Log("[WebRtcService] ReinitializeUAAsync: initUA command sent");
             }
@@ -1716,51 +2620,89 @@ namespace Softphone
             {
                 MainWindow.Log($"[WebRtcService] ERROR in ReinitializeUAAsync: {ex.Message}");
             }
+            finally
+            {
+                System.Threading.Interlocked.Exchange(ref _reinitInFlight, 0);
+            }
         }
 
         public void StartWatchdog()
         {
-            _watchdogTimer = new System.Threading.Timer(async (state) =>
+            lock (_lock)
             {
-                try
+                if (_watchdogTimer != null) return; // idempotent
+
+                // Avoid false "no pong" resets after sleep/resume: treat watchdog start as a fresh baseline.
+                _lastPongTimeUtc = DateTime.UtcNow;
+                _lastEngineEventUtc = DateTime.UtcNow;
+
+                _watchdogTimer = new System.Threading.Timer(_ =>
                 {
-                    if (_engine == null || !_engine.IsInitialized)
-                        return;
+                    // Timer callbacks must never be async-void; run async work on a Task and guard reentrancy.
+                    if (System.Threading.Interlocked.Exchange(ref _watchdogInFlight, 1) == 1) return;
 
-                    // Ping
-                    await _engine.SendAsync(new { cmd = "ping" });
-
-                    // Проверяем pong
-                    lock (_lock)
+                    _ = System.Threading.Tasks.Task.Run(async () =>
                     {
-                        // Защита 2: Watchdog должен быть идемпотентным и не спамить reset
-                        if (_isResetting || (DateTime.UtcNow - _lastResetUtc).TotalSeconds < 20)
+                        try
                         {
-                            // Cooldown активен, пропускаем проверку
-                            return;
-                        }
-                        
-                        if (_lastPongTimeUtc != DateTime.MinValue && (DateTime.UtcNow - _lastPongTimeUtc).TotalSeconds > 30)
-                        {
-                            MainWindow.Log($"[WebRtcService] WARNING: No pong received for {(DateTime.UtcNow - _lastPongTimeUtc).TotalSeconds:F1} seconds, resetting engine...");
-                            _ = ResetEngineAsync();
-                        }
+                            WebRtcEngineHost? engine;
+                            WebRtcCallState state;
+                            DateTime lastPong;
+                            DateTime lastAnyEvent;
+                            bool resetting;
+                            DateTime lastReset;
 
-                        // Логируем состояние только при изменении или раз в минуту (для уменьшения нагрузки)
-                        // Убрано избыточное логирование для предотвращения зависаний
+                            lock (_lock)
+                            {
+                                engine = _engine;
+                                state = _state;
+                                lastPong = _lastPongTimeUtc;
+                                lastAnyEvent = _lastEngineEventUtc;
+                                resetting = _isResetting;
+                                lastReset = _lastResetUtc;
+                            }
 
-                        // Запрашиваем статистику для активных звонков
-                        if (_state == WebRtcCallState.Connected)
-                        {
-                            _ = _engine?.SendAsync(new { cmd = "getStats" });
+                            if (engine == null || !engine.IsInitialized) return;
+
+                            // Ping (SendAsync has its own timeout).
+                            await engine.SendAsync(new { cmd = "ping" });
+
+                            // Cooldown: don't spam reset if we're already resetting.
+                            if (resetting || (DateTime.UtcNow - lastReset).TotalSeconds < 20) return;
+
+                            // Consider both pong and any JS event as liveness: after resume ping may fail briefly
+                            // while WS/registration events still flow, and we must not reset the engine in that case.
+                            var lastAlive = lastPong > lastAnyEvent ? lastPong : lastAnyEvent;
+                            if (lastAlive != DateTime.MinValue && (DateTime.UtcNow - lastAlive).TotalSeconds > 30)
+                            {
+                                MainWindow.Log($"[WebRtcService] WARNING: No WebRTC liveness received for {(DateTime.UtcNow - lastAlive).TotalSeconds:F1} seconds, resetting engine...");
+                                // Force registered=false so auto-reconnect can proceed deterministically after reset.
+                                lock (_lock)
+                                {
+                                    _registered = false;
+                                    _lastRegisteredUtc = DateTime.MinValue;
+                                }
+                                _ = ResetEngineAsync();
+                                TriggerReconnectNow("watchdog_no_pong");
+                            }
+
+                            // Request stats only during active calls.
+                            if (state == WebRtcCallState.Connected)
+                            {
+                                _ = engine.SendAsync(new { cmd = "getStats" });
+                            }
                         }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    MainWindow.Log($"[WebRtcService] ERROR in watchdog: {ex.Message}");
-                }
-            }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15));
+                        catch (Exception ex)
+                        {
+                            MainWindow.Log($"[WebRtcService] ERROR in watchdog: {ex.Message}");
+                        }
+                        finally
+                        {
+                            System.Threading.Interlocked.Exchange(ref _watchdogInFlight, 0);
+                        }
+                    });
+                }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15));
+            }
         }
         
         /// <summary>
@@ -1774,9 +2716,28 @@ namespace Softphone
                 {
                     _watchdogTimer.Dispose();
                     _watchdogTimer = null;
+                    System.Threading.Interlocked.Exchange(ref _watchdogInFlight, 0);
                     MainWindow.Log("[WebRtcService] Watchdog timer stopped");
                 }
             }
+        }
+
+        /// <summary>
+        /// Stops auto-reconnect attempts and clears any scheduled reconnect.
+        /// Useful when switching to SIP mode or shutting down.
+        /// </summary>
+        public void StopAutoReconnect()
+        {
+            System.Threading.Timer? toDispose = null;
+            lock (_lock)
+            {
+                toDispose = _reconnectTimer;
+                _reconnectTimer = null;
+                _nextReconnectUtc = DateTime.MinValue;
+                _reconnectAttempt = 0;
+                System.Threading.Interlocked.Exchange(ref _reconnectInFlight, 0);
+            }
+            try { toDispose?.Dispose(); } catch { }
         }
     }
 }

@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Softphone
@@ -12,15 +13,19 @@ namespace Softphone
     /// <summary>
     /// Рекордер для записи WebRTC звонков через MediaRecorder API в JavaScript
     /// Получает аудио данные целиком одним файлом после остановки записи
-    /// Автоматически конвертирует WebM в WAV для совместимости с MediaElement
+    /// Автоматически конвертирует WebM в WAV через ffmpeg.
+    /// ОПТИМИЗИРОВАНО: Параллельная конвертация до 3 файлов одновременно для избежания очереди при стресс-тестах.
     /// </summary>
     public class WebRtcCallRecorder : CallRecorderBase
     {
+        /// <summary>Параллельная конвертация до 3 файлов одновременно для избежания очереди при множественных звонках.</summary>
+        private static readonly SemaphoreSlim s_conversionLock = new SemaphoreSlim(3, 3);
+
         private string? _webmFilePath; // Исходный WebM файл (сохраняем для резерва)
         private bool _isDisposed = false;
         
-        // Для сборки файла из чанков
-        private List<byte[]>? _receivedChunks;
+        // Для сборки файла из чанков (ВАЖНО: собирать строго по chunkIndex, иначе WebM может повредиться → "щелчки")
+        private Dictionary<int, byte[]>? _receivedChunksByIndex;
         private int? _expectedTotalSize;
         private int? _expectedTotalChunks;
         private string? _expectedHash;
@@ -46,7 +51,7 @@ namespace Softphone
             {
                 if (!_isRecording) return;
 
-                _receivedChunks = new List<byte[]>();
+                _receivedChunksByIndex = new Dictionary<int, byte[]>();
                 _expectedTotalSize = null;
                 _expectedTotalChunks = null;
                 _expectedHash = null;
@@ -59,6 +64,7 @@ namespace Softphone
         protected override void GenerateRecordingPaths(string baseFileName, string recordingsDirectory)
         {
             string webmBasePath = Path.Combine(recordingsDirectory, $"{baseFileName}.webm");
+            // КРИТИЧНО: Используем WAV вместо MP3 для WebRTC звонков (более универсальный формат, лучше поддерживается AmoCRM)
             string wavBasePath = Path.Combine(recordingsDirectory, $"{baseFileName}.wav");
             
             // Генерируем уникальные пути
@@ -88,7 +94,7 @@ namespace Softphone
                 _expectedTotalSize = totalSize;
                 _expectedTotalChunks = totalChunks;
                 _expectedHash = hash;
-                _receivedChunks?.Clear();
+                _receivedChunksByIndex?.Clear();
                 
                 MainWindow.Log($"[WebRtcCallRecorder] Receiving {totalChunks} chunks ({totalSize / 1024} KB)");
             }
@@ -101,18 +107,24 @@ namespace Softphone
         {
             lock (_lockObject)
             {
-                if (!_isRecording || _isDisposed || _receivedChunks == null)
+                if (!_isRecording || _isDisposed || _receivedChunksByIndex == null)
                 {
                     return;
                 }
 
                 try
                 {
-                    _receivedChunks.Add(chunkData);
+                    if (_receivedChunksByIndex.ContainsKey(chunkIndex))
+                    {
+                        // Дубликат чанка — игнорируем
+                        return;
+                    }
+
+                    _receivedChunksByIndex[chunkIndex] = chunkData;
                     // Логируем только каждый 10-й чанк или последний, чтобы не засорять логи
                     if (_expectedTotalChunks == null || chunkIndex % 10 == 0 || chunkIndex == _expectedTotalChunks - 1)
                     {
-                        MainWindow.Log($"[WebRtcCallRecorder] Received chunk {chunkIndex + 1}/{_expectedTotalChunks} ({chunkData.Length} bytes)");
+                        MainWindow.Log($"[WebRtcCallRecorder] Received chunk {chunkIndex + 1}/{_expectedTotalChunks} ({chunkData.Length} bytes, offset={offset})");
                     }
                 }
                 catch (Exception ex)
@@ -132,19 +144,48 @@ namespace Softphone
             
             lock (_lockObject)
             {
-                if (_receivedChunks != null && _receivedChunks.Count > 0)
+                if (_receivedChunksByIndex != null && _receivedChunksByIndex.Count > 0)
                 {
-                    int chunkCount = _receivedChunks.Count;
-                    int totalSize = _receivedChunks.Sum(chunk => chunk.Length);
-                    finalData = new byte[totalSize];
-                    int offset = 0;
-                    foreach (var chunk in _receivedChunks)
+                    int chunkCount = _receivedChunksByIndex.Count;
+                    int? expectedChunks = _expectedTotalChunks;
+
+                    // Если знаем ожидаемое число чанков — проверяем, что все пришли
+                    if (expectedChunks.HasValue)
                     {
-                        Buffer.BlockCopy(chunk, 0, finalData, offset, chunk.Length);
-                        offset += chunk.Length;
+                        for (int i = 0; i < expectedChunks.Value; i++)
+                        {
+                            if (!_receivedChunksByIndex.ContainsKey(i))
+                            {
+                                MainWindow.Log($"[WebRtcCallRecorder] ❌ Missing chunk {i + 1}/{expectedChunks.Value}. Cannot assemble recording safely.");
+                                // Сбрасываем буфер, чтобы не использовать поврежденные данные
+                                _receivedChunksByIndex.Clear();
+                                return;
+                            }
+                        }
                     }
-                    _receivedChunks.Clear();
-                    MainWindow.Log($"[WebRtcCallRecorder] Assembled {chunkCount} chunks: {totalSize / 1024} KB");
+
+                    // Собираем строго по индексу (0..N-1). Если expectedChunks неизвестен — по возрастанию ключей.
+                    var orderedKeys = expectedChunks.HasValue
+                        ? Enumerable.Range(0, expectedChunks.Value)
+                        : _receivedChunksByIndex.Keys.OrderBy(k => k).ToArray();
+
+                    int totalSize = 0;
+                    foreach (var k in orderedKeys)
+                    {
+                        totalSize += _receivedChunksByIndex[k].Length;
+                    }
+
+                    finalData = new byte[totalSize];
+                    int writeOffset = 0;
+                    foreach (var k in orderedKeys)
+                    {
+                        var chunk = _receivedChunksByIndex[k];
+                        Buffer.BlockCopy(chunk, 0, finalData, writeOffset, chunk.Length);
+                        writeOffset += chunk.Length;
+                    }
+
+                    _receivedChunksByIndex.Clear();
+                    MainWindow.Log($"[WebRtcCallRecorder] Assembled {chunkCount} chunks (ordered): {totalSize / 1024} KB");
                 }
             }
 
@@ -171,26 +212,83 @@ namespace Softphone
                 }
 
                 // Сохраняем WebM файл (исходник) асинхронно, чтобы не блокировать UI
+                MainWindow.Log($"[WebRtcCallRecorder] Saving WebM file: {_webmFilePath}");
                 await Task.Run(() =>
                 {
                     File.WriteAllBytes(_webmFilePath, finalData);
                 });
-                MainWindow.Log($"[WebRtcCallRecorder] WebM saved: {Path.GetFileName(_webmFilePath)} ({finalData.Length / 1024} KB)");
+                MainWindow.Log($"[WebRtcCallRecorder] WebM saved: {Path.GetFileName(_webmFilePath)} ({finalData.Length / 1024} KB), FileExists={File.Exists(_webmFilePath)}");
 
-                // Конвертируем WebM в WAV в фоновом потоке
-                MainWindow.Log($"[WebRtcCallRecorder] Starting conversion to WAV...");
-                bool converted = await ConvertWebMToWavAsync(_webmFilePath, _recordingFilePath);
-                
-                if (converted)
+                // Конвертируем WebM в WAV параллельно (до 3 файлов одновременно через SemaphoreSlim)
+                // Это позволяет обрабатывать несколько звонков подряд без очереди, ускоряя общую обработку
+                MainWindow.Log($"[WebRtcCallRecorder] Starting conversion to WAV: {_webmFilePath} -> {_recordingFilePath}");
+                await s_conversionLock.WaitAsync().ConfigureAwait(false);
+                try
                 {
-                    MainWindow.Log($"[WebRtcCallRecorder] Conversion complete: {Path.GetFileName(_recordingFilePath)}");
-                    // WebM файл оставляем как исходник (не удаляем)
+                    bool converted = await ConvertWebMToWavAsync(_webmFilePath, _recordingFilePath).ConfigureAwait(false);
+                
+                if (converted && File.Exists(_recordingFilePath))
+                {
+                    var fileInfo = new FileInfo(_recordingFilePath);
+                    MainWindow.Log($"[WebRtcCallRecorder] ✅ WAV conversion complete: {Path.GetFileName(_recordingFilePath)} ({fileInfo.Length / 1024} KB)");
+                    
+                    // ОПТИМИЗАЦИЯ: Удаляем WebM файл после успешной конвертации в WAV для экономии места
+                    try
+                    {
+                        if (File.Exists(_webmFilePath))
+                        {
+                            File.Delete(_webmFilePath);
+                            MainWindow.Log($"[WebRtcCallRecorder] ✅ WebM file deleted after successful WAV conversion: {Path.GetFileName(_webmFilePath)}");
+                        }
+                    }
+                    catch (Exception deleteEx)
+                    {
+                        // Не критично, если не удалось удалить - просто логируем
+                        MainWindow.Log($"[WebRtcCallRecorder] ⚠️ Failed to delete WebM file after conversion: {deleteEx.Message}");
+                    }
                 }
                 else
                 {
-                    // Если конвертация не удалась, используем WebM файл как основной
-                    MainWindow.Log($"[WebRtcCallRecorder] Conversion failed, using WebM: {Path.GetFileName(_webmFilePath)}");
-                    _recordingFilePath = _webmFilePath;
+                    // Если WAV не получился, пробуем конвертировать в MP3 как fallback
+                    MainWindow.Log($"[WebRtcCallRecorder] ⚠️ WAV conversion failed, trying MP3 conversion as fallback...");
+                    string mp3Path = Path.ChangeExtension(_recordingFilePath, ".mp3");
+                    bool mp3Converted = await ConvertWebMToMp3Async(_webmFilePath, mp3Path);
+                    
+                    if (mp3Converted && File.Exists(mp3Path))
+                    {
+                        _recordingFilePath = mp3Path;
+                        var fileInfo = new FileInfo(mp3Path);
+                        MainWindow.Log($"[WebRtcCallRecorder] ✅ MP3 conversion complete (fallback): {Path.GetFileName(mp3Path)} ({fileInfo.Length / 1024} KB)");
+                        
+                        // ОПТИМИЗАЦИЯ: Удаляем WebM файл после успешной конвертации в MP3
+                        try
+                        {
+                            if (File.Exists(_webmFilePath))
+                            {
+                                File.Delete(_webmFilePath);
+                                MainWindow.Log($"[WebRtcCallRecorder] ✅ WebM file deleted after successful MP3 conversion: {Path.GetFileName(_webmFilePath)}");
+                            }
+                        }
+                        catch (Exception deleteEx)
+                        {
+                            MainWindow.Log($"[WebRtcCallRecorder] ⚠️ Failed to delete WebM file after MP3 conversion: {deleteEx.Message}");
+                        }
+                    }
+                    else
+                    {
+                        // Если и MP3 не получился, используем WebM файл как основной
+                        // AmoCRM может поддерживать WebM для call_in/call_out примечаний
+                        // Если не поддерживает - файл будет прикреплен, но кнопки "Прослушать"/"Скачать" могут не работать
+                        MainWindow.Log($"[WebRtcCallRecorder] ⚠️ MP3 conversion also failed, using WebM directly: {Path.GetFileName(_webmFilePath)}");
+                        MainWindow.Log($"[WebRtcCallRecorder] Note: WebM may not be supported by AmoCRM for call_in/call_out notes, but file will be attached");
+                        _recordingFilePath = _webmFilePath;
+                        // WebM файл НЕ удаляем, так как он используется как основной файл записи
+                    }
+                }
+                }
+                finally
+                {
+                    s_conversionLock.Release();
                 }
             }
             catch (Exception ex)
@@ -231,21 +329,63 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Конвертирует WebM файл в WAV используя ffmpeg
+        /// Конвертирует WebM файл в MP3 используя ffmpeg
         /// </summary>
-        private async Task<bool> ConvertWebMToWavAsync(string webmPath, string wavPath)
+        private async Task<bool> ConvertWebMToMp3Async(string webmPath, string mp3Path)
         {
+            MainWindow.Log($"[WebRtcCallRecorder] ConvertWebMToMp3Async: webmPath={webmPath}, mp3Path={mp3Path}");
+            MainWindow.Log($"[WebRtcCallRecorder] WebM file exists: {File.Exists(webmPath)}");
+            
             string? ffmpegPath = FfmpegHelper.FindFfmpegPath();
             if (string.IsNullOrEmpty(ffmpegPath))
             {
-                MainWindow.Log($"[WebRtcCallRecorder] ffmpeg not found, skipping conversion. WebM file will be used as-is.");
+                MainWindow.Log($"[WebRtcCallRecorder] ⚠️ ffmpeg not found, skipping MP3 conversion.");
                 return false;
             }
 
-            // PCM 16-bit, 48kHz, mono для максимальной совместимости
-            string args = $"-y -loglevel error -i \"{webmPath}\" -ac 1 -ar 48000 -c:a pcm_s16le \"{wavPath}\"";
+            MainWindow.Log($"[WebRtcCallRecorder] Using ffmpeg: {ffmpegPath}");
 
-            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[WebRtcCallRecorder]");
+            // Конвертируем WebM в MP3 с битрейтом 128k
+            string args = $"-y -loglevel error -i \"{webmPath}\" -c:a libmp3lame -b:a 128k \"{mp3Path}\"";
+            MainWindow.Log($"[WebRtcCallRecorder] ffmpeg args: {args}");
+
+            bool result = await FfmpegHelper.ConvertAsync(ffmpegPath, args, mp3Path, "[WebRtcCallRecorder]", webmPath);
+            
+            MainWindow.Log($"[WebRtcCallRecorder] ConvertWebMToMp3Async result: {result}, MP3 file exists: {File.Exists(mp3Path)}");
+            
+            return result;
+        }
+
+        /// <summary>
+        /// Конвертирует WebM файл в WAV используя ffmpeg
+        /// WAV - более универсальный формат, поддерживается большинством систем
+        /// </summary>
+        private async Task<bool> ConvertWebMToWavAsync(string webmPath, string wavPath)
+        {
+            MainWindow.Log($"[WebRtcCallRecorder] ConvertWebMToWavAsync: webmPath={webmPath}, wavPath={wavPath}");
+            MainWindow.Log($"[WebRtcCallRecorder] WebM file exists: {File.Exists(webmPath)}");
+            
+            string? ffmpegPath = FfmpegHelper.FindFfmpegPath();
+            if (string.IsNullOrEmpty(ffmpegPath))
+            {
+                MainWindow.Log($"[WebRtcCallRecorder] ⚠️ ffmpeg not found, skipping WAV conversion.");
+                return false;
+            }
+
+            MainWindow.Log($"[WebRtcCallRecorder] Using ffmpeg for WAV: {ffmpegPath}");
+
+            // Конвертируем WebM в WAV (PCM, 16-bit, 48kHz, моно) БЕЗ обрезки тишины,
+            // чтобы не терять ни начало, ни окончание разговора.
+            // При необходимости фильтрацию тишины лучше делать уже на стороне плеера/аналитики.
+            // aresample=async=1 помогает сгладить разрывы/дрожание таймстемпов, которые могут давать "щелчки".
+            string args = $"-y -loglevel error -i \"{webmPath}\" -vn -map 0:a:0 -acodec pcm_s16le -ar 48000 -ac 1 -af aresample=async=1:first_pts=0 \"{wavPath}\"";
+            MainWindow.Log($"[WebRtcCallRecorder] ffmpeg WAV args: {args}");
+
+            bool result = await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[WebRtcCallRecorder]", webmPath);
+            
+            MainWindow.Log($"[WebRtcCallRecorder] ConvertWebMToWavAsync result: {result}, WAV file exists: {File.Exists(wavPath)}");
+            
+            return result;
         }
 
         public override void Dispose()

@@ -1,0 +1,301 @@
+<Window x:Class="Softphone.LeadSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Lead" Height="500" Width="600"
+        WindowStyle="None" 
+        AllowsTransparency="False"
+        Background="{DynamicResource BackgroundDarkBrush}"
+        ResizeMode="CanResize"
+        WindowStartupLocation="CenterOwner"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8" GlassFrameThickness="0"/>
+    </WindowChrome.WindowChrome>
+    
+    <Window.Resources>
+        <!-- Custom ScrollBar Style -->
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="{DynamicResource BackgroundMediumBrush}"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Width" Value="12"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid>
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.Thumb>
+                                    <Thumb>
+                                        <Thumb.Style>
+                                            <Style TargetType="Thumb">
+                                                <Setter Property="Background" Value="{DynamicResource TextSecondaryBrush}"/>
+                                                <Setter Property="BorderBrush" Value="Transparent"/>
+                                                <Setter Property="BorderThickness" Value="0"/>
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Thumb">
+                                                            <Border Background="{TemplateBinding Background}"
+                                                                    CornerRadius="6"
+                                                                    SnapsToDevicePixels="True"/>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                                <Style.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="{DynamicResource TextPrimaryBrush}"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsDragging" Value="True">
+                                                        <Setter Property="Background" Value="{DynamicResource AccentGreenBrush}"/>
+                                                    </Trigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </Thumb.Style>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    
+    <!-- Surface (clipped) + Stroke overlay (does not affect layout), so corners stay rounded and close button can sit flush -->
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Border x:Name="WindowSurface"
+                Background="{DynamicResource BackgroundDarkBrush}"
+                CornerRadius="16"
+                ClipToBounds="True"
+                SnapsToDevicePixels="True">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- Title Bar -->
+                <Border x:Name="TitleBarBorder"
+                        Grid.Row="0"
+                        Background="{DynamicResource BackgroundMediumBrush}" 
+                        CornerRadius="16,16,0,0"
+                        ClipToBounds="True">
+                    <Grid MouseDown="TitleBar_MouseDown">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Select Lead" 
+                                  FontSize="16" FontWeight="SemiBold" 
+                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                  Margin="16,12,0,12" 
+                                  VerticalAlignment="Center"/>
+                        <Button Grid.Column="1"
+                                Content="✕"
+                                Click="CloseButton_Click"
+                                Style="{DynamicResource TitleBarCloseButtonStyle}"/>
+                    </Grid>
+                </Border>
+
+                <!-- Content -->
+                <Grid Grid.Row="1" Margin="20">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    
+                    <TextBlock Grid.Row="0"
+                               Name="DescriptionTextBlock"
+                               Text="Multiple leads were found associated with this contact. Please select which lead to attach the call recording to:"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               FontSize="14"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,16"/>
+                    
+                    <ListBox Name="LeadsListBox"
+                            Grid.Row="1"
+                            Background="{DynamicResource BackgroundMediumBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}"
+                            BorderThickness="1"
+                            Foreground="{DynamicResource TextPrimaryBrush}"
+                            SelectionMode="Single">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Background="Transparent"
+                                        Padding="12,10"
+                                        Margin="0,0,0,4"
+                                        CornerRadius="4">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding Name}"
+                                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                                  FontSize="14"
+                                                  FontWeight="SemiBold"
+                                                  Margin="0,0,0,6"
+                                                  TextTrimming="CharacterEllipsis"/>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="{Binding Id, StringFormat='ID: {0}'}"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"
+                                                      VerticalAlignment="Center"
+                                                      Margin="0,0,12,0"/>
+                                            <Button Content="Open lead"
+                                                    Tag="{Binding Id}"
+                                                    Click="LinkButton_Click"
+                                                    Background="Transparent"
+                                                    Foreground="{DynamicResource AccentBlueBrush}"
+                                                    BorderThickness="0"
+                                                    Padding="8,4"
+                                                    FontSize="12"
+                                                    Cursor="Hand"
+                                                    VerticalAlignment="Center">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <TextBlock Text="{TemplateBinding Content}"
+                                                                              Foreground="{TemplateBinding Foreground}"
+                                                                              TextDecorations="Underline"/>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                        <Style.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Foreground" Value="{DynamicResource AccentGreenBrush}"/>
+                                                            </Trigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                        <ListBox.ItemContainerStyle>
+                            <Style TargetType="ListBoxItem">
+                                <Setter Property="Background" Value="Transparent"/>
+                                <Setter Property="BorderBrush" Value="Transparent"/>
+                                <Setter Property="BorderThickness" Value="0"/>
+                                <Setter Property="Padding" Value="0"/>
+                                <Setter Property="Margin" Value="0"/>
+                                <Setter Property="SnapsToDevicePixels" Value="True"/>
+                                <Style.Triggers>
+                                    <Trigger Property="IsMouseOver" Value="True">
+                                        <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <!-- Более мягкое выделение: тонкий контур и лёгкий фон -->
+                                        <Setter Property="Background" Value="{DynamicResource BackgroundMediumBrush}"/>
+                                        <Setter Property="BorderBrush" Value="{DynamicResource AccentGreenBrush}"/>
+                                        <Setter Property="BorderThickness" Value="1"/>
+                                    </Trigger>
+                                </Style.Triggers>
+                            </Style>
+                        </ListBox.ItemContainerStyle>
+                    </ListBox>
+                </Grid>
+
+                <!-- Buttons -->
+                <Border Grid.Row="2"
+                        Background="{DynamicResource BackgroundMediumBrush}"
+                        CornerRadius="0,0,16,16"
+                        Padding="20,16">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="1"
+                                Name="UploadRecordButton"
+                                Content="Upload record"
+                                Click="UploadRecordButton_Click"
+                                Background="{DynamicResource AccentBlueBrush}"
+                                Foreground="White"
+                                BorderThickness="0"
+                                Padding="24,8"
+                                MinWidth="120"
+                                FontSize="13"
+                                FontWeight="SemiBold"
+                                Cursor="Hand"
+                                Margin="0,0,12,0"
+                                Visibility="Collapsed"
+                                IsEnabled="False">
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        CornerRadius="4"
+                                                        SnapsToDevicePixels="True">
+                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#1976D2"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter Property="Background" Value="#4A4A4A"/>
+                                                        <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Button Grid.Column="2"
+                                Name="SelectButton"
+                                Content="Select"
+                                Click="SelectButton_Click"
+                                Background="{DynamicResource AccentGreenBrush}"
+                                Foreground="White"
+                                BorderThickness="0"
+                                Padding="24,8"
+                                MinWidth="100"
+                                FontSize="13"
+                                FontWeight="SemiBold"
+                                Cursor="Hand"
+                                IsEnabled="False">
+                            <Button.Style>
+                                <Style TargetType="Button">
+                                    <Setter Property="Template">
+                                        <Setter.Value>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}"
+                                                        CornerRadius="4"
+                                                        SnapsToDevicePixels="True">
+                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter Property="Background" Value="#2E7D32"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsEnabled" Value="False">
+                                                        <Setter Property="Background" Value="#4A4A4A"/>
+                                                        <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </Setter.Value>
+                                    </Setter>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+        <!-- Overlay border to clip corners properly (will be hidden by NativeWindowAppearanceManager on Windows 11) -->
+        <Border x:Name="WindowStroke"
+                Background="Transparent"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                IsHitTestVisible="False"/>
+    </Grid>
+</Window>

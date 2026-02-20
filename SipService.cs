@@ -16,6 +16,7 @@ using SIPSorcery.Net;
 using SIPSorceryMedia.Windows;
 using SIPSorceryMedia.Abstractions;
 using Newtonsoft.Json;
+using NAudio.CoreAudioApi;
 
 namespace Softphone
 {
@@ -39,6 +40,9 @@ namespace Softphone
 
         private WindowsAudioEndPoint? _audioEndPoint;
         private VoIPMediaSession? _voipMediaSession;
+        // Active audio source actually wired into the current VoIPMediaSession (not a new one from ToMediaEndPoints()).
+        // We keep it so we can reliably pause/resume outgoing RTP on mute/hold.
+        private object? _activeAudioSource;
         private bool _skipAudioInitialization = false; // Флаг для пропуска инициализации аудио (для WebRTC режима)
         private ToneGenerator? _toneGenerator; // Генератор гудков (ленивая инициализация)
         private Task<bool>? _activeCallTask; // Задача активного звонка для возможности отмены
@@ -207,11 +211,9 @@ namespace Softphone
                 // Пробуем использовать SetPaused если доступно
                 try
                 {
-                    var mediaEndPoints = _audioEndPoint.ToMediaEndPoints();
-                    if (mediaEndPoints != null && mediaEndPoints.AudioSource != null)
+                    var audioSource = _activeAudioSource;
+                    if (audioSource != null)
                     {
-                        var audioSource = mediaEndPoints.AudioSource;
-                        
                         // Пробуем вызвать SetPaused через reflection
                         var setPausedMethod = audioSource.GetType().GetMethod("SetPaused",
                             BindingFlags.Public | BindingFlags.Instance);
@@ -263,46 +265,322 @@ namespace Softphone
         /// <summary>
         /// Ставит звонок на удержание или возобновляет его.
         /// </summary>
-        public Task HoldCallAsync(bool hold)
+        public async Task HoldCallAsync(bool hold)
         {
             if (_userAgent == null || !IsInCall)
             {
                 SetStatus("No active call to hold.");
-                return Task.CompletedTask;
+                return;
             }
 
             try
             {
                 IsOnHold = hold;
-                
+
+                // 1) Prefer native SIP hold/unhold if available in this SIPSorcery version.
+                // We use reflection to stay compatible across library versions.
+                async Task<bool> TryInvokeAsync(object target, string methodName, params object?[] args)
+                {
+                    try
+                    {
+                        var mi = target.GetType().GetMethod(methodName, BindingFlags.Public | BindingFlags.Instance);
+                        if (mi == null) return false;
+
+                        var result = mi.Invoke(target, args);
+                        if (result is Task t)
+                        {
+                            await t.ConfigureAwait(false);
+                            return true;
+                        }
+                        return true;
+                    }
+                    catch (TargetInvocationException tie)
+                    {
+                        throw tie.InnerException ?? tie;
+                    }
+                }
+
+                bool invoked = false;
+                var ua = _userAgent;
+                var ms = _voipMediaSession;
+
                 if (hold)
                 {
-                    // Для удержания вызова нужно отправить Re-INVITE с SDP, где a=sendonly или a=inactive
-                    // Это означает, что мы не отправляем аудио, но можем получать
-                    // В SIPSorcery это можно сделать через Reinvite или изменение SDP
-                    if (_voipMediaSession != null)
-                    {
-                        // Временно останавливаем отправку аудио
-                        // Примечание: Полная реализация требует изменения SDP в Re-INVITE
-                        SetStatus("Call on hold");
-                    }
+                    // Common names in various versions.
+                    invoked =
+                        await TryInvokeAsync(ua, "PutOnHold") ||
+                        await TryInvokeAsync(ua, "Hold") ||
+                        await TryInvokeAsync(ua, "SetHold", true) ||
+                        (ms != null && (await TryInvokeAsync(ms, "PutOnHold") || await TryInvokeAsync(ms, "Hold") || await TryInvokeAsync(ms, "SetHold", true)));
                 }
                 else
                 {
-                    // Возобновляем звонок - отправляем Re-INVITE с нормальным SDP (a=sendrecv)
-                    if (_voipMediaSession != null)
+                    invoked =
+                        await TryInvokeAsync(ua, "TakeOffHold") ||
+                        await TryInvokeAsync(ua, "Unhold") ||
+                        await TryInvokeAsync(ua, "Resume") ||
+                        await TryInvokeAsync(ua, "SetHold", false) ||
+                        (ms != null && (await TryInvokeAsync(ms, "TakeOffHold") || await TryInvokeAsync(ms, "Unhold") || await TryInvokeAsync(ms, "Resume") || await TryInvokeAsync(ms, "SetHold", false)));
+                }
+
+                // 2) Always pause/resume local outgoing audio when holding/unholding.
+                // This guarantees the microphone isn't heard even if PBX hold behavior is odd.
+                try
+                {
+                    var audioSource = _activeAudioSource;
+                    if (audioSource != null)
                     {
-                        // Возобновляем отправку аудио
-                        SetStatus("Call resumed");
+                        var setPausedMethod = audioSource.GetType().GetMethod("SetPaused", BindingFlags.Public | BindingFlags.Instance);
+                        if (setPausedMethod != null)
+                        {
+                            setPausedMethod.Invoke(audioSource, new object[] { hold });
+                        }
+                        else if (hold)
+                        {
+                            audioSource.GetType().GetMethod("Pause", BindingFlags.Public | BindingFlags.Instance)?.Invoke(audioSource, null);
+                        }
+                        else
+                        {
+                            audioSource.GetType().GetMethod("Resume", BindingFlags.Public | BindingFlags.Instance)?.Invoke(audioSource, null);
+                        }
                     }
                 }
+                catch (Exception ex2)
+                {
+                    System.Diagnostics.Debug.WriteLine($"Hold local pause/resume error: {ex2.Message}");
+                }
+
+                // 3) If the library didn't provide a hold helper, perform a real RFC hold using re-INVITE with SDP direction.
+                // On hold we set audio to recvonly (we receive MOH, we don't send mic). On resume we restore sendrecv.
+                if (!invoked)
+                {
+                    var currentLocalSdp = TryGetActiveLocalSdp();
+                    if (!string.IsNullOrWhiteSpace(currentLocalSdp))
+                    {
+                        var updatedSdp = ApplyAudioDirectionToSdp(currentLocalSdp!, hold ? "recvonly" : "sendrecv");
+                        var reinviteOk = await TrySendReinviteAsync(updatedSdp);
+                        MainWindow.Log($"[SipService] HoldCallAsync: re-INVITE {(reinviteOk ? "sent" : "failed")} (direction={(hold ? "recvonly" : "sendrecv")})");
+                    }
+                    else
+                    {
+                        MainWindow.Log("[SipService] HoldCallAsync: Cannot send re-INVITE hold: local SDP not available.");
+                    }
+                }
+
+                SetStatus(hold ? "Call on hold" : "Call resumed");
             }
             catch (Exception ex)
             {
                 SetStatus($"Hold error: {ex.Message}");
             }
-            
-            return Task.CompletedTask;
+        }
+
+        private string? TryGetActiveLocalSdp()
+        {
+            try
+            {
+                if (_userAgent == null) return null;
+
+                // 1) Check common properties directly on UA.
+                foreach (var propName in new[] { "LocalSDP", "LocalSdp", "LocalSdpString", "LocalDescription", "Sdp", "SDP" })
+                {
+                    var p = _userAgent.GetType().GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                    if (p?.PropertyType == typeof(string))
+                    {
+                        var s = p.GetValue(_userAgent) as string;
+                        if (LooksLikeSdp(s)) return s;
+                    }
+                }
+
+                // 2) Try to access active dialogue from UA and read SDP from it.
+                var dialogue = TryGetActiveDialogue(_userAgent);
+                if (dialogue != null)
+                {
+                    foreach (var propName in new[] { "LocalSDP", "LocalSdp", "LocalDescription", "LocalSdpString", "Sdp", "SDP" })
+                    {
+                        var p = dialogue.GetType().GetProperty(propName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        if (p?.PropertyType == typeof(string))
+                        {
+                            var s = p.GetValue(dialogue) as string;
+                            if (LooksLikeSdp(s)) return s;
+                        }
+                    }
+                }
+
+                // 3) As a last resort, scan all string properties/fields for something that looks like SDP.
+                foreach (var p in _userAgent.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (p.PropertyType == typeof(string))
+                    {
+                        var s = p.GetValue(_userAgent) as string;
+                        if (LooksLikeSdp(s)) return s;
+                    }
+                }
+                foreach (var f in _userAgent.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    if (f.FieldType == typeof(string))
+                    {
+                        var s = f.GetValue(_userAgent) as string;
+                        if (LooksLikeSdp(s)) return s;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SipService] TryGetActiveLocalSdp error: {ex.Message}");
+            }
+
+            return null;
+        }
+
+        private static bool LooksLikeSdp(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            return s.Contains("v=0", StringComparison.Ordinal) && s.Contains("m=audio", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static object? TryGetActiveDialogue(object ua)
+        {
+            try
+            {
+                var p = ua.GetType().GetProperty("Dialogue", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+                        ?? ua.GetType().GetProperty("Dialog", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                var d = p?.GetValue(ua);
+                if (d != null && d.GetType().FullName?.Contains("SIPDialogue", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    return d;
+                }
+
+                // Scan fields for SIPDialogue
+                foreach (var f in ua.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    var v = f.GetValue(ua);
+                    if (v != null && v.GetType().FullName?.Contains("SIPDialogue", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        return v;
+                    }
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string ApplyAudioDirectionToSdp(string sdp, string direction) // direction: sendrecv/recvonly/sendonly/inactive
+        {
+            // Only modify the m=audio section. Ensure exactly one direction attribute in that section.
+            var lines = sdp.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').ToList();
+            bool inAudio = false;
+            bool changed = false;
+            int audioStartIndex = -1;
+
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var line = lines[i].TrimEnd();
+                if (line.StartsWith("m=", StringComparison.OrdinalIgnoreCase))
+                {
+                    inAudio = line.StartsWith("m=audio", StringComparison.OrdinalIgnoreCase);
+                    if (inAudio) audioStartIndex = i;
+                }
+
+                if (!inAudio) continue;
+
+                if (line.StartsWith("a=sendrecv", StringComparison.OrdinalIgnoreCase) ||
+                    line.StartsWith("a=recvonly", StringComparison.OrdinalIgnoreCase) ||
+                    line.StartsWith("a=sendonly", StringComparison.OrdinalIgnoreCase) ||
+                    line.StartsWith("a=inactive", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines[i] = "a=" + direction;
+                    changed = true;
+                    // Remove any subsequent direction lines in the same audio section.
+                    for (int j = i + 1; j < lines.Count; j++)
+                    {
+                        var l2 = lines[j].TrimEnd();
+                        if (l2.StartsWith("m=", StringComparison.OrdinalIgnoreCase)) break;
+                        if (l2.StartsWith("a=sendrecv", StringComparison.OrdinalIgnoreCase) ||
+                            l2.StartsWith("a=recvonly", StringComparison.OrdinalIgnoreCase) ||
+                            l2.StartsWith("a=sendonly", StringComparison.OrdinalIgnoreCase) ||
+                            l2.StartsWith("a=inactive", StringComparison.OrdinalIgnoreCase))
+                        {
+                            lines[j] = "";
+                        }
+                    }
+                    break;
+                }
+            }
+
+            if (!changed && audioStartIndex >= 0)
+            {
+                // Insert direction line right after m=audio line (safe & widely accepted).
+                lines.Insert(audioStartIndex + 1, "a=" + direction);
+            }
+
+            var normalized = string.Join("\r\n", lines.Where(l => !string.IsNullOrWhiteSpace(l))) + "\r\n";
+            return normalized;
+        }
+
+        private async Task<bool> TrySendReinviteAsync(string sdp)
+        {
+            if (_userAgent == null) return false;
+            object ua = _userAgent;
+            object? dialogue = TryGetActiveDialogue(ua);
+
+            // Try candidates on UA first, then on dialogue.
+            foreach (var targetObj in new object?[] { ua, dialogue })
+            {
+                if (targetObj == null) continue;
+                var target = targetObj;
+                var methods = target.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                foreach (var mi in methods)
+                {
+                    var name = mi.Name ?? "";
+                    if (!name.Contains("reinvite", StringComparison.OrdinalIgnoreCase) &&
+                        !name.Contains("reInvite", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var ps = mi.GetParameters();
+                    // We only support methods that can take SDP as a string.
+                    if (ps.Length == 1 && ps[0].ParameterType == typeof(string))
+                    {
+                        try
+                        {
+                            var result = mi.Invoke(target, new object[] { sdp });
+                            return await NormalizeInvokeResult(result).ConfigureAwait(false);
+                        }
+                        catch (Exception ex) { MainWindow.Log($"[SipService] re-INVITE invoke failed ({name}): {ex.Message}"); }
+                    }
+                    else if (ps.Length == 2 && ps[0].ParameterType == typeof(string) && dialogue != null && ps[1].ParameterType.IsInstanceOfType(dialogue))
+                    {
+                        try
+                        {
+                            var result = mi.Invoke(target, new[] { (object)sdp, dialogue });
+                            return await NormalizeInvokeResult(result).ConfigureAwait(false);
+                        }
+                        catch (Exception ex) { MainWindow.Log($"[SipService] re-INVITE invoke failed ({name}): {ex.Message}"); }
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        private static async Task<bool> NormalizeInvokeResult(object? result)
+        {
+            if (result is bool b) return b;
+            if (result is Task t)
+            {
+                await t.ConfigureAwait(false);
+                var type = t.GetType();
+                if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(Task<>))
+                {
+                    var resProp = type.GetProperty("Result");
+                    var resVal = resProp?.GetValue(t);
+                    if (resVal is bool tb) return tb;
+                }
+                return true;
+            }
+            return result != null;
         }
 
         /// <summary>
@@ -447,6 +725,12 @@ namespace Softphone
             {
                 SetStatus("Initializing audio...");
                 
+                // Включаем акустическое эхоподавление через Windows API
+                // Это настраивает аудио устройства в режиме Communications, который автоматически включает AEC
+                // AEC включается автоматически при использовании Role.Communications, если драйвер устройства поддерживает это
+                // Это помогает устранить эхо и обратную связь при использовании нескольких микрофонов рядом
+                EchoCancellationHelper.EnableEchoCancellation();
+                
                 // Используем только аудио кодировщик, без видео
                 var audioEncoder = new AudioEncoder();
                 
@@ -495,9 +779,11 @@ namespace Softphone
                 }
                 
                 // Усиление микрофона через AmplifiedAudioSource
-                // Цепочка: WindowsAudioEndPoint → AmplifiedAudioSource → TapAudioSource → VoIPMediaSession
+                // Цепочка: WindowsAudioEndPoint → AmplifiedAudioSource → EchoCancelledAudioSource → TapAudioSource → VoIPMediaSession
                 IAudioSource? originalAudioSource = null;
                 TapAudioSource? tapAudioSource = null;
+                EchoCancelledAudioSource? echoCancelledSource = null;
+                
                 if (mediaEndPoints.AudioSource is IAudioSource src)
                 {
                     originalAudioSource = src;
@@ -505,8 +791,12 @@ namespace Softphone
                     double gain = 6.0; // можно 8.0, если не будет хрипеть
                     var amplifiedSource = new AmplifiedAudioSource(src, (float)gain);
                     
+                    // Добавляем эхоподавление для устранения обратной связи при использовании нескольких микрофонов рядом
+                    // EchoCancelledAudioSource будет получать reference сигнал из AudioSink через EchoCancellationSink
+                    echoCancelledSource = new EchoCancelledAudioSource(amplifiedSource, _audioSampleRate);
+                    
                     // TapAudioSource - последний в цепочке, перехватывает все samples перед VoIPMediaSession
-                    tapAudioSource = new TapAudioSource(amplifiedSource);
+                    tapAudioSource = new TapAudioSource(echoCancelledSource);
                     
                     // Подписываемся на tap для записи outbound PCM
                     int _tapCount = 0;
@@ -522,10 +812,24 @@ namespace Softphone
                     };
                     
                     mediaEndPoints.AudioSource = tapAudioSource;
-                    MainWindow.Log("[SipService] AudioSource chain: WindowsAudioEndPoint → AmplifiedAudioSource → TapAudioSource → VoIPMediaSession");
+                    // Store the exact audio source instance wired into this media session.
+                    _activeAudioSource = tapAudioSource;
+                    MainWindow.Log("[SipService] AudioSource chain: WindowsAudioEndPoint → AmplifiedAudioSource → EchoCancelledAudioSource → TapAudioSource → VoIPMediaSession");
+                }
+                else
+                {
+                    // Keep a reference even if it's not an IAudioSource (some versions wrap it differently).
+                    _activeAudioSource = mediaEndPoints.AudioSource;
                 }
                 
-                // SIP recording disabled (WebRTC-only): do not wrap AudioSink.
+                // Обертываем AudioSink для перехвата reference сигнала для эхоподавления
+                if (mediaEndPoints.AudioSink != null && echoCancelledSource != null)
+                {
+                    mediaEndPoints.AudioSink = new EchoCancellationSink(mediaEndPoints.AudioSink, echoCancelledSource);
+                    MainWindow.Log("[SipService] AudioSink wrapped with EchoCancellationSink for AEC reference signal");
+                }
+                
+                // SIP recording disabled (WebRTC-only): do not wrap AudioSink for recording.
                 
                 _voipMediaSession = new VoIPMediaSession(mediaEndPoints)
                 {
@@ -961,6 +1265,53 @@ namespace Softphone
                 
                 // Логируем все входящие запросы для диагностики
                 SetStatus($"Trace: Received {request.Method} from {remoteEndPoint}");
+
+                // Handle CANCEL: caller cancelled the INVITE before we answered.
+                if (request.Method == SIPMethodsEnum.CANCEL)
+                {
+                    try
+                    {
+                        var callId = request.Header?.CallId;
+                        SetStatus($"Incoming call cancelled by remote party (CANCEL). Call-ID: {callId ?? "unknown"}");
+                        MainWindow.Log($"[SipService] Incoming call cancelled by remote party (CANCEL). Call-ID: {callId ?? "unknown"}");
+
+                        // Respond 200 OK to CANCEL.
+                        var ok = SIPResponse.GetResponse(request, SIPResponseStatusCodesEnum.Ok, null);
+                        await _sipTransport.SendResponseAsync(ok);
+
+                        // Best-effort: respond 487 to the original INVITE if we still have it.
+                        SIPRequest? savedInvite;
+                        lock (this) { savedInvite = _incomingCallRequest; }
+                        if (savedInvite != null && !string.IsNullOrEmpty(callId) && savedInvite.Header?.CallId == callId)
+                        {
+                            try
+                            {
+                                var terminated = SIPResponse.GetResponse(savedInvite, SIPResponseStatusCodesEnum.RequestTerminated, "Cancelled");
+                                await _sipTransport.SendResponseAsync(terminated);
+                            }
+                            catch { }
+                        }
+
+                        // Stop any local tones and notify UI to close the call window.
+                        _toneGenerator?.Stop();
+                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
+
+                        // Clear incoming call state so retransmits won't keep UI alive.
+                        lock (this)
+                        {
+                            _incomingCallUserAgent = null;
+                            _incomingCallRequest = null;
+                            _incomingCallerNumber = null;
+                            _incomingCallId = null;
+                        }
+                        _incomingCalls.Clear();
+                    }
+                    catch (Exception ex)
+                    {
+                        SetStatus($"Error handling CANCEL: {ex.Message}");
+                    }
+                    return;
+                }
                 
                 // Обрабатываем BYE запросы - другая сторона завершила звонок
                 if (request.Method == SIPMethodsEnum.BYE)
@@ -1004,6 +1355,23 @@ namespace Softphone
                 {
                     string? callId = request.Header?.CallId;
                     bool isKnownCall = !string.IsNullOrEmpty(callId) && _incomingCalls != null && _incomingCalls.ContainsKey(callId);
+
+                    // Always send a provisional response for INVITE. This prevents PBX retransmits and allows proper CANCEL handling.
+                    // Safe even if UA also sends 100/180; duplicates are tolerated by SIP.
+                    try
+                    {
+                        var trying = SIPResponse.GetResponse(request, SIPResponseStatusCodesEnum.Trying, null);
+                        await _sipTransport.SendResponseAsync(trying);
+
+                        // For first INVITE, also send 180 Ringing (so caller knows we're ringing).
+                        // For retransmits, re-send 180 so the transaction stays alive with a response.
+                        var ringing = SIPResponse.GetResponse(request, SIPResponseStatusCodesEnum.Ringing, null);
+                        await _sipTransport.SendResponseAsync(ringing);
+                    }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[SipService] Warning: failed to send provisional INVITE response: {ex.Message}");
+                    }
                     
                     // Логируем только первый INVITE для каждого Call-ID
                     if (!isKnownCall)
@@ -2137,6 +2505,9 @@ namespace Softphone
 
             try
             {
+                // Always stop any local tones when rejecting an incoming call
+                _toneGenerator?.Stop();
+
                 // В SIPSorcery для отклонения входящего звонка нужно использовать AcceptCall и затем Reject на UAS
                 // или отправить ответ Busy Here вручную
                 var uas = savedUserAgent.AcceptCall(savedRequest);
@@ -2156,6 +2527,9 @@ namespace Softphone
                     }
                     SetStatus("Incoming call rejected (manual response).");
                 }
+
+                // Best-effort: ensure UA state is not left "active"
+                try { _userAgent?.Hangup(); } catch { }
 
                 lock (this)
                 {

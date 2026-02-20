@@ -1,0 +1,24 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+      Windows 11 native look: make surfaces slightly transparent so Mica can show through.
+      These override the normal LightTheme brushes ONLY on Win11.
+    -->
+
+    <!-- Surfaces -->
+    <SolidColorBrush x:Key="BackgroundDarkBrush" Color="#CCF6F7F9"/>
+    <SolidColorBrush x:Key="BackgroundMediumBrush" Color="#CCFFFFFF"/>
+    <SolidColorBrush x:Key="BackgroundLightBrush" Color="#B5EEF2F7"/>
+
+    <!-- Opaque surfaces for layered dialogs/popups (avoid alpha blending artifacts) -->
+    <SolidColorBrush x:Key="DialogBackgroundBrush" Color="#FFF6F7F9"/>
+    <SolidColorBrush x:Key="DialogChromeBrush" Color="#FFFFFFFF"/>
+    <SolidColorBrush x:Key="PopupBackgroundBrush" Color="#FFFFFFFF"/>
+
+    <!-- Hover + border tuned for Mica -->
+    <SolidColorBrush x:Key="HoverBackgroundBrush" Color="#40E5E7EB"/>
+    <SolidColorBrush x:Key="BorderBrush" Color="#55D1D5DB"/>
+</ResourceDictionary>
+
+

@@ -13,7 +13,7 @@ namespace Softphone
 {
     /// <summary>
     /// Рекордер для записи звонков через RTP потоки
-    /// Записывает inbound RTP (удаленная сторона) в моно PCM файл, затем конвертирует в WAV через ffmpeg
+    /// Записывает inbound RTP (удаленная сторона) в моно PCM файл, затем конвертирует в MP3 через ffmpeg
     /// </summary>
     public class RtpCallRecorder : CallRecorderBase
     {
@@ -36,7 +36,7 @@ namespace Softphone
         private OpusDecoder? _opusDecoderInbound;
         private readonly object _opusDecoderLock = new object();
         
-        // Переопределяем RecordingFilePath для возврата финального WAV файла
+        // Переопределяем RecordingFilePath для возврата финального MP3 файла
         public new string? RecordingFilePath => _recordingFilePath;
 
         /// <summary>
@@ -119,14 +119,14 @@ namespace Softphone
         {
             string pcmInBasePath = Path.Combine(recordingsDirectory, $"{baseFileName}_inbound.pcm");
             string pcmOutBasePath = Path.Combine(recordingsDirectory, $"{baseFileName}_outbound.pcm");
-            string wavBasePath = Path.Combine(recordingsDirectory, $"{baseFileName}.wav");
+            string mp3BasePath = Path.Combine(recordingsDirectory, $"{baseFileName}.mp3");
             
             // Генерируем уникальные пути
             _pcmInPath = GenerateUniqueFilePath(pcmInBasePath, path => File.Exists(path));
             _pcmOutPath = GenerateUniqueFilePath(pcmOutBasePath, path => File.Exists(path));
-            _recordingFilePath = GenerateUniqueFilePath(wavBasePath, path => File.Exists(path));
+            _recordingFilePath = GenerateUniqueFilePath(mp3BasePath, path => File.Exists(path));
             
-            MainWindow.Log($"[RtpCallRecorder] Recording paths: PCM_In={_pcmInPath}, PCM_Out={_pcmOutPath}, WAV={_recordingFilePath}");
+            MainWindow.Log($"[RtpCallRecorder] Recording paths: PCM_In={_pcmInPath}, PCM_Out={_pcmOutPath}, MP3={_recordingFilePath}");
         }
 
         /// <summary>
@@ -892,23 +892,23 @@ namespace Softphone
                 bool converted = false;
                 if (hasInbound && hasOutbound && !string.IsNullOrEmpty(_pcmOutPath))
                 {
-                    MainWindow.Log($"[RtpCallRecorder] Mixing inbound and outbound PCM files into WAV...");
+                    MainWindow.Log($"[RtpCallRecorder] Mixing inbound and outbound PCM files into MP3...");
                     converted = await MixPcmFilesWithFfmpegAsync(_pcmInPath, _pcmOutPath, _recordingFilePath);
                 }
                 else if (hasInbound)
                 {
-                    MainWindow.Log($"[RtpCallRecorder] Converting inbound PCM to WAV (outbound file missing or empty)...");
-                    converted = await ConvertPcmToWavWithFfmpegAsync(_pcmInPath, _recordingFilePath);
+                    MainWindow.Log($"[RtpCallRecorder] Converting inbound PCM to MP3 (outbound file missing or empty)...");
+                    converted = await ConvertPcmToMp3WithFfmpegAsync(_pcmInPath, _recordingFilePath);
                 }
                 else if (hasOutbound && !string.IsNullOrEmpty(_pcmOutPath))
                 {
-                    MainWindow.Log($"[RtpCallRecorder] Converting outbound PCM to WAV (inbound file missing or empty)...");
-                    converted = await ConvertPcmToWavWithFfmpegAsync(_pcmOutPath, _recordingFilePath);
+                    MainWindow.Log($"[RtpCallRecorder] Converting outbound PCM to MP3 (inbound file missing or empty)...");
+                    converted = await ConvertPcmToMp3WithFfmpegAsync(_pcmOutPath, _recordingFilePath);
                 }
                 
                 if (converted)
                 {
-                    MainWindow.Log($"[RtpCallRecorder] Final WAV ready: {_recordingFilePath}");
+                    MainWindow.Log($"[RtpCallRecorder] Final MP3 ready: {_recordingFilePath}");
                     
                     // Удаляем PCM файлы после успешной конвертации
                     try
@@ -940,10 +940,10 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Микширует два PCM файла (inbound и outbound) в один WAV файл через ffmpeg
+        /// Микширует два PCM файла (inbound и outbound) в один MP3 файл через ffmpeg
         /// Стерео режим: L=ты (outbound), R=абонент (inbound)
         /// </summary>
-        private async Task<bool> MixPcmFilesWithFfmpegAsync(string inboundPcmPath, string outboundPcmPath, string wavPath)
+        private async Task<bool> MixPcmFilesWithFfmpegAsync(string inboundPcmPath, string outboundPcmPath, string mp3Path)
         {
             if (!File.Exists(inboundPcmPath) || !File.Exists(outboundPcmPath))
             {
@@ -958,24 +958,31 @@ namespace Softphone
                 return false;
             }
 
-            MainWindow.Log($"[RtpCallRecorder] Starting ffmpeg mixing: {Path.GetFileName(inboundPcmPath)} + {Path.GetFileName(outboundPcmPath)} -> {Path.GetFileName(wavPath)}");
+            MainWindow.Log($"[RtpCallRecorder] Starting ffmpeg mixing: {Path.GetFileName(inboundPcmPath)} + {Path.GetFileName(outboundPcmPath)} -> {Path.GetFileName(mp3Path)}");
 
             // Стерео режим: L=ты (outbound), R=абонент (inbound)
             // amerge=inputs=2 - объединяет два моно потока в стерео (L=первый, R=второй)
+            // Конвертируем в MP3 с битрейтом 128k
             string args = $"-y -hide_banner -loglevel error " +
                 $"-f s16le -ar 48000 -ac 1 -i \"{outboundPcmPath}\" " +
                 $"-f s16le -ar 48000 -ac 1 -i \"{inboundPcmPath}\" " +
                 $"-filter_complex \"[0:a][1:a]amerge=inputs=2\" " +
-                $"-ac 2 -c:a pcm_s16le \"{wavPath}\"";
+                $"-ac 2 -c:a libmp3lame -b:a 128k \"{mp3Path}\"";
 
-            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[RtpCallRecorder]");
+            // Используем размер большего из двух PCM файлов для расчета таймаута
+            long inputSize = 0;
+            if (File.Exists(outboundPcmPath)) inputSize = Math.Max(inputSize, new FileInfo(outboundPcmPath).Length);
+            if (File.Exists(inboundPcmPath)) inputSize = Math.Max(inputSize, new FileInfo(inboundPcmPath).Length);
+            string? inputFileForTimeout = inputSize > 0 && File.Exists(outboundPcmPath) ? outboundPcmPath : null;
+            
+            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, mp3Path, "[RtpCallRecorder]", inputFileForTimeout);
         }
 
         /// <summary>
-        /// Конвертирует RAW PCM файл в WAV используя ffmpeg
+        /// Конвертирует RAW PCM файл в MP3 используя ffmpeg
         /// Формат входного PCM: s16le, 48kHz, mono
         /// </summary>
-        private async Task<bool> ConvertPcmToWavWithFfmpegAsync(string pcmPath, string wavPath)
+        private async Task<bool> ConvertPcmToMp3WithFfmpegAsync(string pcmPath, string mp3Path)
         {
             if (!File.Exists(pcmPath))
             {
@@ -990,14 +997,14 @@ namespace Softphone
                 return false;
             }
 
-            MainWindow.Log($"[RtpCallRecorder] Starting ffmpeg conversion: {Path.GetFileName(pcmPath)} -> {Path.GetFileName(wavPath)}");
+            MainWindow.Log($"[RtpCallRecorder] Starting ffmpeg conversion: {Path.GetFileName(pcmPath)} -> {Path.GetFileName(mp3Path)}");
 
-            // s16le, 48kHz, mono → WAV
+            // s16le, 48kHz, mono → MP3 с битрейтом 128k
             string args = $"-y -hide_banner -loglevel error " +
                 $"-f s16le -ar 48000 -ac 1 -i \"{pcmPath}\" " +
-                $"\"{wavPath}\"";
+                $"-c:a libmp3lame -b:a 128k \"{mp3Path}\"";
 
-            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[RtpCallRecorder]");
+            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, mp3Path, "[RtpCallRecorder]", pcmPath);
         }
     }
 }

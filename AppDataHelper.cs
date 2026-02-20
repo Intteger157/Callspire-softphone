@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 
 namespace Softphone
 {
@@ -11,6 +12,8 @@ namespace Softphone
     {
         private static string? _appDataPath;
         private static readonly object _lock = new object();
+        private static DateTime _lastCleanupCheck = DateTime.MinValue;
+        private static readonly TimeSpan CleanupCheckInterval = TimeSpan.FromHours(24); // Проверяем раз в день
 
         /// <summary>
         /// Получает базовую папку приложения: %LOCALAPPDATA%\Callspire
@@ -163,6 +166,85 @@ namespace Softphone
             }
 
             return updatesPath;
+        }
+
+        /// <summary>
+        /// Очищает старые файлы записей (старше 7 дней) из папки Recordings
+        /// Вызывается автоматически при старте приложения и периодически (раз в день)
+        /// </summary>
+        public static void CleanupOldRecordings(int retentionDays = 7)
+        {
+            try
+            {
+                // Проверяем, не выполнялась ли очистка недавно (чтобы не делать это слишком часто)
+                if (_lastCleanupCheck != DateTime.MinValue && 
+                    DateTime.UtcNow - _lastCleanupCheck < CleanupCheckInterval)
+                {
+                    return; // Пропускаем, если недавно уже проверяли
+                }
+
+                _lastCleanupCheck = DateTime.UtcNow;
+
+                string recordingsPath = GetRecordingsDirectory();
+                if (!Directory.Exists(recordingsPath))
+                {
+                    return; // Папка не существует, нечего очищать
+                }
+
+                DateTime cutoffDate = DateTime.UtcNow.AddDays(-retentionDays);
+                var filesToDelete = Directory.GetFiles(recordingsPath, "*.*", SearchOption.TopDirectoryOnly)
+                    .Where(file =>
+                    {
+                        try
+                        {
+                            var fileInfo = new FileInfo(file);
+                            // Проверяем время последнего изменения (LastWriteTimeUtc)
+                            return fileInfo.LastWriteTimeUtc < cutoffDate;
+                        }
+                        catch
+                        {
+                            return false; // Пропускаем файлы, к которым нет доступа
+                        }
+                    })
+                    .ToList();
+
+                if (filesToDelete.Count == 0)
+                {
+                    MainWindow.Log($"[AppDataHelper] CleanupOldRecordings: No files older than {retentionDays} days found");
+                    return;
+                }
+
+                int deletedCount = 0;
+                long totalSizeDeleted = 0;
+
+                foreach (string filePath in filesToDelete)
+                {
+                    try
+                    {
+                        var fileInfo = new FileInfo(filePath);
+                        long fileSize = fileInfo.Length;
+                        
+                        File.Delete(filePath);
+                        deletedCount++;
+                        totalSizeDeleted += fileSize;
+                        
+                        MainWindow.Log($"[AppDataHelper] CleanupOldRecordings: Deleted old recording: {Path.GetFileName(filePath)} (age: {(DateTime.UtcNow - fileInfo.LastWriteTimeUtc).TotalDays:F1} days)");
+                    }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[AppDataHelper] CleanupOldRecordings: Failed to delete {Path.GetFileName(filePath)}: {ex.Message}");
+                    }
+                }
+
+                if (deletedCount > 0)
+                {
+                    MainWindow.Log($"[AppDataHelper] CleanupOldRecordings: ✅ Cleanup completed - deleted {deletedCount} file(s), freed {totalSizeDeleted / 1024 / 1024:F2} MB");
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[AppDataHelper] CleanupOldRecordings: ERROR during cleanup: {ex.Message}");
+            }
         }
     }
 }

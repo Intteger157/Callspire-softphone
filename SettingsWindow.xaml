@@ -3,27 +3,41 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ic="clr-namespace:FluentIcons.Wpf;assembly=FluentIcons.Wpf"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
-        Title="Settings" Height="550" Width="750"
+        xmlns:local="clr-namespace:Softphone"
+        Title="Settings" Height="680" Width="980"
+        MinHeight="620" MinWidth="900"
         WindowStyle="None" 
-        AllowsTransparency="True"
+        AllowsTransparency="False"
         Background="Transparent"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8" GlassFrameThickness="0"/>
+    </WindowChrome.WindowChrome>
+    <Window.Resources>
+        <local:ThemeIconConverter x:Key="ThemeIconConverter"/>
+        <local:ThemeDescriptionConverter x:Key="ThemeDescriptionConverter"/>
+    </Window.Resources>
     
-    <Border Background="{StaticResource BackgroundDarkBrush}" 
-            CornerRadius="8" 
-            BorderBrush="{StaticResource BorderBrush}" 
-            BorderThickness="1"
-            ClipToBounds="True">
-        <Grid>
+    <!-- Surface (clipped) + Stroke overlay (does not affect layout), so corners stay rounded and close button can sit flush -->
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Border x:Name="WindowSurface"
+                Background="{DynamicResource BackgroundDarkBrush}"
+                CornerRadius="16"
+                ClipToBounds="True"
+                SnapsToDevicePixels="True">
+            <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
             <!-- Title Bar -->
-            <Border Grid.Row="0" Background="{StaticResource BackgroundMediumBrush}" 
-                    CornerRadius="8,8,0,0" ClipToBounds="True">
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}" 
+                    CornerRadius="16,16,0,0"
+                    ClipToBounds="True">
                 <Grid MouseDown="TitleBar_MouseDown">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -31,25 +45,13 @@
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0" Text="Softphone Settings" 
                               FontSize="16" FontWeight="SemiBold" 
-                              Foreground="{StaticResource TextSecondaryBrush}"
+                              Foreground="{DynamicResource TextSecondaryBrush}"
                               Margin="16,12,0,12" 
                               VerticalAlignment="Center"/>
-                    <Button Grid.Column="1" Content="✕" Width="46" Height="36" 
-                           Background="Transparent" Foreground="{StaticResource TextSecondaryBrush}"
-                           BorderThickness="0" Click="CloseButton_Click"
-                           FontSize="16" Cursor="Hand">
-                        <Button.Style>
-                            <Style TargetType="Button">
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Style.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="{StaticResource AccentRedBrush}"/>
-                                        <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Button.Style>
-                    </Button>
+                    <Button Grid.Column="1"
+                            Content="✕"
+                            Click="CloseButton_Click"
+                            Style="{DynamicResource TitleBarCloseButtonStyle}"/>
                 </Grid>
             </Border>
 
@@ -61,9 +63,10 @@
                 </Grid.ColumnDefinitions>
 
                 <!-- Sidebar -->
-                <Border Grid.Column="0" Background="{StaticResource BackgroundMediumBrush}" 
-                       BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,1,0"
-                       CornerRadius="0,0,8,8" ClipToBounds="True">
+                <Border x:Name="SidebarBorder"
+                       Grid.Column="0" Background="{DynamicResource BackgroundMediumBrush}" 
+                       BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0"
+                       CornerRadius="0,0,0,16" ClipToBounds="True">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
@@ -71,66 +74,119 @@
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Margin="10,16,10,0">
-                            <Button Style="{StaticResource SettingsSidebarButtonStyle}" 
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
                                    Click="ConnectionButton_Click" 
                                    Name="ConnectionButton">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="PlugConnected" Width="16" Height="16" IconVariant="Regular" Margin="0,0,8,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <ic:SymbolIcon Symbol="PlugConnected"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                                     <TextBlock Text="Connection" FontSize="14"/>
                                 </StackPanel>
                             </Button>
                             
-                            <Button Style="{StaticResource SettingsSidebarButtonStyle}" 
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
                                    Click="AudioButton_Click" 
                                    Name="AudioButton">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="&#xE767;" FontFamily="Segoe Fluent Icons" FontSize="16" Margin="0,0,8,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <ic:SymbolIcon Symbol="Speaker2"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                                     <TextBlock Text="Audio" FontSize="14"/>
                                 </StackPanel>
                             </Button>
                             
-                            <Button Style="{StaticResource SettingsSidebarButtonStyle}" 
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
                                    Click="GeneralButton_Click" 
                                    Name="GeneralButton">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Settings" Width="16" Height="16" IconVariant="Regular" Margin="0,0,8,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <ic:SymbolIcon Symbol="Settings"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                                     <TextBlock Text="General" FontSize="14"/>
                                 </StackPanel>
                             </Button>
                             
-                            <Button Style="{StaticResource SettingsSidebarButtonStyle}" 
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
+                                   Click="AppearanceButton_Click" 
+                                   Name="AppearanceButton">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="Color"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <TextBlock Text="Appearance" FontSize="14"/>
+                                </StackPanel>
+                            </Button>
+                            
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
                                    Click="AdvancedButton_Click" 
                                    Name="AdvancedButton">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Code" Width="16" Height="16" IconVariant="Regular" Margin="0,0,8,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <ic:SymbolIcon Symbol="Code"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                                     <TextBlock Text="Advanced" FontSize="14"/>
                                 </StackPanel>
                             </Button>
                             
-                            <Button Style="{StaticResource SettingsSidebarButtonStyle}" 
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
+                                   Click="IntegrationsButton_Click" 
+                                   Name="IntegrationsButton">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="Link"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <TextBlock Text="Integrations" FontSize="14"/>
+                                </StackPanel>
+                            </Button>
+                            
+                            <Button Style="{DynamicResource SettingsSidebarButtonStyle}" 
                                    Click="AboutButton_Click" 
                                    Name="AboutButton">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Info" Width="16" Height="16" IconVariant="Regular" Margin="0,0,8,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
+                                    <ic:SymbolIcon Symbol="Info"
+                                                   Width="16" Height="16"
+                                                   IconVariant="Regular"
+                                                   Margin="0,0,8,0"
+                                                   VerticalAlignment="Center"
+                                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/>
                                     <TextBlock Text="About" FontSize="14"/>
                                 </StackPanel>
                             </Button>
                         </StackPanel>
                         <Button Grid.Row="1" Content="Close" 
-                               Style="{StaticResource SettingsSidebarButtonStyle}" 
+                               Style="{DynamicResource SettingsSidebarButtonStyle}" 
                                Click="CloseButton_Click" 
                                Margin="10,0,10,10"
-                               Foreground="{StaticResource AccentRedBrush}"/>
+                               Foreground="{DynamicResource AccentRedBrush}"/>
                     </Grid>
                 </Border>
 
                 <!-- Content Area (wheel scroll, no visible scrollbars) -->
                 <ScrollViewer Grid.Column="1"
-                              Background="{StaticResource BackgroundDarkBrush}"
+                              Background="{DynamicResource BackgroundDarkBrush}"
                               VerticalScrollBarVisibility="Hidden"
                               HorizontalScrollBarVisibility="Disabled"
                               PanningMode="VerticalOnly">
-                <Grid Background="{StaticResource BackgroundDarkBrush}">
+                <Grid Background="{DynamicResource BackgroundDarkBrush}">
                     <!-- About View -->
                     <Grid Name="AboutSettingsView" Visibility="Collapsed" Margin="30,20">
                         <Grid.RowDefinitions>
@@ -143,13 +199,13 @@
                         
                         <TextBlock Grid.Row="0" Text="About" 
                                   FontSize="18" FontWeight="SemiBold"
-                                  Foreground="{StaticResource TextPrimaryBrush}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   Margin="0,0,0,20"/>
                         
                         <Border Grid.Row="1"
-                                Background="{StaticResource BackgroundMediumBrush}"
+                                Background="{DynamicResource BackgroundMediumBrush}"
                                 CornerRadius="8"
-                                BorderBrush="{StaticResource BorderBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
                                 BorderThickness="1"
                                 Padding="16"
                                 Margin="0,0,0,20">
@@ -162,8 +218,8 @@
                                 <Border Width="48"
                                         Height="48"
                                         CornerRadius="10"
-                                        Background="{StaticResource BackgroundDarkBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
+                                        Background="{DynamicResource BackgroundDarkBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
                                         BorderThickness="1"
                                         VerticalAlignment="Top">
                                     <Image Width="32"
@@ -179,12 +235,12 @@
                                     <TextBlock Text="Callspire Softphone" 
                                                FontSize="24"
                                                FontWeight="SemiBold"
-                                               Foreground="{StaticResource TextPrimaryBrush}"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
                                                Margin="0,0,0,4"/>
                                     <TextBlock Name="VersionTextBlock"
                                                Text="Version: 1.0.0"
                                                FontSize="13"
-                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                                Margin="0,0,0,0"/>
                                 </StackPanel>
                             </Grid>
@@ -193,176 +249,82 @@
                         <TextBlock Grid.Row="2" 
                                   Text="A modern softphone application for Windows."
                                   FontSize="13"
-                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  Foreground="{DynamicResource TextSecondaryBrush}"
                                   TextWrapping="Wrap"
-                                  Margin="0,0,0,30"/>
+                                  Margin="0,0,0,24"/>
                         
-                        <!-- Automatic Update Checker Section -->
-                        <Expander Grid.Row="3" 
-                                 Header="Updates"
-                                 FontSize="16" FontWeight="SemiBold"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 IsExpanded="True"
-                                 Margin="0,0,0,20">
-                            <Grid Margin="20,10,20,0">
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-
-                                <!-- GitHub Repository Link -->
-                                <TextBlock Grid.Row="0"
-                                           Text="GitHub repository URL:"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           FontSize="13"
-                                           Margin="0,0,0,6"/>
-                                <TextBox Grid.Row="1"
-                                         Name="GitHubRepositoryLinkTextBox"
-                                         Background="{StaticResource BackgroundMediumBrush}"
-                                         Foreground="{StaticResource TextPrimaryBrush}"
-                                         BorderBrush="{StaticResource BorderBrush}"
-                                         BorderThickness="1"
-                                         Padding="8,6"
-                                         FontSize="13"
-                                         Height="32"
-                                         MinWidth="240"
-                                         HorizontalAlignment="Stretch"
-                                         MaxWidth="420"
-                                         TextAlignment="Left"
-                                         HorizontalContentAlignment="Left"
-                                         VerticalContentAlignment="Center"
-                                         TextWrapping="NoWrap"
-                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
-                                         TextChanged="GitHubRepositoryLinkTextBox_TextChanged"/>
-                                <TextBlock Grid.Row="2"
-                                           Text="Example: https://github.com/username/repository"
-                                           FontSize="11"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           Margin="0,4,0,14"
-                                           TextWrapping="Wrap"
-                                           Opacity="0.7"/>
-
-                                <!-- GitHub Token -->
-                                <TextBlock Grid.Row="3"
-                                           Text="GitHub Personal Access Token (for private repositories):"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           FontSize="13"
-                                           Margin="0,0,0,6"/>
-                                <PasswordBox Grid.Row="4"
-                                             Name="GitHubTokenPasswordBox"
-                                             Background="{StaticResource BackgroundMediumBrush}"
-                                             Foreground="{StaticResource TextPrimaryBrush}"
-                                             BorderBrush="{StaticResource BorderBrush}"
-                                             BorderThickness="1"
-                                             Padding="8,6"
-                                             FontSize="13"
-                                             Height="32"
-                                             MinWidth="240"
-                                             HorizontalAlignment="Stretch"
-                                             MaxWidth="420"
-                                             HorizontalContentAlignment="Left"
-                                             VerticalContentAlignment="Center"
-                                             PasswordChanged="GitHubTokenPasswordBox_PasswordChanged"/>
-                                <TextBlock Grid.Row="5"
-                                           Text="The token will be encrypted and stored locally. Only needed for private repositories."
-                                           FontSize="11"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           Margin="0,4,0,14"
-                                           TextWrapping="Wrap"
-                                           Opacity="0.7"/>
-
-                                <!-- Actions -->
-                                <WrapPanel Grid.Row="6" Margin="0,6,0,0">
-                                    <Button Name="SaveUpdateSettingsButton"
-                                            Content="Save"
-                                            Background="{StaticResource AccentGreenBrush}"
-                                            Foreground="White"
-                                            BorderThickness="0"
-                                            Padding="16,8"
-                                            FontSize="13"
-                                            FontWeight="SemiBold"
-                                            Cursor="Hand"
-                                            Click="SaveUpdateSettingsButton_Click"
-                                            Width="120"
-                                            Height="36"
-                                            Visibility="Visible">
-                                        <Button.Style>
-                                            <Style TargetType="Button">
-                                                <Setter Property="Template">
-                                                    <Setter.Value>
-                                                        <ControlTemplate TargetType="Button">
-                                                            <Border Background="{TemplateBinding Background}"
-                                                                    CornerRadius="4"
-                                                                    SnapsToDevicePixels="True">
-                                                                <ContentPresenter HorizontalAlignment="Center"
-                                                                                  VerticalAlignment="Center"
-                                                                                  Margin="{TemplateBinding Padding}"/>
-                                                            </Border>
-                                                            <ControlTemplate.Triggers>
-                                                                <Trigger Property="IsMouseOver" Value="True">
-                                                                    <Setter Property="Background" Value="#2E7D32"/>
-                                                                </Trigger>
-                                                                <Trigger Property="IsEnabled" Value="False">
-                                                                    <Setter Property="Background" Value="#4A4A4A"/>
-                                                                    <Setter Property="Foreground" Value="#6A6A6A"/>
-                                                                </Trigger>
-                                                            </ControlTemplate.Triggers>
-                                                        </ControlTemplate>
-                                                    </Setter.Value>
-                                                </Setter>
-                                            </Style>
-                                        </Button.Style>
-                                    </Button>
-
-                                    <Button Name="CheckForUpdatesButton"
-                                            Content="Check for Updates"
-                                            Background="{StaticResource AccentBlueBrush}"
-                                            Foreground="White"
-                                            BorderThickness="0"
-                                            Padding="16,8"
-                                            FontSize="13"
-                                            FontWeight="SemiBold"
-                                            Cursor="Hand"
-                                            Click="CheckForUpdatesButton_Click"
-                                            Margin="10,0,0,0"
-                                            Width="150"
-                                            Height="36"
-                                            Visibility="Collapsed">
-                                        <Button.Style>
-                                            <Style TargetType="Button">
-                                                <Setter Property="Template">
-                                                    <Setter.Value>
-                                                        <ControlTemplate TargetType="Button">
-                                                            <Border Background="{TemplateBinding Background}"
-                                                                    CornerRadius="4"
-                                                                    SnapsToDevicePixels="True">
-                                                                <ContentPresenter HorizontalAlignment="Center"
-                                                                                  VerticalAlignment="Center"
-                                                                                  Margin="{TemplateBinding Padding}"/>
-                                                            </Border>
-                                                            <ControlTemplate.Triggers>
-                                                                <Trigger Property="IsMouseOver" Value="True">
-                                                                    <Setter Property="Background" Value="#4752C4"/>
-                                                                </Trigger>
-                                                                <Trigger Property="IsEnabled" Value="False">
-                                                                    <Setter Property="Background" Value="#4A4A4A"/>
-                                                                    <Setter Property="Foreground" Value="#6A6A6A"/>
-                                                                </Trigger>
-                                                            </ControlTemplate.Triggers>
-                                                        </ControlTemplate>
-                                                    </Setter.Value>
-                                                </Setter>
-                                            </Style>
-                                        </Button.Style>
-                                    </Button>
-                                </WrapPanel>
-                            </Grid>
-                </Expander>
+                        <!-- Updates Section -->
+                        <Border Grid.Row="3"
+                                Background="{DynamicResource BackgroundMediumBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="20"
+                                Margin="0,0,0,20">
+                            <StackPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                    <ic:SymbolIcon Symbol="ArrowDownload"
+                                                   Width="20" Height="20"
+                                                   IconVariant="Regular"
+                                                   Foreground="{DynamicResource AccentBlueBrush}"
+                                                   VerticalAlignment="Center"
+                                                   Margin="0,0,10,0"/>
+                                    <TextBlock Text="Updates"
+                                              FontSize="16"
+                                              FontWeight="SemiBold"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              VerticalAlignment="Center"/>
+                                </StackPanel>
+                                
+                                <TextBlock Text="Updates are checked automatically once per day when the application starts."
+                                          FontSize="13"
+                                          Foreground="{DynamicResource TextSecondaryBrush}"
+                                          TextWrapping="Wrap"
+                                          Margin="0,0,0,16"
+                                          LineHeight="20"/>
+                                
+                                <Button Name="CheckForUpdatesButton"
+                                        Content="Check for Updates"
+                                        Background="{DynamicResource AccentBlueBrush}"
+                                        Foreground="White"
+                                        BorderThickness="0"
+                                        Padding="20,10"
+                                        FontSize="13"
+                                        FontWeight="SemiBold"
+                                        Cursor="Hand"
+                                        Click="CheckForUpdatesButton_Click"
+                                        HorizontalAlignment="Left"
+                                        MinWidth="160"
+                                        Height="38">
+                                    <Button.Style>
+                                        <Style TargetType="Button">
+                                            <Setter Property="Template">
+                                                <Setter.Value>
+                                                    <ControlTemplate TargetType="Button">
+                                                        <Border Background="{TemplateBinding Background}"
+                                                                CornerRadius="6"
+                                                                SnapsToDevicePixels="True">
+                                                            <ContentPresenter HorizontalAlignment="Center"
+                                                                              VerticalAlignment="Center"
+                                                                              Margin="{TemplateBinding Padding}"/>
+                                                        </Border>
+                                                        <ControlTemplate.Triggers>
+                                                            <Trigger Property="IsMouseOver" Value="True">
+                                                                <Setter Property="Background" Value="#4752C4"/>
+                                                            </Trigger>
+                                                            <Trigger Property="IsEnabled" Value="False">
+                                                                <Setter Property="Background" Value="#4A4A4A"/>
+                                                                <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                            </Trigger>
+                                                        </ControlTemplate.Triggers>
+                                                    </ControlTemplate>
+                                                </Setter.Value>
+                                            </Setter>
+                                        </Style>
+                                    </Button.Style>
+                                </Button>
+                            </StackPanel>
+                        </Border>
             </Grid>
             
             <!-- Connection Settings View -->
@@ -381,18 +343,18 @@
 
                         <TextBlock Grid.Row="0" Text="Connection Settings" 
                                   FontSize="18" FontWeight="SemiBold"
-                                  Foreground="{StaticResource TextPrimaryBrush}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   Margin="0,0,0,16"/>
                         
                         <TextBlock Grid.Row="1" Text="These credentials are used for both SIP and WebRTC connections. You can disable WebRTC in Advanced settings." 
                                   FontSize="12" 
-                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  Foreground="{DynamicResource TextSecondaryBrush}"
                                   Margin="0,0,0,16"
                                   TextWrapping="Wrap"/>
 
                         <StackPanel Grid.Row="2" Orientation="Vertical" Margin="0,0,0,20">
                             <TextBlock Text="Server &amp; Port:" 
-                                      Foreground="{StaticResource TextSecondaryBrush}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontSize="13"
                                       Margin="0,0,0,8"/>
                             <Grid>
@@ -401,9 +363,9 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBox Grid.Column="0" Name="SipServerTextBox" 
-                                        Background="{StaticResource BackgroundMediumBrush}"
-                                        Foreground="{StaticResource TextPrimaryBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
+                                        Background="{DynamicResource BackgroundMediumBrush}"
+                                        Foreground="{DynamicResource TextPrimaryBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
                                         BorderThickness="1"
                                         Padding="8,6" 
                                         FontSize="13"
@@ -416,9 +378,9 @@
                                         TextWrapping="NoWrap"
                                         AcceptsReturn="False"/>
                                 <TextBox Grid.Column="1" Name="SipPortTextBox" 
-                                        Background="{StaticResource BackgroundMediumBrush}"
-                                        Foreground="{StaticResource TextPrimaryBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
+                                        Background="{DynamicResource BackgroundMediumBrush}"
+                                        Foreground="{DynamicResource TextPrimaryBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
                                         BorderThickness="1"
                                         Padding="8,6" 
                                         FontSize="13"
@@ -436,13 +398,13 @@
 
                         <StackPanel Grid.Row="3" Orientation="Vertical" Margin="0,0,0,20">
                             <TextBlock Text="Username:" 
-                                      Foreground="{StaticResource TextSecondaryBrush}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontSize="13"
                                       Margin="0,0,0,8"/>
                             <TextBox Name="SipUsernameTextBox" 
-                                    Background="{StaticResource BackgroundMediumBrush}"
-                                    Foreground="{StaticResource TextPrimaryBrush}"
-                                    BorderBrush="{StaticResource BorderBrush}"
+                                    Background="{DynamicResource BackgroundMediumBrush}"
+                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
                                     BorderThickness="1"
                                     Padding="8,6" 
                                     FontSize="13"
@@ -452,13 +414,13 @@
 
                         <StackPanel Grid.Row="4" Orientation="Vertical" Margin="0,0,0,20">
                             <TextBlock Text="Password:" 
-                                      Foreground="{StaticResource TextSecondaryBrush}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontSize="13"
                                       Margin="0,0,0,8"/>
                             <PasswordBox Name="SipPasswordBox" 
-                                        Background="{StaticResource BackgroundMediumBrush}"
-                                        Foreground="{StaticResource TextPrimaryBrush}"
-                                        BorderBrush="{StaticResource BorderBrush}"
+                                        Background="{DynamicResource BackgroundMediumBrush}"
+                                        Foreground="{DynamicResource TextPrimaryBrush}"
+                                        BorderBrush="{DynamicResource BorderBrush}"
                                         BorderThickness="1"
                                         Padding="8,6" 
                                         FontSize="13"
@@ -467,7 +429,7 @@
 
                         <TextBlock Grid.Row="5" Name="ConnectionStatusTextBlock" 
                                   Text="Status: Not connected" 
-                                  Foreground="{StaticResource TextPrimaryBrush}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   FontSize="13"
                                   FontWeight="Medium"
                                   Margin="0,0,0,16"
@@ -475,7 +437,7 @@
 
                         <Button Grid.Row="6" Content="Save and Connect" 
                                Name="SaveAndConnectButton"
-                               Background="{StaticResource AccentBlueBrush}"
+                               Background="{DynamicResource AccentBlueBrush}"
                                Foreground="White"
                                BorderThickness="0"
                                Padding="16,8"
@@ -517,115 +479,402 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Text="Audio Settings"
+                                  FontSize="20"
+                                  FontWeight="SemiBold"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                  Margin="0,0,0,16"/>
+
+                        <StackPanel Grid.Row="1" Orientation="Vertical" Margin="0,0,0,0">
+                            <!-- Devices card -->
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    CornerRadius="12"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1"
+                                    Padding="18,14"
+                                    Margin="0,0,0,14">
+                                <StackPanel>
+                                    <TextBlock Text="Devices"
+                                              FontSize="14"
+                                              FontWeight="SemiBold"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              Margin="0,0,0,10"/>
+
+                                    <!-- Microphone -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                            <TextBlock Text="Microphone"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                                      FontSize="13"
+                                                      FontWeight="SemiBold"
+                                                      Margin="0,0,0,2"/>
+                                            <TextBlock Text="Microphone device"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                 Name="MicrophoneComboBox"
+                                                 Style="{DynamicResource ModernComboBoxStyle}"
+                                                 MinWidth="320"
+                                                 VerticalAlignment="Center"
+                                                 DisplayMemberPath="Name"
+                                                 SelectionChanged="MicrophoneComboBox_SelectionChanged"/>
+                                    </Grid>
+
+                                    <!-- Speaker -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                            <TextBlock Text="Speaker"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                                      FontSize="13"
+                                                      FontWeight="SemiBold"
+                                                      Margin="0,0,0,2"/>
+                                            <TextBlock Text="Speaker device"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                 Name="SpeakerComboBox"
+                                                 Style="{DynamicResource ModernComboBoxStyle}"
+                                                 MinWidth="320"
+                                                 VerticalAlignment="Center"
+                                                 DisplayMemberPath="Name"
+                                                 SelectionChanged="SpeakerComboBox_SelectionChanged"/>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Codec card -->
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    CornerRadius="12"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1"
+                                    Padding="18,14"
+                                    Margin="0,0,0,14">
+                                <StackPanel>
+                                    <TextBlock Text="Codec"
+                                              FontSize="14"
+                                              FontWeight="SemiBold"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              Margin="0,0,0,10"/>
+
+                                    <!-- Audio codec -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                            <TextBlock Text="Audio codec"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                                      FontSize="13"
+                                                      FontWeight="SemiBold"
+                                                      Margin="0,0,0,2"/>
+                                            <TextBlock Text="Preferred codec for calls"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                 Name="AudioCodecComboBox"
+                                                 Style="{DynamicResource ModernComboBoxStyle}"
+                                                 MinWidth="320"
+                                                 VerticalAlignment="Center"
+                                                 SelectionChanged="AudioCodecComboBox_SelectionChanged">
+                                            <ComboBoxItem Content="G.711 μ-law (PCMU) - Standard" Tag="PCMU" IsSelected="True"/>
+                                            <ComboBoxItem Content="G.711 A-law (PCMA) - Standard" Tag="PCMA"/>
+                                            <ComboBoxItem Content="G.722 - High Quality" Tag="G722"/>
+                                            <ComboBoxItem Content="Opus - Best Quality" Tag="opus"/>
+                                        </ComboBox>
+                                    </Grid>
+
+                                    <!-- Sample rate -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                            <TextBlock Text="Sample rate"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                                      FontSize="13"
+                                                      FontWeight="SemiBold"
+                                                      Margin="0,0,0,2"/>
+                                            <TextBlock Text="Audio quality (Hz)"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                 Name="SampleRateComboBox"
+                                                 Style="{DynamicResource ModernComboBoxStyle}"
+                                                 MinWidth="320"
+                                                 VerticalAlignment="Center"
+                                                 SelectionChanged="SampleRateComboBox_SelectionChanged">
+                                            <ComboBoxItem Content="8000 Hz (Standard)" Tag="8000"/>
+                                            <ComboBoxItem Content="16000 Hz (High Quality)" Tag="16000" IsSelected="True"/>
+                                        </ComboBox>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Ringtone card -->
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    CornerRadius="12"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1"
+                                    Padding="18,14"
+                                    Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Ringtone"
+                                              FontSize="14"
+                                              FontWeight="SemiBold"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              Margin="0,0,0,10"/>
+
+                                    <!-- Ringtone sound -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                            <TextBlock Text="Ringtone sound"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                                      FontSize="13"
+                                                      FontWeight="SemiBold"
+                                                      Margin="0,0,0,2"/>
+                                            <TextBlock Text="Sound played on incoming call"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                 Name="RingtoneSoundComboBox"
+                                                 Style="{DynamicResource ModernComboBoxStyle}"
+                                                 MinWidth="320"
+                                                 VerticalAlignment="Center"
+                                                 SelectionChanged="RingtoneSoundComboBox_SelectionChanged">
+                                            <ComboBoxItem Content="WAV file (ringtone/incoming_call.wav)" Tag="wav" IsSelected="True"/>
+                                            <ComboBoxItem Content="Built-in tone" Tag="tone"/>
+                                        </ComboBox>
+                                    </Grid>
+
+                                    <!-- Output device -->
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                            <TextBlock Text="Output device"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                                      FontSize="13"
+                                                      FontWeight="SemiBold"
+                                                      Margin="0,0,0,2"/>
+                                            <TextBlock Text="Where the ringtone is played"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="12"/>
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1"
+                                                 Name="RingtoneDeviceComboBox"
+                                                 Style="{DynamicResource ModernComboBoxStyle}"
+                                                 MinWidth="320"
+                                                 VerticalAlignment="Center"
+                                                 DisplayMemberPath="Name"
+                                                 SelectionChanged="RingtoneDeviceComboBox_SelectionChanged"/>
+                                    </Grid>
+
+                                    <Grid Margin="0,0,0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                  Text="Ringtone volume"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="12"
+                                                  VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="1"
+                                                  Name="RingtoneVolumeValueTextBlock"
+                                                  Text="70%"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="12"
+                                                  VerticalAlignment="Center"/>
+                                    </Grid>
+
+                                    <Slider Name="RingtoneVolumeSlider"
+                                            Minimum="0"
+                                            Maximum="100"
+                                            Value="70"
+                                            Margin="0,0,0,0"
+                                            ValueChanged="RingtoneVolumeSlider_ValueChanged"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Button Content="Save Audio Settings"
+                                   Name="SaveAudioSettingsButton"
+                                   Background="{DynamicResource AccentBlueBrush}"
+                                   Foreground="White"
+                                   BorderThickness="0"
+                                   Padding="22,10"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   Cursor="Hand"
+                                   Click="SaveAudioSettingsButton_Click"
+                                   HorizontalAlignment="Left">
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}"
+                                                            CornerRadius="6"
+                                                            SnapsToDevicePixels="True">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Background" Value="#4752C4"/>
+                                                        </Trigger>
+                                                        <Trigger Property="IsEnabled" Value="False">
+                                                            <Setter Property="Background" Value="#4A4A4A"/>
+                                                            <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Appearance Settings View -->
+                    <Grid Name="AppearanceSettingsView" Visibility="Collapsed" Margin="30,20">
+                        <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
+                        
+                        <TextBlock Grid.Row="0" Text="Appearance" 
+                                  FontSize="18" FontWeight="SemiBold"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                  Margin="0,0,0,20"/>
 
-                        <TextBlock Grid.Row="0" Text="Audio Settings" 
-                                  FontSize="20" FontWeight="Light" 
-                                  Foreground="{StaticResource TextPrimaryBrush}"
-                                  Margin="0,0,0,16"/>
+                        <!-- Theme (Win11-like row layout: label/description on left, ComboBox on right) -->
+                        <Grid Grid.Row="1">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="1" Text="Microphone Device:" 
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  FontSize="13"
-                                  Margin="0,0,0,4"/>
+                            <Border Grid.Row="0"
+                                    Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="12"
+                                    Padding="18,14">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,18,0">
+                                        <TextBlock Text="Theme"
+                                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                                  FontSize="14"
+                                                  FontWeight="SemiBold"
+                                                  Margin="0,0,0,2"/>
+                                        <TextBlock Text="Choose how the app looks"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="12"/>
+                                    </StackPanel>
 
-                        <ComboBox Grid.Row="2" Name="MicrophoneComboBox"
-                                 Style="{StaticResource ModernComboBoxStyle}"
-                                 Margin="0,0,0,12"
-                                 DisplayMemberPath="Name"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 Background="{StaticResource BackgroundMediumBrush}"
-                                 SelectionChanged="MicrophoneComboBox_SelectionChanged"/>
+                                    <ComboBox Grid.Column="1"
+                                             Name="ThemeModeComboBox"
+                                             Style="{DynamicResource ModernComboBoxStyle}"
+                                             MinWidth="280"
+                                             HorizontalAlignment="Right"
+                                             VerticalAlignment="Center">
+                                <ComboBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <ic:SymbolIcon Grid.Column="0"
+                                                          Symbol="{Binding Tag, RelativeSource={RelativeSource AncestorType=ComboBoxItem}, Converter={StaticResource ThemeIconConverter}}"
+                                                          Width="20"
+                                                          Height="20"
+                                                          IconVariant="Regular"
+                                                          Foreground="{DynamicResource AccentBlueBrush}"
+                                                          VerticalAlignment="Center"
+                                                          Margin="0,0,12,0"/>
+                                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding Content, RelativeSource={RelativeSource AncestorType=ComboBoxItem}}"
+                                                          Foreground="{DynamicResource TextPrimaryBrush}"
+                                                          FontSize="13"
+                                                          FontWeight="Medium"/>
+                                                <TextBlock Text="{Binding Tag, RelativeSource={RelativeSource AncestorType=ComboBoxItem}, Converter={StaticResource ThemeDescriptionConverter}}"
+                                                          Foreground="{DynamicResource TextSecondaryBrush}"
+                                                          FontSize="11"
+                                                          Margin="0,3,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </DataTemplate>
+                                </ComboBox.ItemTemplate>
+                                <ComboBoxItem Content="Use system theme" Tag="system"/>
+                                <ComboBoxItem Content="Dark" Tag="dark"/>
+                                <ComboBoxItem Content="Light" Tag="light"/>
+                            </ComboBox>
+                                </Grid>
+                            </Border>
 
-                        <TextBlock Grid.Row="3" Text="Speaker Device:" 
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  FontSize="13"
-                                  Margin="0,0,0,4"/>
-
-                        <ComboBox Grid.Row="4" Name="SpeakerComboBox"
-                                 Style="{StaticResource ModernComboBoxStyle}"
-                                 Margin="0,0,0,12"
-                                 DisplayMemberPath="Name"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 Background="{StaticResource BackgroundMediumBrush}"
-                                 SelectionChanged="SpeakerComboBox_SelectionChanged"/>
-
-                        <TextBlock Grid.Row="5" Text="Audio Codec:" 
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  FontSize="13"
-                                  Margin="0,0,0,4"/>
-
-                        <ComboBox Grid.Row="6" Name="AudioCodecComboBox"
-                                 Style="{StaticResource ModernComboBoxStyle}"
-                                 Margin="0,0,0,12"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 Background="{StaticResource BackgroundMediumBrush}"
-                                 SelectionChanged="AudioCodecComboBox_SelectionChanged">
-                            <ComboBoxItem Content="G.711 μ-law (PCMU) - Standard" Tag="PCMU" IsSelected="True"/>
-                            <ComboBoxItem Content="G.711 A-law (PCMA) - Standard" Tag="PCMA"/>
-                            <ComboBoxItem Content="G.722 - High Quality" Tag="G722"/>
-                            <ComboBoxItem Content="Opus - Best Quality" Tag="opus"/>
-                        </ComboBox>
-
-                        <TextBlock Grid.Row="7" Text="Sample Rate:" 
-                                  Foreground="{StaticResource TextSecondaryBrush}"
-                                  FontSize="13"
-                                  Margin="0,0,0,4"/>
-
-                        <ComboBox Grid.Row="8" Name="SampleRateComboBox"
-                                 Style="{StaticResource ModernComboBoxStyle}"
-                                 Margin="0,0,0,16"
-                                 Foreground="{StaticResource TextPrimaryBrush}"
-                                 Background="{StaticResource BackgroundMediumBrush}"
-                                 SelectionChanged="SampleRateComboBox_SelectionChanged">
-                            <ComboBoxItem Content="8000 Hz (Standard)" Tag="8000"/>
-                            <ComboBoxItem Content="16000 Hz (High Quality)" Tag="16000" IsSelected="True"/>
-                        </ComboBox>
-
-                        <Button Grid.Row="9" Content="Save Audio Settings" 
-                               Name="SaveAudioSettingsButton"
-                               Background="{StaticResource AccentBlueBrush}"
-                               Foreground="White"
-                               BorderThickness="0"
-                               Padding="24,10"
-                               FontSize="14"
-                               FontWeight="SemiBold"
-                               Cursor="Hand"
-                               Click="SaveAudioSettingsButton_Click"
-                               HorizontalAlignment="Left">
-                            <Button.Style>
-                                <Style TargetType="Button">
-                                    <Setter Property="Template">
-                                        <Setter.Value>
-                                            <ControlTemplate TargetType="Button">
-                                                <Border Background="{TemplateBinding Background}"
-                                                        CornerRadius="4"
-                                                        SnapsToDevicePixels="True">
-                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
-                                                </Border>
-                                                <ControlTemplate.Triggers>
-                                                    <Trigger Property="IsMouseOver" Value="True">
-                                                        <Setter Property="Background" Value="#4752C4"/>
-                                                    </Trigger>
-                                                    <Trigger Property="IsEnabled" Value="False">
-                                                        <Setter Property="Background" Value="#4A4A4A"/>
-                                                        <Setter Property="Foreground" Value="#6A6A6A"/>
-                                                    </Trigger>
-                                                </ControlTemplate.Triggers>
-                                            </ControlTemplate>
-                                        </Setter.Value>
-                                    </Setter>
-                                </Style>
-                            </Button.Style>
-                        </Button>
+                            <Button Grid.Row="1"
+                                   Name="ApplyThemeButton"
+                                   Content="Apply Theme"
+                                   Background="{DynamicResource AccentBlueBrush}"
+                                   Foreground="White"
+                                   BorderThickness="0"
+                                   Padding="20,10"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Cursor="Hand"
+                                   Click="ApplyThemeButton_Click"
+                                   HorizontalAlignment="Left"
+                                   Margin="0,16,0,0">
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}"
+                                                            CornerRadius="6"
+                                                            SnapsToDevicePixels="True">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Background" Value="#4752C4"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </Grid>
                     </Grid>
 
                     <!-- General Settings View -->
@@ -634,12 +883,11 @@
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         
                         <TextBlock Grid.Row="0" Text="General Settings" 
                                   FontSize="18" FontWeight="SemiBold"
-                                  Foreground="{StaticResource TextPrimaryBrush}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   Margin="0,0,0,20"/>
                         
                         <!-- Call Recording -->
@@ -649,22 +897,22 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <CheckBox Grid.Column="0" Name="EnableCallRecordingCheckBox" 
-                                     Style="{StaticResource ToggleSwitchStyle}"
+                                     Style="{DynamicResource ToggleSwitchStyle}"
                                      VerticalAlignment="Center"
                                      Margin="0,0,12,0"
                                      Checked="EnableCallRecordingCheckBox_Checked"
                                      Unchecked="EnableCallRecordingCheckBox_Unchecked"/>
                             <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                 <TextBlock Text="Call Recording" 
-                                          Foreground="{StaticResource TextPrimaryBrush}"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"
                                           FontSize="14"
                                           Margin="0,0,0,4"/>
                                 <TextBlock Text="Record WebRTC calls automatically" 
-                                          Foreground="{StaticResource TextSecondaryBrush}"
+                                          Foreground="{DynamicResource TextSecondaryBrush}"
                                           FontSize="12"
                                           Margin="0,0,0,4"/>
                                 <TextBlock Text="Recording is available in WebRTC mode only." 
-                                          Foreground="{StaticResource AccentBlueBrush}"
+                                          Foreground="{DynamicResource AccentBlueBrush}"
                                           FontSize="11"
                                           TextWrapping="Wrap"
                                           Opacity="0.85"
@@ -675,7 +923,7 @@
                         <!-- Open Recordings Button -->
                         <Button Grid.Row="2" Name="OpenRecordingsButton"
                                Content="Open Recordings Folder" 
-                               Background="{StaticResource AccentBlueBrush}"
+                               Background="{DynamicResource AccentBlueBrush}"
                                Foreground="White"
                                BorderThickness="0"
                                Padding="16,8"
@@ -708,6 +956,447 @@
                         </Button>
                     </Grid>
 
+                    <!-- Integrations Settings View -->
+                    <Grid Name="IntegrationsSettingsView" Visibility="Collapsed" Margin="30,20">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        
+                        <TextBlock Grid.Row="0" Text="Integrations" 
+                                  FontSize="18" FontWeight="SemiBold"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                  Margin="0,0,0,20"/>
+                        
+                        <!-- Kommo Integration -->
+                        <Border Grid.Row="1" 
+                                Background="{DynamicResource BackgroundMediumBrush}"
+                                CornerRadius="12"
+                                BorderBrush="{DynamicResource BorderBrush}"
+                                BorderThickness="1"
+                                Padding="18,14"
+                                Margin="0,0,0,0">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,16">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox Grid.Column="0" Name="EnableAmoCrmIntegrationCheckBox" 
+                                             Style="{DynamicResource ToggleSwitchStyle}"
+                                             VerticalAlignment="Center"
+                                             Margin="0,0,12,0"
+                                             Checked="EnableAmoCrmIntegrationCheckBox_Checked"
+                                             Unchecked="EnableAmoCrmIntegrationCheckBox_Unchecked"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="Kommo Integration" 
+                                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                                  FontSize="14"
+                                                  FontWeight="SemiBold"
+                                                  Margin="0,0,0,4"/>
+                                        <TextBlock Text="Automatically attach call logs and recordings to leads in Kommo" 
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="12"
+                                                  Margin="0,0,0,4"/>
+                                    </StackPanel>
+                                </Grid>
+                                
+                                <!-- Lead Selection Toggle (visible when integration is enabled) -->
+                                <Grid Margin="0,16,0,16" Name="AmoCrmLeadSelectionGrid" Visibility="Collapsed">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox Grid.Column="0" Name="EnableAmoCrmLeadSelectionCheckBox" 
+                                             Style="{DynamicResource ToggleSwitchStyle}"
+                                             VerticalAlignment="Center"
+                                             Margin="0,0,12,0"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="Manual selection lead" 
+                                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                                  FontSize="14"
+                                                  FontWeight="SemiBold"
+                                                  Margin="0,0,0,4"/>
+                                        <TextBlock Text="Used for manual selection of the lead to upload recordings to" 
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="12"
+                                                  Margin="0,0,0,4"/>
+                                    </StackPanel>
+                                </Grid>
+                                
+                                
+                                <!-- Kommo Settings (visible when integration is enabled) -->
+                                <StackPanel Name="AmoCrmSettingsPanel" Visibility="Collapsed" Margin="0,0,0,0">
+                                    <TextBlock Text="Kommo Settings" 
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              FontSize="14"
+                                              FontWeight="SemiBold"
+                                              Margin="0,0,0,12"/>
+                                    
+                                    <!-- Subdomain field (visible for both modes) -->
+                                    <StackPanel Name="AmoCrmSubdomainPanel" Orientation="Vertical" Margin="0,0,0,16">
+                                        <TextBlock Text="Subdomain:" 
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="13"
+                                                  Margin="0,0,0,8"/>
+                                        <TextBox Name="AmoCrmSubdomainTextBox" 
+                                                Background="{DynamicResource BackgroundDarkBrush}"
+                                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1"
+                                                Padding="8,6" 
+                                                FontSize="13"
+                                                MinWidth="400"
+                                                HorizontalContentAlignment="Left"/>
+                                        <TextBlock Text="Example: yourcompany.amocrm.ru or just yourcompany"
+                                                  FontSize="11"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  Margin="0,4,0,0"
+                                                  TextWrapping="Wrap"
+                                                  Opacity="0.7"/>
+                                    </StackPanel>
+                                    
+                                    <!-- Authentication Mode Selection -->
+                                    <StackPanel Orientation="Vertical" Margin="0,0,0,16">
+                                        <TextBlock Text="Authentication Mode:" 
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="13"
+                                                  Margin="0,0,0,8"/>
+                                        <!-- Modern Segmented Control -->
+                                        <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                                BorderBrush="{DynamicResource BorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                Padding="2"
+                                                HorizontalAlignment="Left">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                
+                                                <!-- Manual Token Button -->
+                                                <Button Name="AmoCrmAuthModeManualButton"
+                                                       Content="Manual Token"
+                                                       Grid.Column="0"
+                                                       Background="{DynamicResource AccentBlueBrush}"
+                                                       Foreground="White"
+                                                       BorderThickness="0"
+                                                       Padding="16,8"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Cursor="Hand"
+                                                       Click="AmoCrmAuthModeButton_Click"
+                                                       Tag="manual_selected"
+                                                       MinWidth="120"/>
+                                                
+                                                <!-- OAuth Button -->
+                                                <Button Name="AmoCrmAuthModeOAuthButton"
+                                                       Content="OAuth 2.0"
+                                                       Grid.Column="1"
+                                                       Background="Transparent"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}"
+                                                       BorderThickness="0"
+                                                       Padding="16,8"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       Cursor="Hand"
+                                                       Click="AmoCrmAuthModeButton_Click"
+                                                       Tag="oauth"
+                                                       MinWidth="120"/>
+                                            </Grid>
+                                        </Border>
+                                    </StackPanel>
+                                    
+                                    <!-- Manual Token Mode -->
+                                    <StackPanel Name="AmoCrmManualTokenPanel" Orientation="Vertical" Margin="0,0,0,16">
+                                        <TextBlock Text="Access Token:" 
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="13"
+                                                  Margin="0,0,0,8"/>
+                                        <PasswordBox Name="AmoCrmAccessTokenPasswordBox" 
+                                                    Background="{DynamicResource BackgroundDarkBrush}"
+                                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                                    BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="1"
+                                                    Padding="8,6" 
+                                                    FontSize="13"
+                                                    MinWidth="400"
+                                                    PasswordChanged="AmoCrmAccessTokenPasswordBox_PasswordChanged"/>
+                                        <TextBlock Text="The token will be encrypted and stored locally. Get it from Kommo API settings."
+                                                  FontSize="11"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  Margin="0,4,0,0"
+                                                  TextWrapping="Wrap"
+                                                  Opacity="0.7"/>
+                                    </StackPanel>
+                                    
+                                    <!-- OAuth Mode -->
+                                    <StackPanel Name="AmoCrmOAuthPanel" Orientation="Vertical" Margin="0,0,0,16" Visibility="Collapsed">
+                                        <StackPanel Orientation="Vertical" Margin="0,0,0,16">
+                                            <TextBlock Text="Client ID:" 
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="13"
+                                                      Margin="0,0,0,8"/>
+                                            <TextBox Name="AmoCrmClientIdTextBox" 
+                                                    Background="{DynamicResource BackgroundDarkBrush}"
+                                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                                    BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="1"
+                                                    Padding="8,6" 
+                                                    FontSize="13"
+                                                    MinWidth="400"
+                                                    HorizontalContentAlignment="Left"/>
+                                            <TextBlock Text="OAuth Client ID from your Kommo integration settings."
+                                                      FontSize="11"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      Margin="0,4,0,0"
+                                                      TextWrapping="Wrap"
+                                                      Opacity="0.7"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Orientation="Vertical" Margin="0,0,0,16">
+                                            <TextBlock Text="Client Secret:" 
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="13"
+                                                      Margin="0,0,0,8"/>
+                                            <PasswordBox Name="AmoCrmClientSecretPasswordBox" 
+                                                        Background="{DynamicResource BackgroundDarkBrush}"
+                                                        Foreground="{DynamicResource TextPrimaryBrush}"
+                                                        BorderBrush="{DynamicResource BorderBrush}"
+                                                        BorderThickness="1"
+                                                        Padding="8,6" 
+                                                        FontSize="13"
+                                                        MinWidth="400"/>
+                                            <TextBlock Text="OAuth Client Secret from your Kommo integration settings."
+                                                      FontSize="11"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      Margin="0,4,0,0"
+                                                      TextWrapping="Wrap"
+                                                      Opacity="0.7"/>
+                                        </StackPanel>
+                                        
+                                        <StackPanel Orientation="Vertical" Margin="0,0,0,16">
+                                            <TextBlock Text="Redirect URI:" 
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      FontSize="13"
+                                                      Margin="0,0,0,8"/>
+                                            <TextBox Name="AmoCrmRedirectUriTextBox" 
+                                                    Background="{DynamicResource BackgroundDarkBrush}"
+                                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                                    BorderBrush="{DynamicResource BorderBrush}"
+                                                    BorderThickness="1"
+                                                    Padding="8,6" 
+                                                    FontSize="13"
+                                                    MinWidth="400"
+                                                    HorizontalContentAlignment="Left"
+                                                    Text="http://localhost:8080/callback"/>
+                                            <TextBlock Text="Redirect URI configured in your Kommo integration (e.g., http://localhost:8080/callback)."
+                                                      FontSize="11"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                      Margin="0,4,0,0"
+                                                      TextWrapping="Wrap"
+                                                      Opacity="0.7"/>
+                                        </StackPanel>
+                                        
+                                        <!-- Authorize + Clear Settings buttons side by side -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                            <Button Name="AmoCrmAuthorizeButton"
+                                                   Content="Authorize with Kommo"
+                                                   Background="{DynamicResource AccentBlueBrush}"
+                                                   Foreground="White"
+                                                   BorderThickness="0"
+                                                   Padding="16,8"
+                                                   FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Cursor="Hand"
+                                                   Click="AmoCrmAuthorizeButton_Click"
+                                                   Width="200" Height="36"
+                                                   Margin="0,0,12,0">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <Border Background="{TemplateBinding Background}"
+                                                                            CornerRadius="4"
+                                                                            SnapsToDevicePixels="True">
+                                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                                    </Border>
+                                                                    <ControlTemplate.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="#4752C4"/>
+                                                                        </Trigger>
+                                                                        <Trigger Property="IsEnabled" Value="False">
+                                                                            <Setter Property="Background" Value="#4A4A4A"/>
+                                                                            <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                                        </Trigger>
+                                                                    </ControlTemplate.Triggers>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                            <Button Name="ClearAmoCrmSettingsButton"
+                                                   Content="Clear Settings"
+                                                   Background="{DynamicResource BackgroundMediumBrush}"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   BorderBrush="{DynamicResource BorderBrush}"
+                                                   BorderThickness="1"
+                                                   Padding="16,8"
+                                                   FontSize="13"
+                                                   FontWeight="SemiBold"
+                                                   Cursor="Hand"
+                                                   Click="ClearAmoCrmSettingsButton_Click"
+                                                   Width="150" Height="36">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <Border Background="{TemplateBinding Background}"
+                                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                                            CornerRadius="4"
+                                                                            SnapsToDevicePixels="True">
+                                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                                    </Border>
+                                                                    <ControlTemplate.Triggers>
+                                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                                            <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                                                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                                                        </Trigger>
+                                                                        <Trigger Property="IsPressed" Value="True">
+                                                                            <Setter Property="Background" Value="#4C4C4F"/>
+                                                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                                                        </Trigger>
+                                                                        <Trigger Property="IsEnabled" Value="False">
+                                                                            <Setter Property="Background" Value="#4A4A4A"/>
+                                                                            <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                                        </Trigger>
+                                                                    </ControlTemplate.Triggers>
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </StackPanel>
+                                    </StackPanel>
+                                    
+                                    <!-- Save + Clear buttons (visible only for Manual Token mode) -->
+                                    <StackPanel Name="AmoCrmManualTokenButtonsPanel" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,0,0,12">
+                                        <Button Name="SaveAmoCrmSettingsButton"
+                                               Content="Save"
+                                               Background="{DynamicResource AccentBlueBrush}"
+                                               Foreground="White"
+                                               BorderThickness="0"
+                                               Padding="16,8"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Cursor="Hand"
+                                               Click="SaveAmoCrmSettingsButton_Click"
+                                               Width="150" Height="36"
+                                               Margin="0,0,12,0">
+                                            <Button.Style>
+                                                <Style TargetType="Button">
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border Background="{TemplateBinding Background}"
+                                                                        CornerRadius="4"
+                                                                        SnapsToDevicePixels="True">
+                                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter Property="Background" Value="#4752C4"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsEnabled" Value="False">
+                                                                        <Setter Property="Background" Value="#4A4A4A"/>
+                                                                        <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
+                                        <Button Content="Clear Settings"
+                                               Background="{DynamicResource BackgroundMediumBrush}"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               BorderBrush="{DynamicResource BorderBrush}"
+                                               BorderThickness="1"
+                                               Padding="16,8"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Cursor="Hand"
+                                               Click="ClearAmoCrmSettingsButton_Click"
+                                               Width="150" Height="36">
+                                            <Button.Style>
+                                                <Style TargetType="Button">
+                                                    <Setter Property="Template">
+                                                        <Setter.Value>
+                                                            <ControlTemplate TargetType="Button">
+                                                                <Border Background="{TemplateBinding Background}"
+                                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                                        BorderThickness="{TemplateBinding BorderThickness}"
+                                                                        CornerRadius="4"
+                                                                        SnapsToDevicePixels="True">
+                                                                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+                                                                </Border>
+                                                                <ControlTemplate.Triggers>
+                                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                                        <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                                                                        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsPressed" Value="True">
+                                                                        <Setter Property="Background" Value="#4C4C4F"/>
+                                                                        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                                                    </Trigger>
+                                                                    <Trigger Property="IsEnabled" Value="False">
+                                                                        <Setter Property="Background" Value="#4A4A4A"/>
+                                                                        <Setter Property="Foreground" Value="#6A6A6A"/>
+                                                                    </Trigger>
+                                                                </ControlTemplate.Triggers>
+                                                            </ControlTemplate>
+                                                        </Setter.Value>
+                                                    </Setter>
+                                                </Style>
+                                            </Button.Style>
+                                        </Button>
+                                    </StackPanel>
+                                    
+                                    <!-- Status indicators (different for Manual Token and OAuth) -->
+                                    <!-- Manual Token Status (Connected/Not connected) -->
+                                    <StackPanel Name="AmoCrmManualTokenStatusPanel" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,0">
+                                        <Ellipse Name="AmoCrmStatusIndicator"
+                                                Width="10"
+                                                Height="10"
+                                                Margin="0,0,8,0"
+                                                Fill="#6A6A6A"/>
+                                        <TextBlock Name="AmoCrmStatusTextBlock"
+                                                  Text="Not connected"
+                                                  FontSize="12"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                    
+                                    <!-- OAuth Status (Authorized/Not authorized) -->
+                                    <StackPanel Name="AmoCrmOAuthStatusPanel" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,0,0" Visibility="Collapsed">
+                                        <TextBlock Name="AmoCrmOAuthStatusTextBlock"
+                                                  Text="Not authorized"
+                                                  FontSize="12"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  VerticalAlignment="Center"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
                     <!-- Advanced Settings View -->
                     <Grid Name="AdvancedSettingsView" Visibility="Collapsed" Margin="30,20">
                         <Grid.RowDefinitions>
@@ -722,7 +1411,7 @@
                         <!-- WebRTC Settings -->
                         <TextBlock Grid.Row="0" Text="WebRTC Audio Settings" 
                                   FontSize="18" FontWeight="SemiBold"
-                                  Foreground="{StaticResource TextPrimaryBrush}"
+                                  Foreground="{DynamicResource TextPrimaryBrush}"
                                   Margin="0,0,0,20"/>
                         
                         <Grid Grid.Row="1" Margin="0,0,0,16">
@@ -731,12 +1420,12 @@
                                 <ColumnDefinition Width="*"/>
                             </Grid.ColumnDefinitions>
                             <CheckBox Grid.Column="0" Name="UseWebRtcCheckBox" 
-                                     Style="{StaticResource ToggleSwitchStyle}"
+                                     Style="{DynamicResource ToggleSwitchStyle}"
                                      VerticalAlignment="Center"
                                      Margin="0,0,12,0"/>
                             <TextBlock Grid.Column="1" 
                                       Text="Use WebRTC for audio"
-                                      Foreground="{StaticResource TextPrimaryBrush}"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
                                       VerticalAlignment="Center"
                                       FontSize="14"/>
                         </Grid>
@@ -749,13 +1438,13 @@
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" Name="WebRtcStatusTextBlock"
                                       Text="WebRTC Status: Not configured"
-                                      Foreground="{StaticResource TextSecondaryBrush}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontSize="13"
                                       VerticalAlignment="Center"
                                       Margin="0,0,12,0"/>
                             <Button Grid.Column="2" Name="TestWebRtcConnectionButton"
                                    Content="Test Connection"
-                                   Background="{StaticResource AccentBlueBrush}"
+                                   Background="{DynamicResource AccentBlueBrush}"
                                    Foreground="White"
                                    BorderThickness="0"
                                    Padding="12,6"
@@ -793,13 +1482,13 @@
                         
                         <StackPanel Grid.Row="3" Orientation="Vertical" Margin="0,0,0,20">
                             <TextBlock Text="WebSocket URI:" 
-                                      Foreground="{StaticResource TextSecondaryBrush}"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
                                       FontSize="13"
                                       Margin="0,0,0,8"/>
                             <TextBox Name="WebRtcWsUriTextBox" 
-                                    Background="{StaticResource BackgroundMediumBrush}"
-                                    Foreground="{StaticResource TextPrimaryBrush}"
-                                    BorderBrush="{StaticResource BorderBrush}"
+                                    Background="{DynamicResource BackgroundMediumBrush}"
+                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}"
                                     BorderThickness="1"
                                     Padding="8,6" 
                                     FontSize="13"
@@ -809,13 +1498,13 @@
                         <TextBlock Grid.Row="4" 
                                   Text="Make sure your PBX supports WebSocket connections." 
                                   FontSize="12" 
-                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  Foreground="{DynamicResource TextSecondaryBrush}"
                                   TextWrapping="Wrap"
                                   Margin="0,0,0,20"/>
                         
                         <Button Grid.Row="5" Name="SaveGeneralSettingsButton"
                                Content="Save Settings"
-                               Background="{StaticResource AccentBlueBrush}"
+                               Background="{DynamicResource AccentBlueBrush}"
                                Foreground="White"
                                BorderThickness="0"
                                Padding="16,8"
@@ -863,7 +1552,17 @@
                          Height="1"
                          HorizontalAlignment="Left"
                          VerticalAlignment="Top"/>
-        </Grid>
-    </Border>
+            </Grid>
+        </Border>
+
+        <!-- Border stroke overlay (no layout inset) -->
+        <Border x:Name="WindowStroke"
+                Background="Transparent"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                SnapsToDevicePixels="True"
+                IsHitTestVisible="False"/>
+    </Grid>
 </Window>
 

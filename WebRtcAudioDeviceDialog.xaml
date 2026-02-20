@@ -1,26 +1,20 @@
 <Window x:Class="Softphone.WebRtcAudioDeviceDialog"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Select Audio Devices" Height="320" Width="400"
+        Title="Select Audio Devices" Height="420" Width="520" MinHeight="380" MinWidth="520"
         WindowStyle="None" 
-        AllowsTransparency="True"
-        Background="Transparent"
+        AllowsTransparency="False"
+        Background="{DynamicResource BackgroundDarkBrush}"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner">
-    <Window.Resources>
-        <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Themes/DarkTheme.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
-        </ResourceDictionary>
-    </Window.Resources>
+    <!-- Theme dictionaries are provided by App.xaml (System/Dark/Light). -->
     
-    <Border Background="{StaticResource BackgroundDarkBrush}" 
-            CornerRadius="16" 
-            BorderBrush="{StaticResource BorderBrush}" 
-            BorderThickness="1"
-            ClipToBounds="True">
-        <Grid>
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Border x:Name="WindowSurface"
+                Background="{DynamicResource BackgroundDarkBrush}" 
+                CornerRadius="16" 
+                ClipToBounds="True">
+            <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -28,7 +22,9 @@
             </Grid.RowDefinitions>
 
             <!-- Title Bar -->
-            <Border Grid.Row="0" Background="{StaticResource BackgroundMediumBrush}" 
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}" 
                     CornerRadius="16,16,0,0" 
                     Height="48">
                 <Grid>
@@ -39,36 +35,19 @@
                     
                     <TextBlock Grid.Column="0" 
                               Text="WebRTC Audio Devices" 
-                              Foreground="{StaticResource TextPrimaryBrush}"
+                              Foreground="{DynamicResource TextPrimaryBrush}"
                               FontSize="16" 
                               FontWeight="SemiBold"
                               VerticalAlignment="Center"
                               Margin="24,0,0,0"/>
                     
-                    <Button Grid.Column="1" 
-                           Name="CloseButton"
-                           Content="✕" 
-                           Width="32" 
-                           Height="32"
-                           Margin="8"
-                           Click="CancelButton_Click"
-                           FontSize="16"
-                           Foreground="{StaticResource TextSecondaryBrush}"
-                           Background="Transparent"
-                           BorderThickness="0"
-                           Cursor="Hand">
-                        <Button.Style>
-                            <Style TargetType="Button" BasedOn="{StaticResource ModernButtonStyle}">
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Setter Property="BorderThickness" Value="0"/>
-                                <Style.Triggers>
-                                    <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="{StaticResource BackgroundLightBrush}"/>
-                                    </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Button.Style>
-                    </Button>
+                    <Button Grid.Column="1"
+                            Name="CloseButton"
+                            Content="✕"
+                            Click="CancelButton_Click"
+                            Style="{DynamicResource TitleBarCloseButtonStyle}"
+                            Height="32"
+                            Margin="0,8,0,8"/>
                 </Grid>
             </Border>
 
@@ -87,32 +66,32 @@
 
                 <!-- Microphone -->
                 <TextBlock Grid.Row="0" Text="Microphone:" 
-                          Foreground="{StaticResource TextPrimaryBrush}"
+                          Foreground="{DynamicResource TextPrimaryBrush}"
                           FontSize="14" 
                           FontWeight="SemiBold"
                           Margin="0,0,0,8"/>
 
                 <ComboBox Grid.Row="2" Name="MicrophoneComboBox"
-                         Style="{StaticResource ModernComboBoxStyle}"
+                         Style="{DynamicResource ModernComboBoxStyle}"
                          DisplayMemberPath="Label"
                          Margin="0,0,0,0"/>
 
                 <!-- Speaker -->
                 <TextBlock Grid.Row="4" Text="Speaker:" 
-                          Foreground="{StaticResource TextPrimaryBrush}"
+                          Foreground="{DynamicResource TextPrimaryBrush}"
                           FontSize="14" 
                           FontWeight="SemiBold"
                           Margin="0,0,0,8"/>
 
                 <ComboBox Grid.Row="6" Name="SpeakerComboBox"
-                         Style="{StaticResource ModernComboBoxStyle}"
+                         Style="{DynamicResource ModernComboBoxStyle}"
                          DisplayMemberPath="Label"
                          Margin="0,0,0,0"/>
 
             </Grid>
 
             <!-- Buttons -->
-            <Border Grid.Row="2" Background="{StaticResource BackgroundMediumBrush}" 
+            <Border Grid.Row="2" Background="{DynamicResource BackgroundMediumBrush}" 
                     CornerRadius="0,0,16,16" 
                     Height="64">
                 <Grid Margin="24,16">
@@ -125,16 +104,24 @@
                     <Button Grid.Column="2" 
                            Name="ApplyButton"
                            Content="Apply" 
-                           Style="{StaticResource ModernButtonStyle}"
+                           Style="{DynamicResource ModernButtonStyle}"
                            Width="100" 
                            Height="32"
                            Click="ApplyButton_Click"
-                           Background="{StaticResource AccentBlueBrush}"
+                           Background="{DynamicResource AccentBlueBrush}"
                            Foreground="White"
                            FontWeight="SemiBold"/>
                 </Grid>
             </Border>
-        </Grid>
-    </Border>
+            </Grid>
+        </Border>
+
+        <Border x:Name="WindowStroke"
+                Background="Transparent"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                IsHitTestVisible="False"/>
+    </Grid>
 </Window>
 

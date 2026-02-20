@@ -109,7 +109,28 @@ namespace Softphone
 
         public virtual void Dispose()
         {
-            StopRecording();
+            try
+            {
+                if (!_isRecording) return;
+
+                // Best-effort stop: don't block indefinitely in Dispose (can freeze UI during window close).
+                var t = StopRecordingAsync();
+                if (!t.IsCompleted)
+                {
+                    if (!t.Wait(TimeSpan.FromSeconds(2)))
+                    {
+                        // Continue in background; any errors are logged by recorder implementations.
+                        _ = Task.Run(async () =>
+                        {
+                            try { await t; } catch { }
+                        });
+                    }
+                }
+            }
+            catch
+            {
+                // never throw from Dispose
+            }
         }
     }
 }

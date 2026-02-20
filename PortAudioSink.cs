@@ -431,7 +431,21 @@ namespace Softphone
             if (_isDisposed)
                 return;
 
-            CloseAudioSink().Wait();
+            try
+            {
+                var t = CloseAudioSink();
+                if (!t.IsCompleted && !t.Wait(1000))
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await t; } catch { }
+                    });
+                }
+            }
+            catch
+            {
+                // ignore
+            }
             _isDisposed = true;
         }
     }

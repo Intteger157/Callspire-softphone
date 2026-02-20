@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Softphone WebRTC</title>
-    <script src="https://cdn.jsdelivr.net/npm/jssip/dist/jssip.min.js"></script>
+    <script src="jssip.min.js"></script>
     <script src="phone.js"></script>
     <style>
         body {
@@ -21,7 +21,7 @@
 <body>
     <div id="status">Initializing...</div>
     <!-- Скрытый аудио элемент для воспроизведения входящего аудио -->
-    <audio id="remoteAudio" autoplay playsinline muted="false"></audio>
+    <audio id="remoteAudio" autoplay playsinline></audio>
     <script>
         // Обработчик сообщений от C# для команд (initUA, makeCall, answer, hangup)
         if (window.chrome && window.chrome.webview) {
@@ -40,7 +40,7 @@
                     } else if (data.cmd === 'answer') {
                         window.SoftphoneWebRtc.answer();
                     } else if (data.cmd === 'hangup') {
-                        window.SoftphoneWebRtc.hangup();
+                        window.SoftphoneWebRtc.hangup(data.sessionId);
                     }
                 } catch (e) {
                     console.error('[WebRTC] Error processing message:', e);

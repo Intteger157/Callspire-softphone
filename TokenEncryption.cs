@@ -10,6 +10,8 @@ namespace Softphone
     /// </summary>
     public static class TokenEncryption
     {
+        private const string DpapiPrefix = "dpapi:";
+
         // Ключ шифрования (можно изменить для дополнительной безопасности)
         // ВАЖНО: Не меняйте этот ключ после того, как токены уже сохранены!
         private static readonly byte[] _key = Encoding.UTF8.GetBytes("Callspire2024GitHubTokenEncryptionKey!@#$%^&*()");
@@ -27,6 +29,18 @@ namespace Softphone
             
             try
             {
+                // Prefer OS-bound encryption on Windows (DPAPI). This is significantly safer than a fixed app key.
+                try
+                {
+                    byte[] plainBytesDpapi = Encoding.UTF8.GetBytes(plainText);
+                    byte[] protectedBytes = ProtectedData.Protect(plainBytesDpapi, optionalEntropy: null, scope: DataProtectionScope.CurrentUser);
+                    return DpapiPrefix + Convert.ToBase64String(protectedBytes);
+                }
+                catch
+                {
+                    // Fall back to legacy AES if DPAPI isn't available for some reason.
+                }
+
                 // Обрезаем ключ до 32 байт для AES-256 или до 16 байт для AES-128
                 byte[] keyBytes = new byte[32];
                 Array.Copy(_key, 0, keyBytes, 0, Math.Min(_key.Length, 32));
@@ -63,6 +77,15 @@ namespace Softphone
             
             try
             {
+                // DPAPI format
+                if (cipherText.StartsWith(DpapiPrefix, StringComparison.Ordinal))
+                {
+                    var b64 = cipherText.Substring(DpapiPrefix.Length);
+                    byte[] protectedBytes = Convert.FromBase64String(b64);
+                    byte[] plainBytes = ProtectedData.Unprotect(protectedBytes, optionalEntropy: null, scope: DataProtectionScope.CurrentUser);
+                    return Encoding.UTF8.GetString(plainBytes);
+                }
+
                 // Обрезаем ключ до 32 байт для AES-256 или до 16 байт для AES-128
                 byte[] keyBytes = new byte[32];
                 Array.Copy(_key, 0, keyBytes, 0, Math.Min(_key.Length, 32));
@@ -90,5 +113,7 @@ namespace Softphone
         }
     }
 }
+
+
 
 

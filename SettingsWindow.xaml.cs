@@ -5,7 +5,13 @@ using System.Reflection;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Controls;
+using System.Windows.Media;
 using Newtonsoft.Json;
+using System.Globalization;
+using System.Windows.Data;
+using System.Linq;
+using System.Threading.Tasks;
+using FluentIcons.Common;
 
 namespace Softphone
 {
@@ -47,6 +53,9 @@ namespace Softphone
         public SettingsWindow()
         {
             InitializeComponent();
+
+            // Centralized Win10/Wpf vs Win11/DWM native appearance.
+            NativeWindowAppearanceManager.Attach(this);
             
             // Убеждаемся, что поля доступны для редактирования
             if (SipServerTextBox != null)
@@ -368,7 +377,9 @@ namespace Softphone
             ConnectionSettingsView.Visibility = Visibility.Collapsed;
             AudioSettingsView.Visibility = Visibility.Collapsed;
             GeneralSettingsView.Visibility = Visibility.Collapsed;
+            AppearanceSettingsView.Visibility = Visibility.Collapsed;
             AdvancedSettingsView.Visibility = Visibility.Collapsed;
+            IntegrationsSettingsView.Visibility = Visibility.Collapsed;
             AboutSettingsView.Visibility = Visibility.Collapsed;
 
             view.Visibility = Visibility.Visible;
@@ -441,11 +452,15 @@ namespace Softphone
             AudioButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
             GeneralButton.Background = System.Windows.Media.Brushes.Transparent;
             GeneralButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            AppearanceButton.Background = System.Windows.Media.Brushes.Transparent;
+            AppearanceButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
             AdvancedButton.Background = System.Windows.Media.Brushes.Transparent;
             AdvancedButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            IntegrationsButton.Background = System.Windows.Media.Brushes.Transparent;
+            IntegrationsButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
             AboutButton.Background = System.Windows.Media.Brushes.Transparent;
             AboutButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
-            
+
             // Выделяем выбранную кнопку
             if (selectedButton != null)
             {
@@ -477,6 +492,13 @@ namespace Softphone
             ShowView(GeneralSettingsView);
             LoadGeneralSettingsForGeneralTab();
         }
+
+        private void AppearanceButton_Click(object sender, RoutedEventArgs e)
+        {
+            UpdateButtonSelection(AppearanceButton);
+            ShowView(AppearanceSettingsView);
+            LoadAppearanceSettings();
+        }
         
         private void LoadGeneralSettingsForGeneralTab()
         {
@@ -486,19 +508,1200 @@ namespace Softphone
                 {
                     string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                    
-                    if (settings != null && EnableCallRecordingCheckBox != null)
+
+                    if (settings != null)
                     {
-                        _suppressRecordingToggleEvent = true;
-                        EnableCallRecordingCheckBox.IsChecked = settings.EnableCallRecording;
-                        UpdateCallRecordingToggleColor();
-                        _suppressRecordingToggleEvent = false;
+                        // Загружаем настройки записи звонков
+                        if (EnableCallRecordingCheckBox != null)
+                        {
+                            _suppressRecordingToggleEvent = true;
+                            EnableCallRecordingCheckBox.IsChecked = settings.EnableCallRecording;
+                            UpdateCallRecordingToggleColor();
+                            _suppressRecordingToggleEvent = false;
+                        }
                     }
                 }
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"LoadGeneralSettingsForGeneralTab: Error - {ex.Message}");
+            }
+        }
+        
+        private void LoadIntegrationsSettings()
+        {
+            try
+            {
+                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
+                {
+                    string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+
+                    if (settings != null)
+                    {
+                        // Загружаем настройки Kommo
+                        if (EnableAmoCrmIntegrationCheckBox != null)
+                        {
+                            EnableAmoCrmIntegrationCheckBox.IsChecked = settings.EnableAmoCrmIntegration;
+                            UpdateAmoCrmSettingsVisibility(settings.EnableAmoCrmIntegration);
+                        }
+                        if (EnableAmoCrmLeadSelectionCheckBox != null)
+                        {
+                            EnableAmoCrmLeadSelectionCheckBox.IsChecked = settings.EnableAmoCrmLeadSelection;
+                        }
+                        
+                        if (AmoCrmSubdomainTextBox != null && !string.IsNullOrEmpty(settings.AmoCrmSubdomain))
+                        {
+                            AmoCrmSubdomainTextBox.Text = settings.AmoCrmSubdomain;
+                        }
+                        
+                        // Загружаем режим аутентификации
+                        string authMode = settings.AmoCrmAuthMode ?? "manual";
+                        bool isOAuth = authMode == "oauth";
+                        
+                        // Обновляем визуальное состояние кнопок сегментированного контрола
+                        var accentBlueBrush = (Brush)FindResource("AccentBlueBrush");
+                        var textPrimaryBrush = (Brush)FindResource("TextPrimaryBrush");
+                        
+                        if (AmoCrmAuthModeManualButton != null)
+                        {
+                            AmoCrmAuthModeManualButton.Tag = isOAuth ? "manual" : "manual_selected";
+                            AmoCrmAuthModeManualButton.Background = isOAuth ? Brushes.Transparent : accentBlueBrush;
+                            AmoCrmAuthModeManualButton.Foreground = isOAuth ? textPrimaryBrush : Brushes.White;
+                        }
+                        
+                        if (AmoCrmAuthModeOAuthButton != null)
+                        {
+                            AmoCrmAuthModeOAuthButton.Tag = isOAuth ? "oauth_selected" : "oauth";
+                            AmoCrmAuthModeOAuthButton.Background = isOAuth ? accentBlueBrush : Brushes.Transparent;
+                            AmoCrmAuthModeOAuthButton.Foreground = isOAuth ? Brushes.White : textPrimaryBrush;
+                        }
+                        
+                        UpdateAmoCrmAuthModeVisibility(isOAuth);
+                        
+                        // Загружаем Manual Token настройки
+                        if (AmoCrmAccessTokenPasswordBox != null && !string.IsNullOrEmpty(settings.AmoCrmAccessTokenEncrypted))
+                        {
+                            // Расшифровываем токен для отображения (только если он есть)
+                            string decryptedToken = TokenEncryption.Decrypt(settings.AmoCrmAccessTokenEncrypted);
+                            if (!string.IsNullOrEmpty(decryptedToken))
+                            {
+                                AmoCrmAccessTokenPasswordBox.Password = decryptedToken;
+                            }
+                        }
+                        
+                        // Загружаем OAuth настройки
+                        if (AmoCrmClientIdTextBox != null && !string.IsNullOrEmpty(settings.AmoCrmClientId))
+                        {
+                            AmoCrmClientIdTextBox.Text = settings.AmoCrmClientId;
+                        }
+                        if (AmoCrmClientSecretPasswordBox != null && !string.IsNullOrEmpty(settings.AmoCrmClientSecretEncrypted))
+                        {
+                            string decryptedSecret = TokenEncryption.Decrypt(settings.AmoCrmClientSecretEncrypted);
+                            if (!string.IsNullOrEmpty(decryptedSecret))
+                            {
+                                AmoCrmClientSecretPasswordBox.Password = decryptedSecret;
+                            }
+                        }
+                        if (AmoCrmRedirectUriTextBox != null)
+                        {
+                            AmoCrmRedirectUriTextBox.Text = settings.AmoCrmRedirectUri ?? "http://localhost:8080/callback";
+                        }
+                        
+                        // Обновляем статусы в зависимости от режима
+                        // Проверяем реальное состояние сервиса, а не только наличие токенов в настройках
+                        // Используем небольшую задержку, чтобы дать время сервису инициализироваться
+                        _ = Task.Delay(500).ContinueWith(_ =>
+                        {
+                            Dispatcher.Invoke(() =>
+                            {
+                                CheckAmoCrmConnectionStatus();
+                            });
+                        }, TaskContinuationOptions.OnlyOnRanToCompletion);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"LoadIntegrationsSettings: Error - {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Проверяет и обновляет статус подключения Kommo
+        /// </summary>
+        private void CheckAmoCrmConnectionStatus()
+        {
+            try
+            {
+                var mainWindow = Application.Current.MainWindow as MainWindow;
+                string authMode = "manual";
+                bool isAmoCrmInitialized = false;
+                
+                try
+                {
+                    string settingsPath = AppDataHelper.GetSettingsFilePath();
+                    if (File.Exists(settingsPath))
+                    {
+                        string json = File.ReadAllText(settingsPath);
+                        var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                        authMode = settings?.AmoCrmAuthMode ?? "manual";
+                        MainWindow.Log($"[SettingsWindow] CheckAmoCrmConnectionStatus: authMode={authMode}, EnableIntegration={settings?.EnableAmoCrmIntegration ?? false}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[SettingsWindow] CheckAmoCrmConnectionStatus: Error reading settings: {ex.Message}");
+                }
+                
+                // КРИТИЧНО: Проверяем реальный статус AmoCRM сервиса, а не WebRTC/SIP подключение
+                if (mainWindow != null)
+                {
+                    isAmoCrmInitialized = mainWindow.IsAmoCrmServiceInitialized();
+                    MainWindow.Log($"[SettingsWindow] CheckAmoCrmConnectionStatus: IsAmoCrmServiceInitialized={isAmoCrmInitialized}");
+                    
+                    // Для OAuth показываем "Authorized/Not authorized", для Manual Token - "Connected/Not connected"
+                    if (isAmoCrmInitialized)
+                    {
+                        string statusText = authMode == "oauth" ? "Authorized" : "Connected";
+                        MainWindow.Log($"[SettingsWindow] CheckAmoCrmConnectionStatus: Setting status to '{statusText}' (AmoCRM initialized)");
+                        UpdateAmoCrmStatus(statusText, true);
+                    }
+                    else
+                    {
+                        string statusText = authMode == "oauth" ? "Not authorized" : "Not connected";
+                        MainWindow.Log($"[SettingsWindow] CheckAmoCrmConnectionStatus: Setting status to '{statusText}' (AmoCRM not initialized)");
+                        UpdateAmoCrmStatus(statusText, false);
+                    }
+                }
+                else
+                {
+                    MainWindow.Log("[SettingsWindow] CheckAmoCrmConnectionStatus: MainWindow is null");
+                    try
+                    {
+                        string settingsPath = AppDataHelper.GetSettingsFilePath();
+                        if (File.Exists(settingsPath))
+                        {
+                            string json = File.ReadAllText(settingsPath);
+                            var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                            authMode = settings?.AmoCrmAuthMode ?? "manual";
+                        }
+                    }
+                    catch { }
+                    string statusText = authMode == "oauth" ? "Not authorized" : "Not connected";
+                    UpdateAmoCrmStatus(statusText, false);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] CheckAmoCrmConnectionStatus: Exception: {ex.Message}");
+                string authMode = "manual";
+                try
+                {
+                    string settingsPath = AppDataHelper.GetSettingsFilePath();
+                    if (File.Exists(settingsPath))
+                    {
+                        string json = File.ReadAllText(settingsPath);
+                        var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                        authMode = settings?.AmoCrmAuthMode ?? "manual";
+                    }
+                }
+                catch { }
+                string statusText = authMode == "oauth" ? "Not authorized" : "Not connected";
+                UpdateAmoCrmStatus(statusText, false);
+            }
+        }
+        
+        /// <summary>
+        /// Обновляет отображение статуса подключения Kommo (публичный метод для вызова из MainWindow)
+        /// </summary>
+        public void UpdateAmoCrmStatus(string statusText, bool isConnected)
+        {
+            // Определяем текущий режим аутентификации из настроек (более надежно, чем из Tag кнопок)
+            bool isOAuth = false;
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    isOAuth = settings?.AmoCrmAuthMode == "oauth";
+                    MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: Determined authMode from settings: {(isOAuth ? "oauth" : "manual")}");
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: Error reading settings, using button tags: {ex.Message}");
+                
+                // Fallback: проверяем Tag кнопок если настройки не удалось прочитать
+                if (AmoCrmAuthModeOAuthButton != null && AmoCrmAuthModeOAuthButton.Tag is string oauthTag)
+                {
+                    isOAuth = oauthTag == "oauth_selected";
+                }
+                else if (AmoCrmAuthModeManualButton != null && AmoCrmAuthModeManualButton.Tag is string manualTag)
+                {
+                    isOAuth = manualTag != "manual_selected";
+                }
+            }
+            
+            MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: statusText='{statusText}', isConnected={isConnected}, isOAuth={isOAuth}");
+            
+            if (isOAuth)
+            {
+                // Для OAuth режима показываем статус "Authorized/Not authorized"
+                // Убеждаемся, что панель OAuth статуса видима
+                if (AmoCrmOAuthStatusPanel != null)
+                {
+                    AmoCrmOAuthStatusPanel.Visibility = Visibility.Visible;
+                }
+                if (AmoCrmManualTokenStatusPanel != null)
+                {
+                    AmoCrmManualTokenStatusPanel.Visibility = Visibility.Collapsed;
+                }
+                
+                if (AmoCrmOAuthStatusTextBlock != null)
+                {
+                    // Обрабатываем как "Authorized", так и "Connected" (для совместимости)
+                    if (statusText == "Authorized" || statusText == "Connected")
+                    {
+                        AmoCrmOAuthStatusTextBlock.Text = "Authorized";
+                        AmoCrmOAuthStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(76, 175, 80)); // Green
+                        MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: Set OAuth status to 'Authorized' (green)");
+                    }
+                    else if (statusText == "Connecting..." || statusText == "Authorizing...")
+                    {
+                        AmoCrmOAuthStatusTextBlock.Text = "Authorizing...";
+                        AmoCrmOAuthStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(255, 193, 7)); // Yellow
+                        MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: Set OAuth status to 'Authorizing...' (yellow)");
+                    }
+                    else if (statusText.StartsWith("Error"))
+                    {
+                        AmoCrmOAuthStatusTextBlock.Text = "Authorization failed";
+                        AmoCrmOAuthStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(244, 67, 54)); // Red
+                        MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: Set OAuth status to 'Authorization failed' (red)");
+                    }
+                    else
+                    {
+                        AmoCrmOAuthStatusTextBlock.Text = "Not authorized";
+                        AmoCrmOAuthStatusTextBlock.Foreground = new SolidColorBrush(Color.FromRgb(106, 106, 106)); // Gray
+                        MainWindow.Log($"[SettingsWindow] UpdateAmoCrmStatus: Set OAuth status to 'Not authorized' (gray), statusText was: '{statusText}'");
+                    }
+                }
+                else
+                {
+                    MainWindow.Log("[SettingsWindow] UpdateAmoCrmStatus: AmoCrmOAuthStatusTextBlock is null!");
+                }
+            }
+            else
+            {
+                // Для Manual Token режима показываем статус "Connected/Not connected"
+                // Убеждаемся, что панель Manual Token статуса видима
+                if (AmoCrmManualTokenStatusPanel != null)
+                {
+                    AmoCrmManualTokenStatusPanel.Visibility = Visibility.Visible;
+                }
+                if (AmoCrmOAuthStatusPanel != null)
+                {
+                    AmoCrmOAuthStatusPanel.Visibility = Visibility.Collapsed;
+                }
+                
+                if (AmoCrmStatusTextBlock != null)
+                {
+                    AmoCrmStatusTextBlock.Text = statusText;
+                }
+                
+                if (AmoCrmStatusIndicator != null)
+                {
+                    // Green - connected, gray - not connected, yellow - connecting...
+                    if (statusText == "Connected")
+                    {
+                        AmoCrmStatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(76, 175, 80)); // Green
+                    }
+                    else if (statusText == "Connecting...")
+                    {
+                        AmoCrmStatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(255, 193, 7)); // Yellow
+                    }
+                    else if (statusText.StartsWith("Error"))
+                    {
+                        AmoCrmStatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(244, 67, 54)); // Red
+                    }
+                    else
+                    {
+                        AmoCrmStatusIndicator.Fill = new SolidColorBrush(Color.FromRgb(106, 106, 106)); // Gray
+                    }
+                }
+            }
+        }
+        
+        private void UpdateAmoCrmSettingsVisibility(bool isEnabled)
+        {
+            if (AmoCrmSettingsPanel != null)
+            {
+                AmoCrmSettingsPanel.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+            }
+            if (AmoCrmLeadSelectionGrid != null)
+            {
+                AmoCrmLeadSelectionGrid.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+            }
+            // ...удалено: AmoCrmShowFirstLeadGrid...
+        }
+        
+        private void EnableAmoCrmIntegrationCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            // Показываем настройки при включении
+            UpdateAmoCrmSettingsVisibility(true);
+            // Сохраняем состояние, но НЕ стираем токен и домен
+            SaveAmoCrmIntegrationToggle();
+        }
+        
+        private void EnableAmoCrmIntegrationCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        {
+            // Скрываем настройки при выключении
+            UpdateAmoCrmSettingsVisibility(false);
+            // Сохраняем состояние и отключаем сервис, но НЕ стираем токен и домен
+            SaveAmoCrmIntegrationToggle();
+        }
+        
+        /// <summary>
+        /// Сохраняет состояние переключателя Kommo интеграции
+        /// </summary>
+        private void SaveAmoCrmIntegrationToggle()
+        {
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                
+                if (settings == null)
+                {
+                    settings = new AppSettings();
+                }
+                
+                // Сохраняем состояние интеграции
+                settings.EnableAmoCrmIntegration = EnableAmoCrmIntegrationCheckBox?.IsChecked ?? false;
+                // ВАЖНО: не сбрасываем настройку выбора лида, если чекбокс ещё не создан (другая вкладка / ранний вызов)
+                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                {
+                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
+                // ...удалено: ShowFirstLeadAfterCallCheckBox/ShowFirstLeadAfterCall...
+                
+                // Если интеграция выключена, только отключаем сервис (НЕ стираем токен и домен)
+                if (!settings.EnableAmoCrmIntegration)
+                {
+                    // Отключаем сервис в MainWindow
+                    var mainWindow = Application.Current.MainWindow as MainWindow;
+                    if (mainWindow != null)
+                    {
+                        mainWindow.InitializeAmoCrmService(settings);
+                    }
+                    
+                    // Обновляем статус
+                    UpdateAmoCrmStatus("Not connected", false);
+                }
+                else
+                {
+                    // Если интеграция включена, проверяем наличие необходимых данных для подключения
+                    // Проверяем оба режима аутентификации: manual token и OAuth
+                    string authMode = settings.AmoCrmAuthMode ?? "manual";
+                    bool hasManualToken = !string.IsNullOrEmpty(settings.AmoCrmSubdomain) && 
+                                         !string.IsNullOrEmpty(settings.AmoCrmAccessTokenEncrypted);
+                    bool hasOAuth = authMode == "oauth" && 
+                                   !string.IsNullOrEmpty(settings.AmoCrmSubdomain) &&
+                                   !string.IsNullOrEmpty(settings.AmoCrmClientId) &&
+                                   !string.IsNullOrEmpty(settings.AmoCrmClientSecretEncrypted) &&
+                                   (!string.IsNullOrEmpty(settings.AmoCrmOAuthAccessTokenEncrypted) || 
+                                    !string.IsNullOrEmpty(settings.AmoCrmOAuthRefreshTokenEncrypted));
+                    
+                    // Если есть домен и хотя бы один из токенов (manual или OAuth), пытаемся подключиться
+                    if (!string.IsNullOrEmpty(settings.AmoCrmSubdomain) && (hasManualToken || hasOAuth))
+                    {
+                        var mainWindow = Application.Current.MainWindow as MainWindow;
+                        if (mainWindow != null)
+                        {
+                            MainWindow.Log($"[SettingsWindow] Initializing AmoCRM service (authMode={authMode}, hasManualToken={hasManualToken}, hasOAuth={hasOAuth})");
+                            mainWindow.InitializeAmoCrmService(settings);
+                        }
+                    }
+                    else
+                    {
+                        MainWindow.Log($"[SettingsWindow] Cannot initialize AmoCRM: missing required credentials (subdomain={!string.IsNullOrEmpty(settings.AmoCrmSubdomain)}, manualToken={hasManualToken}, oauth={hasOAuth})");
+                        UpdateAmoCrmStatus("Not configured", false);
+                    }
+                }
+                
+                // Сохраняем настройки (токен и домен остаются в файле)
+                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, updatedJson);
+                
+                MainWindow.Log($"[SettingsWindow] Kommo integration toggle saved: {settings.EnableAmoCrmIntegration}");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] Error saving Kommo integration toggle: {ex.Message}");
+            }
+        }
+        
+        private void AmoCrmAccessTokenPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
+        {
+            // Можно добавить валидацию токена здесь, если нужно
+        }
+        
+        /// <summary>
+        /// Обработчик переключения режима аутентификации (современный сегментированный контрол)
+        /// </summary>
+        private void AmoCrmAuthModeButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button button && button.Tag is string mode)
+            {
+                // Определяем выбранный режим: если нажата OAuth кнопка, то OAuth, иначе Manual Token
+                bool isOAuth = (button == AmoCrmAuthModeOAuthButton);
+                
+                // Обновляем визуальное состояние кнопок
+                var accentBlueBrush = (Brush)FindResource("AccentBlueBrush");
+                var textPrimaryBrush = (Brush)FindResource("TextPrimaryBrush");
+                
+                if (AmoCrmAuthModeManualButton != null)
+                {
+                    AmoCrmAuthModeManualButton.Tag = isOAuth ? "manual" : "manual_selected";
+                    AmoCrmAuthModeManualButton.Background = isOAuth ? Brushes.Transparent : accentBlueBrush;
+                    AmoCrmAuthModeManualButton.Foreground = isOAuth ? textPrimaryBrush : Brushes.White;
+                }
+                
+                if (AmoCrmAuthModeOAuthButton != null)
+                {
+                    AmoCrmAuthModeOAuthButton.Tag = isOAuth ? "oauth_selected" : "oauth";
+                    AmoCrmAuthModeOAuthButton.Background = isOAuth ? accentBlueBrush : Brushes.Transparent;
+                    AmoCrmAuthModeOAuthButton.Foreground = isOAuth ? Brushes.White : textPrimaryBrush;
+                }
+                
+                // Обновляем видимость панелей и статусов
+                UpdateAmoCrmAuthModeVisibility(isOAuth);
+                
+                // Отключаем сервис для неактивного режима и подключаем для активного
+                DisconnectInactiveAuthMode(isOAuth);
+            }
+        }
+        
+        /// <summary>
+        /// Отключает сервис для неактивного режима аутентификации
+        /// </summary>
+        private void DisconnectInactiveAuthMode(bool isOAuth)
+        {
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow == null) return;
+            
+            // Отключаем текущий сервис
+            mainWindow.DisconnectAmoCrmService();
+            
+            // Загружаем настройки и подключаем только активный режим
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    
+                    if (settings != null && settings.EnableAmoCrmIntegration)
+                    {
+                        // Обновляем режим в настройках
+                        settings.AmoCrmAuthMode = isOAuth ? "oauth" : "manual";
+                        
+                        // Сохраняем изменения
+                        string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                        File.WriteAllText(settingsPath, updatedJson);
+                        
+                        // Подключаем только активный режим
+                        mainWindow.InitializeAmoCrmService(settings);
+                        
+                        // Обновляем статус через небольшую задержку
+                        _ = Task.Delay(2000).ContinueWith(_ =>
+                        {
+                            Dispatcher.Invoke(() =>
+                            {
+                                CheckAmoCrmConnectionStatus();
+                            });
+                        }, TaskContinuationOptions.OnlyOnRanToCompletion);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] Error switching auth mode: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Обновляет видимость панелей в зависимости от режима аутентификации
+        /// </summary>
+        private void UpdateAmoCrmAuthModeVisibility(bool isOAuth)
+        {
+            // Subdomain поле показывается ВСЕГДА (нужен для обоих режимов)
+            if (AmoCrmSubdomainPanel != null)
+            {
+                AmoCrmSubdomainPanel.Visibility = Visibility.Visible;
+            }
+            
+            if (AmoCrmManualTokenPanel != null)
+            {
+                AmoCrmManualTokenPanel.Visibility = isOAuth ? Visibility.Collapsed : Visibility.Visible;
+            }
+            if (AmoCrmOAuthPanel != null)
+            {
+                AmoCrmOAuthPanel.Visibility = isOAuth ? Visibility.Visible : Visibility.Collapsed;
+            }
+            
+            // Кнопки Save + Clear показываются только для Manual Token режима
+            if (AmoCrmManualTokenButtonsPanel != null)
+            {
+                AmoCrmManualTokenButtonsPanel.Visibility = isOAuth ? Visibility.Collapsed : Visibility.Visible;
+            }
+            
+            // Authorize + Clear кнопки управляются видимостью AmoCrmOAuthPanel (внутри него)
+            
+            // Статусы: Manual Token показывает "Connected/Not connected", OAuth показывает "Authorized/Not authorized"
+            if (AmoCrmManualTokenStatusPanel != null)
+            {
+                AmoCrmManualTokenStatusPanel.Visibility = isOAuth ? Visibility.Collapsed : Visibility.Visible;
+            }
+            if (AmoCrmOAuthStatusPanel != null)
+            {
+                AmoCrmOAuthStatusPanel.Visibility = isOAuth ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+        
+        /// <summary>
+        /// Обработчик кнопки "Authorize with Kommo"
+        /// </summary>
+        private async void AmoCrmAuthorizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (AmoCrmSubdomainTextBox == null || string.IsNullOrWhiteSpace(AmoCrmSubdomainTextBox.Text))
+                {
+                    CustomMessageBox.Show("Please enter Kommo subdomain first.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                if (AmoCrmClientIdTextBox == null || string.IsNullOrWhiteSpace(AmoCrmClientIdTextBox.Text))
+                {
+                    CustomMessageBox.Show("Please enter Client ID.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                if (AmoCrmClientSecretPasswordBox == null || string.IsNullOrWhiteSpace(AmoCrmClientSecretPasswordBox.Password))
+                {
+                    CustomMessageBox.Show("Please enter Client Secret.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                
+                string redirectUri = AmoCrmRedirectUriTextBox?.Text?.Trim() ?? "http://localhost:8080/callback";
+                if (string.IsNullOrWhiteSpace(redirectUri))
+                {
+                    redirectUri = "http://localhost:8080/callback";
+                }
+                
+                // Нормализуем Redirect URI - должен быть полный путь с портом
+                if (redirectUri == "http://localhost" || redirectUri == "http://localhost/")
+                {
+                    redirectUri = "http://localhost:8080/callback";
+                    if (AmoCrmRedirectUriTextBox != null)
+                    {
+                        AmoCrmRedirectUriTextBox.Text = redirectUri;
+                    }
+                }
+                
+                // Убеждаемся, что есть путь (если только домен и порт)
+                if (!redirectUri.Contains("/", StringComparison.Ordinal) || redirectUri.EndsWith(":8080", StringComparison.OrdinalIgnoreCase))
+                {
+                    redirectUri = redirectUri.TrimEnd('/') + "/callback";
+                    if (AmoCrmRedirectUriTextBox != null)
+                    {
+                        AmoCrmRedirectUriTextBox.Text = redirectUri;
+                    }
+                }
+                
+                MainWindow.Log("[SettingsWindow] Starting OAuth authorization...");
+                
+                // КРИТИЧНО: Захватываем ВСЕ значения из UI-элементов ДО ConfigureAwait(false),
+                // потому что после ConfigureAwait(false) мы можем оказаться на фоновом потоке
+                // и доступ к UI-элементам вызовет InvalidOperationException.
+                string clientIdValue = AmoCrmClientIdTextBox.Text.Trim();
+                string clientSecretValue = AmoCrmClientSecretPasswordBox.Password;
+                
+                // Отключаем кнопку на время авторизации
+                if (AmoCrmAuthorizeButton != null)
+                {
+                    AmoCrmAuthorizeButton.IsEnabled = false;
+                    AmoCrmAuthorizeButton.Content = "Authorizing...";
+                }
+                
+                // Запускаем OAuth flow (асинхронно, не блокируя UI)
+                var oauthService = new AmoCrmOAuthService();
+                // Для OAuth subdomain не нужен для авторизации (используется единый www.amocrm.ru/oauth)
+                // Subdomain будет извлечен из referer после авторизации
+                var (code, referer) = await oauthService.AuthorizeAsync(
+                    string.Empty, // Subdomain не нужен для OAuth авторизации
+                    clientIdValue,
+                    redirectUri
+                ).ConfigureAwait(false);
+                
+                if (string.IsNullOrEmpty(code))
+                {
+                    MainWindow.Log("[SettingsWindow] OAuth authorization failed or was cancelled");
+                    
+                    // Обновляем UI асинхронно, не блокируя
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        CustomMessageBox.Show("Authorization failed or was cancelled. Please try again.", "Authorization Failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        
+                        if (AmoCrmAuthorizeButton != null)
+                        {
+                            AmoCrmAuthorizeButton.IsEnabled = true;
+                            AmoCrmAuthorizeButton.Content = "Authorize with Kommo";
+                        }
+                    });
+                    return;
+                }
+                
+                MainWindow.Log($"[SettingsWindow] Authorization code received, exchanging for tokens...");
+                
+                // Обмениваем code на токены
+                // Для OAuth subdomain извлекается из referer (обязательный параметр после авторизации)
+                if (string.IsNullOrEmpty(referer))
+                {
+                    MainWindow.Log("[SettingsWindow] Referer not found in OAuth response - cannot determine subdomain");
+                    
+                    // Обновляем UI асинхронно, не блокируя
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        CustomMessageBox.Show("Failed to determine your Kommo subdomain from authorization response. Please try again.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        
+                        if (AmoCrmAuthorizeButton != null)
+                        {
+                            AmoCrmAuthorizeButton.IsEnabled = true;
+                            AmoCrmAuthorizeButton.Content = "Authorize with Kommo";
+                        }
+                    });
+                    return;
+                }
+                
+                // Извлекаем subdomain из referer
+                // referer может быть в формате "https://mdkb.amocrm.ru" или "mdkb.amocrm.ru"
+                string refererDomain = referer.Replace("https://", "").Replace("http://", "").Trim();
+                string subdomainForTokenExchange;
+                
+                if (refererDomain.Contains("."))
+                {
+                    subdomainForTokenExchange = refererDomain.Split('.')[0];
+                }
+                else
+                {
+                    subdomainForTokenExchange = refererDomain;
+                }
+                
+                MainWindow.Log($"[SettingsWindow] Extracted subdomain from referer: {subdomainForTokenExchange}");
+                
+                var (accessToken, refreshToken, expiresIn) = await oauthService.ExchangeCodeForTokensAsync(
+                    subdomainForTokenExchange,
+                    clientIdValue,
+                    clientSecretValue,
+                    code,
+                    redirectUri
+                ).ConfigureAwait(false);
+                
+                if (string.IsNullOrEmpty(accessToken))
+                {
+                    MainWindow.Log("[SettingsWindow] Failed to exchange authorization code for tokens");
+                    
+                    // Обновляем UI асинхронно, не блокируя
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        CustomMessageBox.Show("Failed to get access token. Please check your Client ID and Client Secret.", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                        
+                        if (AmoCrmAuthorizeButton != null)
+                        {
+                            AmoCrmAuthorizeButton.IsEnabled = true;
+                            AmoCrmAuthorizeButton.Content = "Authorize with Kommo";
+                        }
+                    });
+                    return;
+                }
+                
+                // Используем значения, захваченные из UI до ConfigureAwait(false)
+                string subdomainToSave = subdomainForTokenExchange;
+                string clientIdToSave = clientIdValue;
+                string clientSecretToSave = clientSecretValue;
+                
+                // Сохраняем OAuth токены в настройки (в фоне, чтобы не блокировать UI)
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                
+                // Читаем настройки асинхронно (не блокируя UI)
+                await Task.Run(() =>
+                {
+                    if (File.Exists(settingsPath))
+                    {
+                        string json = File.ReadAllText(settingsPath);
+                        settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    }
+                    
+                    if (settings == null)
+                    {
+                        settings = new AppSettings();
+                    }
+                }).ConfigureAwait(false);
+                
+                // Обновляем настройки OAuth
+                // Subdomain сохраняется из referer (извлечен выше)
+                if (settings == null)
+                {
+                    settings = new AppSettings();
+                }
+                
+                // КРИТИЧНО: Убеждаемся, что интеграция включена
+                settings.EnableAmoCrmIntegration = true;
+                settings.AmoCrmSubdomain = subdomainToSave;
+                settings.AmoCrmAuthMode = "oauth";
+                settings.AmoCrmClientId = clientIdToSave;
+                settings.AmoCrmClientSecretEncrypted = TokenEncryption.Encrypt(clientSecretToSave);
+                settings.AmoCrmRedirectUri = redirectUri;
+                settings.AmoCrmOAuthAccessTokenEncrypted = TokenEncryption.Encrypt(accessToken);
+                settings.AmoCrmOAuthRefreshTokenEncrypted = refreshToken != null ? TokenEncryption.Encrypt(refreshToken) : null;
+                if (expiresIn.HasValue)
+                {
+                    settings.AmoCrmOAuthTokenExpiresAt = DateTime.UtcNow.AddSeconds(expiresIn.Value);
+                }
+                
+                // Сохраняем файл асинхронно, чтобы не блокировать UI
+                await Task.Run(() =>
+                {
+                    try
+                    {
+                        string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                        File.WriteAllText(settingsPath, updatedJson);
+                        MainWindow.Log($"[SettingsWindow] OAuth tokens saved to file: {settingsPath}");
+                        MainWindow.Log($"[SettingsWindow] Access token encrypted: {!string.IsNullOrEmpty(settings.AmoCrmOAuthAccessTokenEncrypted)}");
+                        MainWindow.Log($"[SettingsWindow] Refresh token encrypted: {!string.IsNullOrEmpty(settings.AmoCrmOAuthRefreshTokenEncrypted)}");
+                        MainWindow.Log($"[SettingsWindow] Token expires at: {settings.AmoCrmOAuthTokenExpiresAt}");
+                    }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[SettingsWindow] Error saving OAuth tokens to file: {ex.Message}");
+                        throw;
+                    }
+                }).ConfigureAwait(false);
+                
+                MainWindow.Log("[SettingsWindow] OAuth tokens saved successfully");
+                
+                // Обновляем UI в UI потоке асинхронно, не блокируя
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    // Обновляем статус OAuth (через UpdateAmoCrmStatus для правильного отображения)
+                    UpdateAmoCrmStatus("Connected", true);
+                    
+                    if (AmoCrmAuthorizeButton != null)
+                    {
+                        AmoCrmAuthorizeButton.IsEnabled = true;
+                        AmoCrmAuthorizeButton.Content = "Authorize with Kommo";
+                    }
+                });
+                
+                // Инициализируем Kommo сервис с OAuth токенами (в UI потоке, т.к. может обращаться к UI)
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    var mainWindow = Application.Current.MainWindow as MainWindow;
+                    if (mainWindow != null && settings != null)
+                    {
+                        mainWindow.InitializeAmoCrmService(settings);
+                    }
+                });
+                
+                // Проверяем статус через небольшую задержку (InvokeAsync — не блокирует фоновый поток)
+                _ = Task.Delay(2000).ContinueWith(t =>
+                {
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        CheckAmoCrmConnectionStatus();
+                    });
+                }, TaskContinuationOptions.OnlyOnRanToCompletion);
+                
+                // Выводим SettingsWindow на передний план, чтобы пользователь увидел обновлённый статус.
+                // Модальный диалог (CustomMessageBox) НЕ используем — он появляется ЗА окном браузера
+                // и блокирует интерфейс, пока пользователь не закроет браузер и не нажмёт OK.
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    this.Activate();
+                    this.Topmost = true;
+                    this.Topmost = false;
+                    this.Focus();
+                    MainWindow.Log("[SettingsWindow] OAuth authorization completed, window activated");
+                });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] Error during OAuth authorization: {ex.Message}");
+                MainWindow.Log($"[SettingsWindow] Stack trace: {ex.StackTrace}");
+                
+                // Обновляем UI асинхронно, не блокируя
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    CustomMessageBox.Show($"Error during authorization: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                    
+                    if (AmoCrmAuthorizeButton != null)
+                    {
+                        AmoCrmAuthorizeButton.IsEnabled = true;
+                        AmoCrmAuthorizeButton.Content = "Authorize with Kommo";
+                    }
+                });
+            }
+        }
+        
+        private void SaveAmoCrmSettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                
+                if (settings == null)
+                {
+                    settings = new AppSettings();
+                }
+                
+                // Убеждаемся, что интеграция включена при сохранении настроек
+                settings.EnableAmoCrmIntegration = true;
+                if (EnableAmoCrmIntegrationCheckBox != null)
+                {
+                    EnableAmoCrmIntegrationCheckBox.IsChecked = true;
+                }
+                // ВАЖНО: не сбрасываем настройку выбора лида, если чекбокс ещё не создан
+                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                {
+                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
+                
+                // Сохраняем настройки Kommo
+                settings.AmoCrmSubdomain = AmoCrmSubdomainTextBox?.Text?.Trim();
+                
+                // Определяем режим аутентификации из состояния кнопок
+                bool isOAuth = false;
+                if (AmoCrmAuthModeOAuthButton != null && AmoCrmAuthModeOAuthButton.Tag is string oauthTag)
+                {
+                    isOAuth = oauthTag == "oauth_selected";
+                }
+                else if (AmoCrmAuthModeManualButton != null && AmoCrmAuthModeManualButton.Tag is string manualTag)
+                {
+                    isOAuth = manualTag != "manual_selected";
+                }
+                else
+                {
+                    // Fallback: проверяем текущее состояние кнопок по Background
+                    if (AmoCrmAuthModeOAuthButton != null && AmoCrmAuthModeOAuthButton.Background != Brushes.Transparent)
+                    {
+                        isOAuth = true;
+                    }
+                }
+                settings.AmoCrmAuthMode = isOAuth ? "oauth" : "manual";
+                
+                if (isOAuth)
+                {
+                    // Сохраняем OAuth настройки
+                    settings.AmoCrmClientId = AmoCrmClientIdTextBox?.Text?.Trim();
+                    if (AmoCrmClientSecretPasswordBox != null && !string.IsNullOrEmpty(AmoCrmClientSecretPasswordBox.Password))
+                    {
+                        settings.AmoCrmClientSecretEncrypted = TokenEncryption.Encrypt(AmoCrmClientSecretPasswordBox.Password);
+                    }
+                    settings.AmoCrmRedirectUri = AmoCrmRedirectUriTextBox?.Text?.Trim() ?? "http://localhost:8080/callback";
+                    
+                    // OAuth токены сохраняются через кнопку Authorize, здесь не трогаем их
+                }
+                else
+                {
+                    // Сохраняем Manual Token
+                    if (AmoCrmAccessTokenPasswordBox != null && !string.IsNullOrEmpty(AmoCrmAccessTokenPasswordBox.Password))
+                    {
+                        settings.AmoCrmAccessTokenEncrypted = TokenEncryption.Encrypt(AmoCrmAccessTokenPasswordBox.Password);
+                    }
+                    else
+                    {
+                        // Если токен не указан, очищаем зашифрованный токен
+                        settings.AmoCrmAccessTokenEncrypted = null;
+                    }
+                }
+                
+                // Сохраняем настройки
+                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, updatedJson);
+                
+                MainWindow.Log("[SettingsWindow] Kommo settings saved successfully");
+                
+                // Обновляем статус на "Connecting..."
+                UpdateAmoCrmStatus("Connecting...", false);
+                
+                // Переинициализируем Kommo сервис в MainWindow (асинхронно, не блокирует UI)
+                // Получаем ссылку на MainWindow через Application
+                var mainWindow = Application.Current.MainWindow as MainWindow;
+                if (mainWindow != null)
+                {
+                    // Инициализация выполняется асинхронно в фоне, не блокирует UI
+                    mainWindow.InitializeAmoCrmService(settings);
+                    
+                    // Проверяем статус через небольшую задержку (после начала инициализации)
+                    _ = Task.Delay(2000).ContinueWith(_ =>
+                    {
+                        Dispatcher.Invoke(() =>
+                        {
+                            CheckAmoCrmConnectionStatus();
+                        });
+                    }, TaskContinuationOptions.OnlyOnRanToCompletion);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] Error saving Kommo settings: {ex.Message}");
+                CustomMessageBox.Show($"Error saving Kommo settings:\n\n{ex.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+        
+        /// <summary>
+        /// Очищает настройки Kommo (токен и домен) из UI и файла settings.json
+        /// </summary>
+        private void ClearAmoCrmSettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                // Подтверждение удаления
+                var result = CustomMessageBox.Show(
+                    "Are you sure you want to clear all Kommo settings?\n\nThis will remove the domain and access token from both the UI and settings file.",
+                    "Clear Kommo Settings",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning,
+                    this);
+                
+                if (result != MessageBoxResult.Yes)
+                {
+                    return;
+                }
+                
+                // Очищаем UI поля
+                if (AmoCrmSubdomainTextBox != null)
+                {
+                    AmoCrmSubdomainTextBox.Text = string.Empty;
+                }
+                
+                if (AmoCrmAccessTokenPasswordBox != null)
+                {
+                    AmoCrmAccessTokenPasswordBox.Password = string.Empty;
+                }
+                
+                // Очищаем OAuth поля
+                if (AmoCrmClientIdTextBox != null)
+                {
+                    AmoCrmClientIdTextBox.Text = string.Empty;
+                }
+                if (AmoCrmClientSecretPasswordBox != null)
+                {
+                    AmoCrmClientSecretPasswordBox.Password = string.Empty;
+                }
+                if (AmoCrmRedirectUriTextBox != null)
+                {
+                    AmoCrmRedirectUriTextBox.Text = "http://localhost:8080/callback";
+                }
+                if (AmoCrmOAuthStatusTextBlock != null)
+                {
+                    AmoCrmOAuthStatusTextBlock.Visibility = Visibility.Collapsed;
+                }
+                
+                // Переключаем на Manual Token режим
+                var accentBlueBrush = (Brush)FindResource("AccentBlueBrush");
+                var textPrimaryBrush = (Brush)FindResource("TextPrimaryBrush");
+                
+                if (AmoCrmAuthModeManualButton != null)
+                {
+                    AmoCrmAuthModeManualButton.Tag = "manual_selected";
+                    AmoCrmAuthModeManualButton.Background = accentBlueBrush;
+                    AmoCrmAuthModeManualButton.Foreground = Brushes.White;
+                }
+                if (AmoCrmAuthModeOAuthButton != null)
+                {
+                    AmoCrmAuthModeOAuthButton.Tag = "oauth";
+                    AmoCrmAuthModeOAuthButton.Background = Brushes.Transparent;
+                    AmoCrmAuthModeOAuthButton.Foreground = textPrimaryBrush;
+                }
+                UpdateAmoCrmAuthModeVisibility(false);
+                
+                // Отключаем OAuth сервис при переключении на Manual Token
+                DisconnectInactiveAuthMode(false);
+                
+                // Очищаем настройки в файле
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                
+                if (settings == null)
+                {
+                    settings = new AppSettings();
+                }
+                
+                // Очищаем все AmoCRM настройки
+                settings.AmoCrmSubdomain = null;
+                settings.AmoCrmAccessTokenEncrypted = null;
+                settings.AmoCrmAuthMode = "manual";
+                settings.AmoCrmClientId = null;
+                settings.AmoCrmClientSecretEncrypted = null;
+                settings.AmoCrmRedirectUri = null;
+                settings.AmoCrmOAuthAccessTokenEncrypted = null;
+                settings.AmoCrmOAuthRefreshTokenEncrypted = null;
+                settings.AmoCrmOAuthTokenExpiresAt = null;
+                settings.EnableAmoCrmIntegration = false;
+                
+                if (EnableAmoCrmIntegrationCheckBox != null)
+                {
+                    EnableAmoCrmIntegrationCheckBox.IsChecked = false;
+                    UpdateAmoCrmSettingsVisibility(false);
+                }
+                
+                // Сохраняем изменения
+                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, updatedJson);
+                
+                MainWindow.Log("[SettingsWindow] Kommo settings cleared");
+                
+                // Отключаем Kommo сервис
+                var mainWindow = Application.Current.MainWindow as MainWindow;
+                if (mainWindow != null)
+                {
+                    mainWindow.DisconnectAmoCrmService();
+                }
+                
+                UpdateAmoCrmStatus("Not connected", false);
+                
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                
+                if (settings == null)
+                {
+                    settings = new AppSettings();
+                }
+                
+                // Очищаем токен и домен
+                settings.AmoCrmSubdomain = null;
+                settings.AmoCrmAccessTokenEncrypted = null;
+                // Выключаем интеграцию
+                settings.EnableAmoCrmIntegration = false;
+                
+                // Обновляем UI
+                if (EnableAmoCrmIntegrationCheckBox != null)
+                {
+                    EnableAmoCrmIntegrationCheckBox.IsChecked = false;
+                }
+                UpdateAmoCrmSettingsVisibility(false);
+                
+                // Отключаем сервис в MainWindow
+                var mainWindowDisconnect = Application.Current.MainWindow as MainWindow;
+                if (mainWindowDisconnect != null)
+                {
+                    mainWindowDisconnect.DisconnectAmoCrmService();
+                }
+                
+                // Обновляем статус
+                UpdateAmoCrmStatus("Not connected", false);
+                
+                // Сохраняем настройку выбора лида Kommo (если была установлена ранее)
+                // При очистке настроек мы не сбрасываем эту настройку, так как она не связана с токеном/доменом
+                // Но если чекбокс доступен, сохраняем его текущее состояние
+                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                {
+                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
+                
+                // Сохраняем настройки
+                string clearedSettingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, clearedSettingsJson);
+                
+                MainWindow.Log("[SettingsWindow] AmoCRM settings cleared successfully");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] Error clearing Kommo settings: {ex.Message}");
+                CustomMessageBox.Show($"Error clearing Kommo settings:\n\n{ex.Message}", 
+                    "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+
+        private void LoadAppearanceSettings()
+        {
+            try
+            {
+                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
+                {
+                    string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+
+                    if (ThemeModeComboBox != null)
+                    {
+                        var mode = ThemeService.ParseMode(settings?.ThemeMode);
+                        ThemeModeComboBox.SelectedIndex = mode switch
+                        {
+                            ThemeMode.Dark => 1,
+                            ThemeMode.Light => 2,
+                            _ => 0
+                        };
+                    }
+                }
+                else
+                {
+                    if (ThemeModeComboBox != null)
+                    {
+                        ThemeModeComboBox.SelectedIndex = 0; // system
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"LoadAppearanceSettings: Error - {ex.Message}");
+            }
+        }
+
+        private void ApplyThemeButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (ThemeModeComboBox == null) return;
+
+            try
+            {
+                var selected = (ThemeModeComboBox.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "system";
+                var mode = ThemeService.ParseMode(selected);
+                ThemeService.SetConfiguredMode(mode);
+                
+                CustomMessageBox.Show("Theme applied successfully!", "Success", MessageBoxButton.OK, MessageBoxImage.Information, this);
+            }
+            catch (Exception ex)
+            {
+                CustomMessageBox.Show($"Error applying theme: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
             }
         }
         
@@ -588,6 +1791,12 @@ namespace Softphone
                 {
                     settings.EnableCallRecording = EnableCallRecordingCheckBox.IsChecked ?? false;
                 }
+                
+                // Сохраняем настройку выбора лида AmoCRM
+                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                {
+                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
 
                 string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
@@ -625,183 +1834,44 @@ namespace Softphone
             ShowView(AdvancedSettingsView);
             // LoadGeneralSettings уже вызывается в ShowView, не нужно вызывать дважды
         }
-        
+
+        private void IntegrationsButton_Click(object sender, RoutedEventArgs e)
+        {
+            UpdateButtonSelection(IntegrationsButton);
+            ShowView(IntegrationsSettingsView);
+            LoadIntegrationsSettings();
+            
+            // Проверяем статус с задержками, чтобы дать время сервису инициализироваться
+            // (если окно открывается сразу после запуска приложения)
+            // Первая проверка через 500мс
+            _ = Task.Delay(500).ContinueWith(_ =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    MainWindow.Log("[SettingsWindow] IntegrationsButton_Click: First status check (500ms delay)");
+                    CheckAmoCrmConnectionStatus();
+                });
+            }, TaskContinuationOptions.OnlyOnRanToCompletion);
+            
+            // Вторая проверка через 2 секунды (на случай если сервис инициализируется дольше)
+            _ = Task.Delay(2000).ContinueWith(_ =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    MainWindow.Log("[SettingsWindow] IntegrationsButton_Click: Second status check (2000ms delay)");
+                    CheckAmoCrmConnectionStatus();
+                });
+            }, TaskContinuationOptions.OnlyOnRanToCompletion);
+        }
+
         private void AboutButton_Click(object sender, RoutedEventArgs e)
         {
             UpdateButtonSelection(AboutButton);
             ShowView(AboutSettingsView);
             
             // Загружаем текущую версию приложения
-            string currentVersion = GitHubVersionService.GetCurrentVersion();
+            string currentVersion = UpdateService.GetCurrentVersion();
             VersionTextBlock.Text = $"Version: {currentVersion}";
-            
-            // Загружаем настройки обновлений
-            LoadUpdateSettings();
-        }
-        
-        private void LoadUpdateSettings()
-        {
-            try
-            {
-                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
-                {
-                    string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
-                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                    
-                    if (settings != null)
-                    {
-                        // Загружаем GitHub repository link
-                        if (!string.IsNullOrEmpty(settings.GitHubRepositoryLink))
-                        {
-                            GitHubRepositoryLinkTextBox.Text = settings.GitHubRepositoryLink;
-                        }
-                        
-                        // Загружаем GitHub токен (расшифровываем)
-                        if (!string.IsNullOrEmpty(settings.GitHubTokenEncrypted))
-                        {
-                            string decryptedToken = TokenEncryption.Decrypt(settings.GitHubTokenEncrypted);
-                            GitHubTokenPasswordBox.Password = decryptedToken;
-                        }
-                        
-                        // Проверяем, сохранены ли настройки
-                        bool settingsSaved = !string.IsNullOrEmpty(settings.GitHubRepositoryLink);
-                        UpdateUpdateSettingsButtonState(settingsSaved);
-                    }
-                    else
-                    {
-                        UpdateUpdateSettingsButtonState(false);
-                    }
-                }
-                else
-                {
-                    UpdateUpdateSettingsButtonState(false);
-                }
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[SettingsWindow] Error loading update settings: {ex.Message}");
-                UpdateUpdateSettingsButtonState(false);
-            }
-        }
-        
-        private void UpdateUpdateSettingsButtonState(bool settingsSaved)
-        {
-            if (SaveUpdateSettingsButton == null || CheckForUpdatesButton == null)
-                return;
-                
-            if (settingsSaved)
-            {
-                // Настройки сохранены - показываем кнопку "Check for Updates"
-                SaveUpdateSettingsButton.Visibility = Visibility.Collapsed;
-                CheckForUpdatesButton.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                // Настройки не сохранены - показываем кнопку "Save"
-                SaveUpdateSettingsButton.Visibility = Visibility.Visible;
-                CheckForUpdatesButton.Visibility = Visibility.Collapsed;
-            }
-        }
-        
-        private void GitHubRepositoryLinkTextBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            // Сбрасываем состояние кнопок при изменении ссылки
-            UpdateUpdateSettingsButtonState(false);
-        }
-        
-        private void GitHubTokenPasswordBox_PasswordChanged(object sender, RoutedEventArgs e)
-        {
-            // Сбрасываем состояние кнопок при изменении токена
-            UpdateUpdateSettingsButtonState(false);
-        }
-        
-        private void SaveUpdateSettingsButton_Click(object sender, RoutedEventArgs e)
-        {
-            try
-            {
-                string repositoryLink = GitHubRepositoryLinkTextBox.Text.Trim();
-                
-                // Проверяем валидность ссылки на репозиторий
-                if (string.IsNullOrWhiteSpace(repositoryLink))
-                {
-                    CustomMessageBox.Show("Please enter a GitHub repository link.", 
-                        "Repository Link Required", MessageBoxButton.OK, MessageBoxImage.Information, this);
-                    return;
-                }
-                
-                var parsed = GitHubRepositoryParser.ParseRepositoryLink(repositoryLink);
-                if (parsed == null)
-                {
-                    CustomMessageBox.Show("Invalid GitHub repository link format.\n\n" +
-                        "Please use format: https://github.com/username/repository\n" +
-                        "Or: username/repository", 
-                        "Invalid Link", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    return;
-                }
-                
-                // Сохраняем настройки
-                SaveUpdateSettings();
-                
-                // Обновляем состояние кнопок
-                UpdateUpdateSettingsButtonState(true);
-                
-                CustomMessageBox.Show("Update settings saved successfully!\n\n" +
-                    $"Repository: {parsed.Value.owner}/{parsed.Value.name}\n" +
-                    "Token: encrypted and stored securely.", 
-                    "Settings Saved", MessageBoxButton.OK, MessageBoxImage.Information, this);
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[SettingsWindow] Error saving update settings: {ex.Message}");
-                CustomMessageBox.Show($"Error saving settings:\n\n{ex.Message}", 
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
-            }
-        }
-        
-        private void SaveUpdateSettings()
-        {
-            try
-            {
-                AppSettings settings;
-                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
-                {
-                    string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
-                    settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
-                }
-                else
-                {
-                    settings = new AppSettings();
-                }
-
-                // Сохраняем GitHub repository link
-                settings.GitHubRepositoryLink = GitHubRepositoryLinkTextBox.Text.Trim();
-
-                // Шифруем и сохраняем токен
-                string tokenToSave = GitHubTokenPasswordBox.Password;
-                if (!string.IsNullOrEmpty(tokenToSave))
-                {
-                    string encryptedToken = TokenEncryption.Encrypt(tokenToSave);
-                    if (string.IsNullOrEmpty(encryptedToken))
-                    {
-                        throw new Exception("Failed to encrypt token");
-                    }
-                    settings.GitHubTokenEncrypted = encryptedToken;
-                }
-                else
-                {
-                    settings.GitHubTokenEncrypted = null;
-                }
-
-                string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
-                File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
-                
-                MainWindow.Log("[SettingsWindow] Update settings saved successfully");
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[SettingsWindow] Error saving update settings: {ex.Message}");
-                throw;
-            }
         }
         
         private async void CheckForUpdatesButton_Click(object sender, RoutedEventArgs e)
@@ -811,135 +1881,44 @@ namespace Softphone
                 CheckForUpdatesButton.IsEnabled = false;
                 CheckForUpdatesButton.Content = "Checking...";
                 
-                // Получаем настройки из файла
-                if (!File.Exists(AppDataHelper.GetSettingsFilePath()))
+                MainWindow.Log("[SettingsWindow] Manual update check initiated");
+                
+                // Используем новый сервис обновлений через собственный сервер
+                // forceCheck = true, чтобы проверить независимо от времени последней проверки
+                var updateInfo = await UpdateService.CheckForUpdateAsync(forceCheck: true);
+                
+                if (updateInfo != null)
                 {
-                    CustomMessageBox.Show("Update settings are not configured.\n\nPlease configure GitHub repository link and save settings.",
-                        "Settings Not Configured", MessageBoxButton.OK, MessageBoxImage.Information, this);
-                    CheckForUpdatesButton.IsEnabled = true;
-                    CheckForUpdatesButton.Content = "Check for Updates";
-                    return;
-                }
-                
-                string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
-                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                
-                if (settings == null || string.IsNullOrEmpty(settings.GitHubRepositoryLink))
-                {
-                    CustomMessageBox.Show("GitHub repository is not configured.\n\nPlease enter repository link and save settings.",
-                        "Repository Not Configured", MessageBoxButton.OK, MessageBoxImage.Information, this);
-                    CheckForUpdatesButton.IsEnabled = true;
-                    CheckForUpdatesButton.Content = "Check for Updates";
-                    return;
-                }
-                
-                // Парсим ссылку на репозиторий
-                var parsed = GitHubRepositoryParser.ParseRepositoryLink(settings.GitHubRepositoryLink);
-                if (parsed == null)
-                {
-                    CustomMessageBox.Show("Invalid GitHub repository link format.\n\nPlease check your repository link in settings.",
-                        "Invalid Repository Link", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    CheckForUpdatesButton.IsEnabled = true;
-                    CheckForUpdatesButton.Content = "Check for Updates";
-                    return;
-                }
-                
-                string repositoryOwner = parsed.Value.owner;
-                string repositoryName = parsed.Value.name;
-                
-                MainWindow.Log($"[SettingsWindow] Manual update check initiated for {repositoryOwner}/{repositoryName}");
-                
-                // Получаем GitHub токен из настроек (расшифрованный)
-                string? githubToken = GitHubTokenProvider.GetToken();
-                
-                var latestRelease = await GitHubVersionService.CheckForUpdateAsync(repositoryOwner, repositoryName, githubToken);
-                
-                if (latestRelease != null)
-                {
-                    string currentVersion = GitHubVersionService.GetCurrentVersion();
-                    string latestVersion = latestRelease.TagName.TrimStart('v', 'V');
-                    
-                    int comparison = GitHubVersionService.CompareVersions(currentVersion, latestVersion);
-                    
-                    if (comparison < 0)
+                    // Новая версия доступна
+                    string currentVersion = UpdateService.GetCurrentVersion();
+                    var updateWindow = new UpdateAvailableWindow(updateInfo, currentVersion)
                     {
-                        // Новая версия доступна
-                        string repositoryUrl = settings.GitHubRepositoryLink;
-                        var updateWindow = new UpdateAvailableWindow(
-                            latestRelease, currentVersion, repositoryUrl, repositoryOwner, repositoryName, githubToken)
-                        {
-                            Owner = this
-                        };
-                        updateWindow.ShowDialog();
-                    }
-                    else
-                    {
-                        CustomMessageBox.Show($"You are using the latest version ({currentVersion}).", 
-                            "No Updates Available", MessageBoxButton.OK, MessageBoxImage.Information, this);
-                    }
+                        Owner = this
+                    };
+                    updateWindow.ShowDialog();
                 }
                 else
                 {
-                    // Проверяем, есть ли токен (для более точного сообщения об ошибке)
-                    bool hasToken = !string.IsNullOrEmpty(githubToken);
-                    
-                    // Более информативное сообщение об ошибке
-                    string errorMessage = "Could not check for updates.\n\n";
-                    
-                    if (hasToken)
-                    {
-                        errorMessage += "Possible reasons:\n";
-                        errorMessage += "• GitHub token is invalid or expired (401 error)\n";
-                        errorMessage += "• Token does not have required permissions\n";
-                        errorMessage += "• Repository does not exist or is private\n";
-                        errorMessage += "• No releases have been created yet\n";
-                        errorMessage += "• Internet connection issue\n\n";
-                        errorMessage += $"Repository: {repositoryOwner}/{repositoryName}\n";
-                        errorMessage += "Token: configured (check if valid)";
-                    }
-                    else
-                    {
-                        errorMessage += "Possible reasons:\n";
-                        errorMessage += "• Repository is private and token is not configured\n";
-                        errorMessage += "• Repository does not exist\n";
-                        errorMessage += "• No releases have been created yet\n";
-                        errorMessage += "• Repository name or owner is incorrect\n";
-                        errorMessage += "• Internet connection issue\n\n";
-                        errorMessage += $"Repository: {repositoryOwner}/{repositoryName}\n";
-                        errorMessage += "Token: not configured (required for private repositories)";
-                    }
-                    
-                    CustomMessageBox.Show(errorMessage, 
-                        "Update Check Failed", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    string currentVersion = UpdateService.GetCurrentVersion();
+                    CustomMessageBox.Show($"You are using the latest version ({currentVersion}).", 
+                        "No Updates Available", MessageBoxButton.OK, MessageBoxImage.Information, this);
                 }
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[SettingsWindow] Error checking for updates: {ex.Message}");
-                CustomMessageBox.Show($"Error checking for updates:\n\n{ex.Message}", 
-                    "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+                CustomMessageBox.Show(
+                    $"Could not check for updates:\n\n{ex.Message}\n\nPlease check your internet connection and try again.",
+                    "Update Check Failed",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning,
+                    this);
             }
             finally
             {
                 CheckForUpdatesButton.IsEnabled = true;
                 CheckForUpdatesButton.Content = "Check for Updates";
             }
-        }
-        
-        /// <summary>
-        /// Получает владельца репозитория GitHub
-        /// </summary>
-        private string GetRepositoryOwner()
-        {
-            return "Miomi228";
-        }
-        
-        /// <summary>
-        /// Получает название репозитория GitHub
-        /// </summary>
-        private string GetRepositoryName()
-        {
-            return "Softphone";
         }
         
         private void LoadGeneralSettings()
@@ -1265,7 +2244,9 @@ namespace Softphone
                 {
                     WsUri = wsUri,
                     SipUri = sipUri,
-                    Password = SipPasswordProvider.GetPassword(settings) ?? ""
+                    Password = SipPasswordProvider.GetPassword(settings) ?? "",
+                    // Используем тот же флаг, что и основное приложение
+                    EnableDebug = settings?.EnableWebRtcDebug ?? true
                 };
                 
                 // Логируем только кратко для тестирования в настройках
@@ -1402,6 +2383,12 @@ namespace Softphone
                     _suppressRecordingToggleEvent = false;
                 }
                 
+                // ВАЖНО: Сохраняем настройку выбора лида AmoCRM, чтобы она не терялась при сохранении общих настроек
+                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                {
+                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
+                
                 System.Diagnostics.Debug.WriteLine($"SaveGeneralSettings: Saving UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri='{settings.WebRtcWsUri}'");
 
                 // Сохраняем в файл
@@ -1468,6 +2455,11 @@ namespace Softphone
                 if (settings.EnableCallRecording)
                 {
                     settings.EnableCallRecording = false;
+                    // Сохраняем настройку выбора лида AmoCRM
+                    if (EnableAmoCrmLeadSelectionCheckBox != null)
+                    {
+                        settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                    }
                     string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                     File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
                 }
@@ -1902,6 +2894,12 @@ namespace Softphone
                 settings.SipUsername = username;
                 settings.SipPasswordEncrypted = TokenEncryption.Encrypt(password);
                 settings.SipPassword = null; // do not persist plaintext
+                
+                // Сохраняем настройку выбора лида AmoCRM
+                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                {
+                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
 
                 string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), json);
@@ -1952,6 +2950,7 @@ namespace Softphone
                 {
                     MicrophoneComboBox.IsEnabled = false;
                     SpeakerComboBox.IsEnabled = false;
+                    if (RingtoneDeviceComboBox != null) RingtoneDeviceComboBox.IsEnabled = false;
                     // Показываем placeholder во время загрузки
                     var loadingPlaceholder = new List<AudioDeviceInfo> { new AudioDeviceInfo { Name = "Loading...", DeviceNumber = -1 } };
                     MicrophoneComboBox.ItemsSource = loadingPlaceholder;
@@ -1961,12 +2960,14 @@ namespace Softphone
                 // Загружаем устройства в фоновом потоке параллельно
                 var microphonesTask = System.Threading.Tasks.Task.Run(() => AudioDeviceHelper.GetMicrophones());
                 var speakersTask = System.Threading.Tasks.Task.Run(() => AudioDeviceHelper.GetSpeakers());
+                var ringtoneDevicesTask = System.Threading.Tasks.Task.Run(() => RingtoneDeviceHelper.GetOutputDevices());
                 
                 // Ждем завершения обеих задач
-                await System.Threading.Tasks.Task.WhenAll(microphonesTask, speakersTask);
+                await System.Threading.Tasks.Task.WhenAll(microphonesTask, speakersTask, ringtoneDevicesTask);
                 
                 var microphones = await microphonesTask;
                 var speakers = await speakersTask;
+                var ringtoneDevices = await ringtoneDevicesTask;
                 
                 // Обновляем UI в UI потоке
                 Dispatcher.Invoke(() =>
@@ -1975,6 +2976,12 @@ namespace Softphone
                     SpeakerComboBox.ItemsSource = speakers;
                     MicrophoneComboBox.IsEnabled = true;
                     SpeakerComboBox.IsEnabled = true;
+
+                    if (RingtoneDeviceComboBox != null)
+                    {
+                        RingtoneDeviceComboBox.ItemsSource = ringtoneDevices;
+                        RingtoneDeviceComboBox.IsEnabled = true;
+                    }
                     
                     // Выбираем сохраненные устройства
                     LoadAudioSettings();
@@ -1986,6 +2993,7 @@ namespace Softphone
                 {
                     MicrophoneComboBox.IsEnabled = true;
                     SpeakerComboBox.IsEnabled = true;
+                    if (RingtoneDeviceComboBox != null) RingtoneDeviceComboBox.IsEnabled = true;
                     CustomMessageBox.Show($"Error loading audio devices: {ex.Message}", "Error", 
                         MessageBoxButton.OK, MessageBoxImage.Warning, this);
                 });
@@ -2073,6 +3081,51 @@ namespace Softphone
                                 }
                             }
                         }
+
+                        // Ringtone settings
+                        if (RingtoneSoundComboBox != null)
+                        {
+                            string mode = (settings.RingtoneSoundMode ?? "wav").Trim().ToLowerInvariant();
+                            foreach (ComboBoxItem item in RingtoneSoundComboBox.Items)
+                            {
+                                if ((item.Tag?.ToString() ?? "") == mode)
+                                {
+                                    RingtoneSoundComboBox.SelectedItem = item;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (RingtoneDeviceComboBox?.ItemsSource != null)
+                        {
+                            string selectedId = settings.RingtoneOutputDeviceId ?? "";
+                            foreach (RingtoneOutputDeviceInfo device in RingtoneDeviceComboBox.ItemsSource)
+                            {
+                                if ((device.Id ?? "") == selectedId)
+                                {
+                                    RingtoneDeviceComboBox.SelectedItem = device;
+                                    break;
+                                }
+                            }
+                            if (RingtoneDeviceComboBox.SelectedItem == null && RingtoneDeviceComboBox.Items.Count > 0)
+                            {
+                                RingtoneDeviceComboBox.SelectedIndex = 0; // default
+                            }
+                        }
+
+                        if (RingtoneVolumeSlider != null)
+                        {
+                            double v = settings.RingtoneVolume;
+                            if (v < 0) v = 0;
+                            if (v > 1) v = 1;
+                            RingtoneVolumeSlider.Value = v * 100.0;
+                        }
+                        if (RingtoneVolumeValueTextBlock != null && RingtoneVolumeSlider != null)
+                        {
+                            RingtoneVolumeValueTextBlock.Text = $"{(int)Math.Round(RingtoneVolumeSlider.Value)}%";
+                        }
+
+                        ApplyRingtoneSettingsLive(settings);
                     }
                 }
                 else
@@ -2085,6 +3138,19 @@ namespace Softphone
                     if (SpeakerComboBox.ItemsSource != null && SpeakerComboBox.Items.Count > 0)
                     {
                         SpeakerComboBox.SelectedIndex = 0;
+                    }
+
+                    if (RingtoneDeviceComboBox?.ItemsSource != null && RingtoneDeviceComboBox.Items.Count > 0)
+                    {
+                        RingtoneDeviceComboBox.SelectedIndex = 0;
+                    }
+                    if (RingtoneVolumeSlider != null)
+                    {
+                        RingtoneVolumeSlider.Value = 70;
+                    }
+                    if (RingtoneVolumeValueTextBlock != null)
+                    {
+                        RingtoneVolumeValueTextBlock.Text = "70%";
                     }
                 }
             }
@@ -2138,9 +3204,25 @@ namespace Softphone
                     }
                 }
 
+                // Ringtone settings
+                if (RingtoneDeviceComboBox?.SelectedItem is RingtoneOutputDeviceInfo ringDev)
+                {
+                    settings.RingtoneOutputDeviceId = string.IsNullOrWhiteSpace(ringDev.Id) ? null : ringDev.Id;
+                }
+                if (RingtoneVolumeSlider != null)
+                {
+                    settings.RingtoneVolume = Math.Max(0.0, Math.Min(1.0, RingtoneVolumeSlider.Value / 100.0));
+                }
+                if (RingtoneSoundComboBox?.SelectedItem is ComboBoxItem soundItem && soundItem.Tag != null)
+                {
+                    settings.RingtoneSoundMode = soundItem.Tag.ToString() ?? "wav";
+                }
+
                 // Сохраняем в файл
                 string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
+
+                ApplyRingtoneSettingsLive(settings);
 
                 CustomMessageBox.Show("Audio settings saved!", "Success", 
                     MessageBoxButton.OK, MessageBoxImage.Information, this);
@@ -2149,6 +3231,19 @@ namespace Softphone
             {
                 CustomMessageBox.Show($"Error saving audio settings: {ex.Message}", "Error", 
                     MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+
+        private void ApplyRingtoneSettingsLive(AppSettings settings)
+        {
+            try
+            {
+                float volume = (float)Math.Max(0.0, Math.Min(1.0, settings.RingtoneVolume));
+                RingtoneService.Instance.Configure(settings.RingtoneOutputDeviceId, volume, settings.RingtoneSoundMode);
+            }
+            catch
+            {
+                // best-effort
             }
         }
 
@@ -2170,6 +3265,56 @@ namespace Softphone
         private void SampleRateComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             // Можно добавить информацию о выбранной частоте дискретизации
+        }
+
+        private void RingtoneDeviceComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            try
+            {
+                string? id = (RingtoneDeviceComboBox?.SelectedItem as RingtoneOutputDeviceInfo)?.Id;
+                float volume = (float)Math.Max(0.0, Math.Min(1.0, (RingtoneVolumeSlider?.Value ?? 70) / 100.0));
+                string mode = ((RingtoneSoundComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "wav");
+                RingtoneService.Instance.Configure(id, volume, mode);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private void RingtoneVolumeSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            try
+            {
+                if (RingtoneVolumeValueTextBlock != null)
+                {
+                    RingtoneVolumeValueTextBlock.Text = $"{(int)Math.Round(e.NewValue)}%";
+                }
+
+                string? id = (RingtoneDeviceComboBox?.SelectedItem as RingtoneOutputDeviceInfo)?.Id;
+                float volume = (float)Math.Max(0.0, Math.Min(1.0, e.NewValue / 100.0));
+                string mode = ((RingtoneSoundComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "wav");
+                RingtoneService.Instance.Configure(id, volume, mode);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private void RingtoneSoundComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            try
+            {
+                string mode = ((RingtoneSoundComboBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "wav");
+                string? id = (RingtoneDeviceComboBox?.SelectedItem as RingtoneOutputDeviceInfo)?.Id;
+                float volume = (float)Math.Max(0.0, Math.Min(1.0, (RingtoneVolumeSlider?.Value ?? 70) / 100.0));
+                RingtoneService.Instance.Configure(id, volume, mode);
+            }
+            catch
+            {
+                // ignore
+            }
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -2215,6 +3360,48 @@ namespace Softphone
             // Dispose будет вызван только при закрытии приложения или отключении WebRTC
             
             base.OnClosed(e);
+        }
+    }
+
+    // Converter для иконок темы
+    public class ThemeIconConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            var tag = value?.ToString() ?? "system";
+            return tag switch
+            {
+                "system" => Symbol.Desktop,
+                "dark" => Symbol.WeatherMoon,
+                "light" => Symbol.WeatherSunny,
+                _ => Symbol.Desktop
+            };
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
+        }
+    }
+
+    // Converter для описаний темы
+    public class ThemeDescriptionConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            var tag = value?.ToString() ?? "system";
+            return tag switch
+            {
+                "system" => "Follows your Windows theme",
+                "dark" => "Dark colors everywhere",
+                "light" => "Light and bright",
+                _ => ""
+            };
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            throw new NotImplementedException();
         }
     }
 }

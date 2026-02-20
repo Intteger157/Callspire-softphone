@@ -16,6 +16,7 @@ namespace Softphone
         public AudioDeviceDialog()
         {
             InitializeComponent();
+            NativeWindowAppearanceManager.Attach(this);
             // Загружаем устройства асинхронно, чтобы не блокировать UI
             _ = LoadAudioDevicesAsync();
         }

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Logs" Height="700" Width="1000" MinHeight="400" MinWidth="600"
         WindowStyle="None" 
-        AllowsTransparency="True"
+        AllowsTransparency="False"
         Background="Transparent"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterOwner"
@@ -15,32 +15,30 @@
     
     <Window.Resources>
         <ResourceDictionary>
-            <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Themes/DarkTheme.xaml"/>
-            </ResourceDictionary.MergedDictionaries>
-            
+            <!-- Theme dictionaries are provided by App.xaml (System/Dark/Light). -->
+
             <!-- Global ScrollBar Style -->
             <Style TargetType="ScrollBar">
-                <Setter Property="Background" Value="{StaticResource BackgroundDarkBrush}"/>
-                <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                <Setter Property="Background" Value="{DynamicResource BackgroundDarkBrush}"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
                 <Setter Property="Stylus.IsFlicksEnabled" Value="False"/>
                 <Setter Property="Template">
                     <Setter.Value>
                         <ControlTemplate TargetType="ScrollBar">
-                            <Grid x:Name="GridRoot" Background="{StaticResource BackgroundDarkBrush}">
+                            <Grid x:Name="GridRoot" Background="{DynamicResource BackgroundDarkBrush}">
                                 <Grid.RowDefinitions>
-                                    <RowDefinition MaxHeight="{DynamicResource {x:Static SystemParameters.VerticalScrollBarButtonHeightKey}}"/>
+                                    <RowDefinition MaxHeight="{x:Static SystemParameters.VerticalScrollBarButtonHeight}"/>
                                     <RowDefinition Height="0.00001*"/>
-                                    <RowDefinition MaxHeight="{DynamicResource {x:Static SystemParameters.VerticalScrollBarButtonHeightKey}}"/>
+                                    <RowDefinition MaxHeight="{x:Static SystemParameters.VerticalScrollBarButtonHeight}"/>
                                 </Grid.RowDefinitions>
                                 
-                                <Border Grid.Row="1" Background="{StaticResource BackgroundDarkBrush}">
+                                <Border Grid.Row="1" Background="{DynamicResource BackgroundDarkBrush}">
                                     <Track x:Name="PART_Track" IsDirectionReversed="True" Focusable="False">
                                         <Track.Thumb>
-                                            <Thumb Background="{StaticResource BackgroundLightBrush}">
+                                            <Thumb Background="{DynamicResource BackgroundLightBrush}">
                                                 <Thumb.Style>
                                                     <Style TargetType="Thumb">
-                                                        <Setter Property="Background" Value="{StaticResource BackgroundLightBrush}"/>
+                                                        <Setter Property="Background" Value="{DynamicResource BackgroundLightBrush}"/>
                                                         <Setter Property="BorderThickness" Value="0"/>
                                                         <Setter Property="Template">
                                                             <Setter.Value>
@@ -54,10 +52,10 @@
                                                         </Setter>
                                                         <Style.Triggers>
                                                             <Trigger Property="IsMouseOver" Value="True">
-                                                                <Setter Property="Background" Value="{StaticResource HoverBackgroundBrush}"/>
+                                                                <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
                                                             </Trigger>
                                                             <Trigger Property="IsDragging" Value="True">
-                                                                <Setter Property="Background" Value="{StaticResource AccentGreenBrush}"/>
+                                                                <Setter Property="Background" Value="{DynamicResource AccentGreenBrush}"/>
                                                             </Trigger>
                                                         </Style.Triggers>
                                                     </Style>
@@ -74,7 +72,7 @@
             
             <!-- Thumb Style for ScrollBar -->
             <Style TargetType="Thumb" x:Key="ScrollBarThumbStyle">
-                <Setter Property="Background" Value="{StaticResource BackgroundLightBrush}"/>
+                <Setter Property="Background" Value="{DynamicResource BackgroundLightBrush}"/>
                 <Setter Property="BorderThickness" Value="0"/>
                 <Setter Property="Template">
                     <Setter.Value>
@@ -88,22 +86,22 @@
                 </Setter>
                 <Style.Triggers>
                     <Trigger Property="IsMouseOver" Value="True">
-                        <Setter Property="Background" Value="{StaticResource HoverBackgroundBrush}"/>
+                        <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
                     </Trigger>
                     <Trigger Property="IsDragging" Value="True">
-                        <Setter Property="Background" Value="{StaticResource AccentGreenBrush}"/>
+                        <Setter Property="Background" Value="{DynamicResource AccentGreenBrush}"/>
                     </Trigger>
                 </Style.Triggers>
             </Style>
         </ResourceDictionary>
     </Window.Resources>
 
-    <Border Background="{StaticResource BackgroundDarkBrush}" 
-            CornerRadius="8" 
-            BorderBrush="{StaticResource BorderBrush}" 
-            BorderThickness="1"
-            ClipToBounds="True">
-        <Grid>
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Border x:Name="WindowSurface"
+                Background="{DynamicResource BackgroundDarkBrush}" 
+                CornerRadius="16" 
+                ClipToBounds="True">
+            <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
@@ -111,8 +109,11 @@
             </Grid.RowDefinitions>
 
             <!-- Title Bar -->
-            <Border Grid.Row="0" Background="{StaticResource BackgroundMediumBrush}" 
-                    CornerRadius="8,8,0,0" ClipToBounds="True">
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}" 
+                    CornerRadius="16,16,0,0"
+                    ClipToBounds="True">
                 <Grid MouseDown="TitleBar_MouseDown" WindowChrome.IsHitTestVisibleInChrome="True">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -122,10 +123,10 @@
                               FontSize="14" FontWeight="SemiBold" 
                               Margin="16,10,0,10" 
                               VerticalAlignment="Center"
-                              Foreground="{StaticResource TextPrimaryBrush}"/>
+                              Foreground="{DynamicResource TextPrimaryBrush}"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
                         <Button Content="─" Width="46" Height="32" 
-                               Background="Transparent" Foreground="{StaticResource TextSecondaryBrush}"
+                               Background="Transparent" Foreground="{DynamicResource TextSecondaryBrush}"
                                BorderThickness="0" Click="MinimizeButton_Click"
                                FontSize="16" Cursor="Hand">
                             <Button.Style>
@@ -133,54 +134,205 @@
                                     <Setter Property="Background" Value="Transparent"/>
                                     <Style.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter Property="Background" Value="{StaticResource HoverBackgroundBrush}"/>
+                                            <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
                                         </Trigger>
                                     </Style.Triggers>
                                 </Style>
                             </Button.Style>
                         </Button>
-                        <Button Content="✕" Width="46" Height="32" 
-                               Background="Transparent" Foreground="{StaticResource TextSecondaryBrush}"
-                               BorderThickness="0" Click="CloseButton_Click"
-                               FontSize="16" Cursor="Hand">
-                            <Button.Style>
-                                <Style TargetType="Button">
-                                    <Setter Property="Background" Value="Transparent"/>
-                                    <Style.Triggers>
-                                        <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter Property="Background" Value="{StaticResource AccentRedBrush}"/>
-                                            <Setter Property="Foreground" Value="White"/>
-                                        </Trigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Button.Style>
-                        </Button>
+                        <Button Content="✕"
+                               Click="CloseButton_Click"
+                               Style="{DynamicResource TitleBarCloseButtonStyle}"
+                               Height="32"/>
                     </StackPanel>
                 </Grid>
             </Border>
 
-            <!-- Log Content (wheel scroll, no visible scrollbars) -->
-            <ScrollViewer Grid.Row="1" 
-                         VerticalScrollBarVisibility="Hidden" 
-                         HorizontalScrollBarVisibility="Disabled"
-                         PanningMode="VerticalOnly"
-                         Margin="16">
-                <TextBox Name="LogTextBox" 
-                        IsReadOnly="True" 
-                        TextWrapping="Wrap"
-                        Background="{StaticResource BackgroundDarkBrush}"
-                        Foreground="{StaticResource TextPrimaryBrush}"
-                        FontFamily="Consolas"
-                        FontSize="12"
-                        BorderThickness="0"
-                        VerticalScrollBarVisibility="Hidden"
-                        HorizontalScrollBarVisibility="Disabled"
-                        HorizontalContentAlignment="Left"
-                        VerticalContentAlignment="Top"
-                        TextAlignment="Left"
-                        SelectionBrush="{StaticResource AccentGreenBrush}"
-                        SelectionOpacity="0.3"/>
-            </ScrollViewer>
+            <!-- Log Content with Tabs -->
+            <TabControl Name="LogTabControl" Grid.Row="1" 
+                       Margin="16,8,16,0"
+                       Background="Transparent"
+                       BorderThickness="0">
+                <TabControl.Resources>
+                    <!-- Minimalistic Tab Style -->
+                    <Style TargetType="TabItem">
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Padding" Value="12,8"/>
+                        <Setter Property="Margin" Value="0,0,8,0"/>
+                        <Setter Property="FontSize" Value="12"/>
+                        <Setter Property="FontWeight" Value="Normal"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="TabItem">
+                                    <Border Name="Border"
+                                            Background="{TemplateBinding Background}"
+                                            BorderThickness="0"
+                                            Padding="{TemplateBinding Padding}"
+                                            Margin="{TemplateBinding Margin}">
+                                        <ContentPresenter ContentSource="Header"
+                                                        HorizontalAlignment="Center"
+                                                        VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
+                                        <Trigger Property="IsSelected" Value="True">
+                                            <Setter TargetName="Border" Property="Background" Value="Transparent"/>
+                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                        </Trigger>
+                                        <Trigger Property="IsMouseOver" Value="True">
+                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                        </Trigger>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                    
+                    <!-- TabControl Style to remove borders and background -->
+                    <Style TargetType="TabControl">
+                        <Setter Property="Background" Value="Transparent"/>
+                        <Setter Property="BorderThickness" Value="0"/>
+                        <Setter Property="Template">
+                            <Setter.Value>
+                                <ControlTemplate TargetType="TabControl">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="*"/>
+                                        </Grid.RowDefinitions>
+                                        <TabPanel Name="HeaderPanel"
+                                                 Grid.Row="0"
+                                                 Background="Transparent"
+                                                 IsItemsHost="True"
+                                                 Margin="0,0,0,8"/>
+                                        <ContentPresenter Name="PART_SelectedContentHost"
+                                                         Grid.Row="1"
+                                                         Margin="0"
+                                                         ContentSource="SelectedContent"/>
+                                    </Grid>
+                                </ControlTemplate>
+                            </Setter.Value>
+                        </Setter>
+                    </Style>
+                </TabControl.Resources>
+                
+                <!-- All Logs Tab -->
+                <TabItem Header="All Logs">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden" 
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 PanningMode="VerticalOnly">
+                        <TextBox Name="AllLogsTextBox" 
+                                IsReadOnly="True" 
+                                TextWrapping="Wrap"
+                                Background="{DynamicResource BackgroundDarkBrush}"
+                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                BorderThickness="0"
+                                VerticalScrollBarVisibility="Hidden"
+                                HorizontalScrollBarVisibility="Disabled"
+                                HorizontalContentAlignment="Left"
+                                VerticalContentAlignment="Top"
+                                TextAlignment="Left"
+                                SelectionBrush="{DynamicResource AccentGreenBrush}"
+                                SelectionOpacity="0.3"/>
+                    </ScrollViewer>
+                </TabItem>
+                
+                <!-- WebRTC Log Tab -->
+                <TabItem Header="WebRTC Log">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden" 
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 PanningMode="VerticalOnly">
+                        <TextBox Name="WebRtcLogTextBox" 
+                                IsReadOnly="True" 
+                                TextWrapping="Wrap"
+                                Background="{DynamicResource BackgroundDarkBrush}"
+                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                BorderThickness="0"
+                                VerticalScrollBarVisibility="Hidden"
+                                HorizontalScrollBarVisibility="Disabled"
+                                HorizontalContentAlignment="Left"
+                                VerticalContentAlignment="Top"
+                                TextAlignment="Left"
+                                SelectionBrush="{DynamicResource AccentGreenBrush}"
+                                SelectionOpacity="0.3"/>
+                    </ScrollViewer>
+                </TabItem>
+                
+                <!-- Amo Log Tab -->
+                <TabItem Header="Amo Log">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden" 
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 PanningMode="VerticalOnly">
+                        <TextBox Name="AmoLogTextBox" 
+                                IsReadOnly="True" 
+                                TextWrapping="Wrap"
+                                Background="{DynamicResource BackgroundDarkBrush}"
+                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                BorderThickness="0"
+                                VerticalScrollBarVisibility="Hidden"
+                                HorizontalScrollBarVisibility="Disabled"
+                                HorizontalContentAlignment="Left"
+                                VerticalContentAlignment="Top"
+                                TextAlignment="Left"
+                                SelectionBrush="{DynamicResource AccentGreenBrush}"
+                                SelectionOpacity="0.3"/>
+                    </ScrollViewer>
+                </TabItem>
+                
+                <!-- SIP Log Tab -->
+                <TabItem Header="SIP Log">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden" 
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 PanningMode="VerticalOnly">
+                        <TextBox Name="SipLogTextBox" 
+                                IsReadOnly="True" 
+                                TextWrapping="Wrap"
+                                Background="{DynamicResource BackgroundDarkBrush}"
+                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                BorderThickness="0"
+                                VerticalScrollBarVisibility="Hidden"
+                                HorizontalScrollBarVisibility="Disabled"
+                                HorizontalContentAlignment="Left"
+                                VerticalContentAlignment="Top"
+                                TextAlignment="Left"
+                                SelectionBrush="{DynamicResource AccentGreenBrush}"
+                                SelectionOpacity="0.3"/>
+                    </ScrollViewer>
+                </TabItem>
+                
+                <!-- Call Log Tab -->
+                <TabItem Header="Call Log">
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden" 
+                                 HorizontalScrollBarVisibility="Disabled"
+                                 PanningMode="VerticalOnly">
+                        <TextBox Name="CallLogTextBox" 
+                                IsReadOnly="True" 
+                                TextWrapping="Wrap"
+                                Background="{DynamicResource BackgroundDarkBrush}"
+                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                FontFamily="Consolas"
+                                FontSize="12"
+                                BorderThickness="0"
+                                VerticalScrollBarVisibility="Hidden"
+                                HorizontalScrollBarVisibility="Disabled"
+                                HorizontalContentAlignment="Left"
+                                VerticalContentAlignment="Top"
+                                TextAlignment="Left"
+                                SelectionBrush="{DynamicResource AccentGreenBrush}"
+                                SelectionOpacity="0.3"/>
+                    </ScrollViewer>
+                </TabItem>
+            </TabControl>
 
             <!-- Buttons -->
             <Grid Grid.Row="2" Margin="16,8,16,16">
@@ -192,16 +344,24 @@
                 <Button Grid.Column="1" 
                        Content="Copy All" 
                        Click="CopyButton_Click"
-                       Style="{StaticResource ModernButtonStyle}"
+                       Style="{DynamicResource ModernButtonStyle}"
                        Margin="8,0,8,0"
                        Padding="16,8"/>
                 <Button Grid.Column="2" 
                        Content="Export TXT" 
                        Click="ExportButton_Click"
-                       Style="{StaticResource ModernButtonStyle}"
+                       Style="{DynamicResource ModernButtonStyle}"
                        Padding="16,8"/>
             </Grid>
-        </Grid>
-    </Border>
+            </Grid>
+        </Border>
+
+        <Border x:Name="WindowStroke"
+                Background="Transparent"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="16"
+                IsHitTestVisible="False"/>
+    </Grid>
 </Window>
 

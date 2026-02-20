@@ -14,60 +14,147 @@ namespace Softphone
 {
     public partial class UpdateAvailableWindow : Window
     {
-        private GitHubReleaseInfo _releaseInfo;
+        private UpdateInfo _updateInfo;
         private string _currentVersion;
-        private string _repositoryUrl;
-        private readonly string _repositoryOwner;
-        private readonly string _repositoryName;
-        private readonly string? _githubToken;
+        private readonly bool _isMandatory;
 
         private bool _isDownloading;
         private bool _readyToInstall;
         private string? _downloadedFilePath;
         private CancellationTokenSource? _downloadCts;
         
+        // Конструктор для собственного сервера обновлений
         public UpdateAvailableWindow(
-            GitHubReleaseInfo releaseInfo,
-            string currentVersion,
-            string repositoryUrl,
-            string repositoryOwner,
-            string repositoryName,
-            string? githubToken)
+            UpdateInfo updateInfo,
+            string currentVersion)
         {
             InitializeComponent();
-            _releaseInfo = releaseInfo;
-            _currentVersion = currentVersion;
-            _repositoryUrl = repositoryUrl;
-            _repositoryOwner = repositoryOwner;
-            _repositoryName = repositoryName;
-            _githubToken = githubToken;
             
-            LoadReleaseInfo();
+            // Убеждаемся, что ресурсы загружены (на случай, если окно создается до полной инициализации Application)
+            EnsureResourcesLoaded();
+            
+            NativeWindowAppearanceManager.Attach(this);
+            _updateInfo = updateInfo;
+            _currentVersion = currentVersion;
+            _isMandatory = updateInfo.Mandatory;
+            
+            LoadUpdateInfo();
 
             Closing += UpdateAvailableWindow_Closing;
+            
+            // Если обновление обязательное, скрываем кнопку "Update Later"
+            if (_isMandatory)
+            {
+                LaterButton.Visibility = Visibility.Collapsed;
+            }
         }
         
-        private void LoadReleaseInfo()
+        /// <summary>
+        /// Убеждается, что ресурсы темы загружены в окне
+        /// </summary>
+        private void EnsureResourcesLoaded()
         {
             try
             {
+                // Проверяем, есть ли уже ресурсы в Application
+                if (Application.Current?.Resources != null)
+                {
+                    var appResources = Application.Current.Resources;
+                    if (appResources.Contains("TextSecondaryBrush"))
+                    {
+                        // Ресурсы уже загружены в Application, окно их унаследует
+                        return;
+                    }
+                }
+                
+                // Если ресурсов нет, загружаем их локально в окно
+                var resources = this.Resources;
+                if (resources == null)
+                {
+                    resources = new ResourceDictionary();
+                    this.Resources = resources;
+                }
+                
+                // Проверяем, есть ли уже MergedDictionaries и загруженные темы
+                // MergedDictionaries всегда инициализируется автоматически в ResourceDictionary
+                var mergedDictionaries = resources.MergedDictionaries;
+                if (mergedDictionaries == null || mergedDictionaries.Count == 0)
+                {
+                    // Загружаем темы
+                    try
+                    {
+                        var fallbackTheme = new ResourceDictionary { Source = new Uri("Themes/FallbackTheme.xaml", UriKind.Relative) };
+                        // Если mergedDictionaries null, значит resources был только что создан, и MergedDictionaries будет инициализирован автоматически
+                        if (mergedDictionaries == null)
+                        {
+                            // MergedDictionaries будет автоматически создан при первом обращении
+                            resources.MergedDictionaries!.Add(fallbackTheme);
+                            mergedDictionaries = resources.MergedDictionaries; // Теперь он точно не null
+                        }
+                        else
+                        {
+                            mergedDictionaries.Add(fallbackTheme);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[UpdateAvailableWindow] Failed to load FallbackTheme: {ex.Message}");
+                    }
+                    
+                    try
+                    {
+                        var darkTheme = new ResourceDictionary { Source = new Uri("Themes/DarkTheme.xaml", UriKind.Relative) };
+                        // mergedDictionaries теперь точно не null после предыдущего блока
+                        if (mergedDictionaries != null)
+                        {
+                            mergedDictionaries.Add(darkTheme);
+                        }
+                        else
+                        {
+                            // Fallback на случай, если mergedDictionaries все еще null
+                            resources.MergedDictionaries!.Add(darkTheme);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[UpdateAvailableWindow] Failed to load DarkTheme: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[UpdateAvailableWindow] Error ensuring resources loaded: {ex.Message}");
+            }
+        }
+        
+        private void LoadUpdateInfo()
+        {
+            try
+            {
+                if (_updateInfo == null) return;
+                
                 CurrentVersionTextBlock.Text = $"Current version: {_currentVersion}";
                 
-                string latestVersion = _releaseInfo.TagName.TrimStart('v', 'V');
+                string latestVersion = _updateInfo.Version.TrimStart('v', 'V');
                 LatestVersionTextBlock.Text = $"Latest version: {latestVersion}";
                 
-                if (!string.IsNullOrEmpty(_releaseInfo.Body))
+                if (!string.IsNullOrEmpty(_updateInfo.Notes))
                 {
-                    ReleaseNotesContentTextBlock.Text = _releaseInfo.Body;
+                    ReleaseNotesContentTextBlock.Text = _updateInfo.Notes;
                 }
                 else
                 {
                     ReleaseNotesContentTextBlock.Text = "No release notes available.";
                 }
+                
+                if (_isMandatory)
+                {
+                    UpdateMessageTextBlock.Text = "A mandatory update is available!";
+                }
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[UpdateAvailableWindow] Error loading release info: {ex.Message}");
+                MainWindow.Log($"[UpdateAvailableWindow] Error loading update info: {ex.Message}");
             }
         }
         
@@ -90,6 +177,13 @@ namespace Softphone
 
         private void UpdateAvailableWindow_Closing(object? sender, CancelEventArgs e)
         {
+            // Если обновление обязательное, не позволяем закрыть окно
+            if (_isMandatory && !_readyToInstall)
+            {
+                e.Cancel = true;
+                return;
+            }
+            
             // If user closes the dialog mid-download, cancel the download gracefully.
             if (_isDownloading)
             {
@@ -101,22 +195,28 @@ namespace Softphone
         {
             try
             {
-                var asset = SelectBestAsset(_releaseInfo.Assets);
-                if (asset == null)
+                // Проверяем наличие URL для скачивания
+                if (string.IsNullOrWhiteSpace(_updateInfo.Url))
                 {
                     CustomMessageBox.Show(
-                        "No downloadable installer was found in the latest release.\n\n" +
-                        "Please attach a .exe or .msi file to the GitHub release assets.",
-                        "No Installer Found",
+                        "Download URL is missing in update information.",
+                        "Invalid Update Info",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning,
                         this);
                     return;
                 }
+                
+                string downloadUrl = _updateInfo.Url;
+                string? expectedSha256 = _updateInfo.Sha256;
+                string fileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
+                if (string.IsNullOrWhiteSpace(fileName))
+                {
+                    fileName = $"Callspire_{_updateInfo.Version}.exe";
+                }
 
                 string targetDir = AppDataHelper.GetUpdatesDirectory();
-                string safeName = string.IsNullOrWhiteSpace(asset.Name) ? "update.bin" : asset.Name;
-                string targetPath = Path.Combine(targetDir, safeName);
+                string targetPath = Path.Combine(targetDir, fileName);
 
                 // If file exists, overwrite (keeps UX simple)
                 if (File.Exists(targetPath))
@@ -141,7 +241,21 @@ namespace Softphone
                     DownloadStatusTextBlock.Text = $"Downloading update... {DownloadProgressBar.Value:0}%";
                 });
 
-                await DownloadReleaseAssetAsync(asset, targetPath, progress, _downloadCts.Token);
+                // Загружаем файл
+                await DownloadFileAsync(downloadUrl, targetPath, progress, _downloadCts.Token);
+
+                // Проверяем SHA256, если указан
+                if (!string.IsNullOrWhiteSpace(expectedSha256))
+                {
+                    DownloadStatusTextBlock.Text = "Verifying file integrity...";
+                    bool isValid = UpdateService.VerifyFileHash(targetPath, expectedSha256);
+                    
+                    if (!isValid)
+                    {
+                        File.Delete(targetPath);
+                        throw new Exception("File integrity check failed. The downloaded file may be corrupted or tampered with.");
+                    }
+                }
 
                 _downloadedFilePath = targetPath;
                 _readyToInstall = true;
@@ -176,89 +290,22 @@ namespace Softphone
                 _isDownloading = false;
             }
         }
-
-        private void ResetDownloadUi(string status)
-        {
-            DownloadProgressPanel.Visibility = Visibility.Collapsed;
-            DownloadProgressBar.Value = 0;
-            DownloadStatusTextBlock.Text = status;
-
-            LaterButton.IsEnabled = true;
-            LaterButton.Content = "Update Later";
-            UpdateButton.IsEnabled = true;
-            UpdateButton.Content = "Update Now";
-        }
-
-        private GitHubAsset? SelectBestAsset(GitHubAsset[] assets)
-        {
-            if (assets == null || assets.Length == 0) return null;
-
-            // Prefer Windows installers (.exe / .msi). Try to bias toward x64/windows naming.
-            int Score(GitHubAsset a)
-            {
-                string name = (a.Name ?? "").ToLowerInvariant();
-                int score = 0;
-                if (name.EndsWith(".exe")) score += 100;
-                if (name.EndsWith(".msi")) score += 95;
-                if (name.EndsWith(".zip")) score += 10; // fallback only
-                if (name.Contains("win")) score += 15;
-                if (name.Contains("windows")) score += 15;
-                if (name.Contains("x64") || name.Contains("amd64")) score += 10;
-                if (a.Size > 0) score += 1;
-                return score;
-            }
-
-            return assets
-                .Where(a => a is not null)
-                .Select(a => a!)
-                .Where(a =>
-                {
-                    string n = (a.Name ?? "").ToLowerInvariant();
-                    return n.EndsWith(".exe") || n.EndsWith(".msi") || n.EndsWith(".zip");
-                })
-                .OrderByDescending(Score)
-                .FirstOrDefault();
-        }
-
-        private async Task DownloadReleaseAssetAsync(
-            GitHubAsset asset,
+        
+        private async Task DownloadFileAsync(
+            string downloadUrl,
             string destinationPath,
             IProgress<double> progress,
             CancellationToken cancellationToken)
         {
-            // Prefer authenticated API download if we have an asset id (works for private repos too).
-            string apiUrl = !string.IsNullOrWhiteSpace(asset.ApiUrl)
-                ? asset.ApiUrl
-                : $"https://api.github.com/repos/{_repositoryOwner}/{_repositoryName}/releases/assets/{asset.Id}";
-
-            // Fallback to browser download URL if API url is missing.
-            bool hasApi = asset.Id > 0 && !string.IsNullOrWhiteSpace(apiUrl);
-            string downloadUrl = hasApi ? apiUrl : asset.BrowserDownloadUrl;
-
             if (string.IsNullOrWhiteSpace(downloadUrl))
             {
-                throw new InvalidOperationException("Missing download URL for the selected release asset.");
+                throw new InvalidOperationException("Download URL is missing.");
             }
 
             using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = true });
             http.DefaultRequestHeaders.UserAgent.Clear();
             http.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("Callspire-Softphone", "1.0"));
-
-            if (hasApi)
-            {
-                http.DefaultRequestHeaders.Accept.Clear();
-                http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
-            }
-            else
-            {
-                http.DefaultRequestHeaders.Accept.Clear();
-                http.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/octet-stream"));
-            }
-
-            if (!string.IsNullOrWhiteSpace(_githubToken))
-            {
-                http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("token", _githubToken);
-            }
+            http.Timeout = TimeSpan.FromMinutes(10); // Таймаут для больших файлов
 
             using var response = await http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
@@ -290,6 +337,19 @@ namespace Softphone
             }
         }
 
+        private void ResetDownloadUi(string status)
+        {
+            DownloadProgressPanel.Visibility = Visibility.Collapsed;
+            DownloadProgressBar.Value = 0;
+            DownloadStatusTextBlock.Text = status;
+
+            LaterButton.IsEnabled = true;
+            LaterButton.Content = "Update Later";
+            UpdateButton.IsEnabled = true;
+            UpdateButton.Content = "Update Now";
+        }
+
+
         private void StartInstaller()
         {
             try
@@ -311,12 +371,20 @@ namespace Softphone
                 if (ext != ".exe" && ext != ".msi")
                 {
                     // For now, we only auto-run installers. Zip can be handled later if needed.
-                    Process.Start(new ProcessStartInfo
+                    try
                     {
-                        FileName = "explorer.exe",
-                        Arguments = $"/select,\"{_downloadedFilePath}\"",
-                        UseShellExecute = true
-                    });
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = "explorer.exe",
+                            Arguments = $"/select,\"{_downloadedFilePath}\"",
+                            UseShellExecute = true
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[UpdateAvailableWindow] Failed to open explorer: {ex.Message}");
+                    }
+                    
                     CustomMessageBox.Show(
                         "The update was downloaded. Please install it manually from the opened folder.",
                         "Ready to Install",
@@ -333,7 +401,25 @@ namespace Softphone
                     Verb = "runas" // prompt for admin if needed
                 };
 
-                Process.Start(psi);
+                Process? process = null;
+                try
+                {
+                    process = Process.Start(psi);
+                    if (process == null)
+                    {
+                        throw new InvalidOperationException("Failed to start the installer process.");
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    throw;
+                }
+                catch (System.ComponentModel.Win32Exception winEx) when (winEx.NativeErrorCode == 1223)
+                {
+                    // User cancelled UAC - это нормально, не показываем ошибку
+                    MainWindow.Log("[UpdateAvailableWindow] Installation was cancelled by the user (UAC prompt).");
+                    return;
+                }
 
                 // Close the app so installer can replace files.
                 Application.Current.Shutdown();
@@ -343,11 +429,24 @@ namespace Softphone
                 // User cancelled UAC
                 MainWindow.Log("[UpdateAvailableWindow] Installation was cancelled by the user (UAC prompt).");
             }
+            catch (InvalidCastException castEx)
+            {
+                MainWindow.Log($"[UpdateAvailableWindow] Invalid cast error: {castEx.Message}");
+                MainWindow.Log($"[UpdateAvailableWindow] Stack trace: {castEx.StackTrace}");
+                CustomMessageBox.Show(
+                    $"Failed to start installer due to a type conversion error.\n\nPlease try running the installer manually:\n{_downloadedFilePath}",
+                    "Install Failed",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error,
+                    this);
+            }
             catch (Exception ex)
             {
                 MainWindow.Log($"[UpdateAvailableWindow] Failed to start installer: {ex.Message}");
+                MainWindow.Log($"[UpdateAvailableWindow] Exception type: {ex.GetType().Name}");
+                MainWindow.Log($"[UpdateAvailableWindow] Stack trace: {ex.StackTrace}");
                 CustomMessageBox.Show(
-                    $"Failed to start installer:\n\n{ex.Message}",
+                    $"Failed to start installer:\n\n{ex.Message}\n\nPlease try running the installer manually:\n{_downloadedFilePath}",
                     "Install Failed",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error,

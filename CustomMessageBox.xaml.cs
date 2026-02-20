@@ -1,6 +1,10 @@
+using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
+using FluentIcons.Common;
 
 namespace Softphone
 {
@@ -11,9 +15,58 @@ namespace Softphone
         private Button? YesButton { get; set; }
         private Button? NoButton { get; set; }
 
+        // DWM API для отключения скруглений на Windows 11
+        private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
+        private const int DWMWCP_DONOTROUND = 1;
+
+        [DllImport("dwmapi.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
         private CustomMessageBox(string title, string message, MessageBoxButton buttons, MessageBoxImage icon)
         {
             InitializeComponent();
+            
+            // CustomMessageBox использует AllowsTransparency="True" для правильного отображения скруглений
+            // Поэтому не применяем NativeWindowAppearanceManager, который устанавливает AllowsTransparency="False"
+            // NativeWindowAppearanceManager.Attach(this);
+            
+            // Убеждаемся, что фон окна установлен правильно после инициализации
+            Loaded += (s, e) =>
+            {
+                try
+                {
+                    // Устанавливаем фон корневого Grid явно, чтобы избежать серых углов
+                    if (Content is Grid rootGrid)
+                    {
+                        if (Application.Current != null && Application.Current.TryFindResource("DialogBackgroundBrush") is Brush b)
+                        {
+                            rootGrid.Background = b;
+                        }
+                    }
+                }
+                catch { }
+            };
+            
+            // Для Windows 11: отключаем DWM скругления, чтобы использовать только WPF скругления
+            // Это предотвращает конфликты и серые углы
+            // Примечание: для окон с AllowsTransparency="True" DWM скругления обычно не применяются автоматически
+            if (NativeWindowAppearanceManager.IsWindows11OrGreater())
+            {
+                SourceInitialized += (s, e) =>
+                {
+                    try
+                    {
+                        var hwnd = new WindowInteropHelper(this).Handle;
+                        if (hwnd != IntPtr.Zero)
+                        {
+                            // Отключаем DWM скругления, используем только WPF скругления
+                            int cornerPreference = DWMWCP_DONOTROUND;
+                            _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, ref cornerPreference, sizeof(int));
+                        }
+                    }
+                    catch { }
+                };
+            }
             
             TitleTextBlock.Text = title;
             MessageTextBlock.Text = message;
@@ -22,24 +75,24 @@ namespace Softphone
             switch (icon)
             {
                 case MessageBoxImage.Information:
-                    IconTextBlock.Text = "\uE783"; // Info icon
-                    IconTextBlock.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentBlueBrush");
+                    IconSymbol.Symbol = Symbol.Info;
+                    IconSymbol.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentBlueBrush");
                     break;
                 case MessageBoxImage.Warning:
-                    IconTextBlock.Text = "\uE7BA"; // Warning icon
-                    IconTextBlock.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentRedBrush");
+                    IconSymbol.Symbol = Symbol.Warning;
+                    IconSymbol.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentRedBrush");
                     break;
                 case MessageBoxImage.Error:
-                    IconTextBlock.Text = "\uE783"; // Error icon (можно использовать другой)
-                    IconTextBlock.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentRedBrush");
+                    IconSymbol.Symbol = Symbol.ErrorCircle;
+                    IconSymbol.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentRedBrush");
                     break;
                 case MessageBoxImage.Question:
-                    IconTextBlock.Text = "\uE783"; // Question icon
-                    IconTextBlock.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentBlueBrush");
+                    IconSymbol.Symbol = Symbol.QuestionCircle;
+                    IconSymbol.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentBlueBrush");
                     break;
                 default:
-                    IconTextBlock.Text = "\uE783"; // Default info icon
-                    IconTextBlock.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentBlueBrush");
+                    IconSymbol.Symbol = Symbol.Info;
+                    IconSymbol.Foreground = (System.Windows.Media.SolidColorBrush)FindResource("AccentBlueBrush");
                     break;
             }
 

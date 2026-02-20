@@ -25,6 +25,30 @@ namespace Softphone
         }
 
         /// <summary>
+        /// Migrates legacy AES-encrypted SipPasswordEncrypted -> DPAPI format (best-effort).
+        /// </summary>
+        public static void MigrateEncryptedToDpapiIfNeeded(string settingsFilePath, AppSettings settings)
+        {
+            try
+            {
+                if (settings == null) return;
+                if (string.IsNullOrWhiteSpace(settings.SipPasswordEncrypted)) return;
+                if (settings.SipPasswordEncrypted.StartsWith("dpapi:", StringComparison.Ordinal)) return;
+
+                var decrypted = TokenEncryption.Decrypt(settings.SipPasswordEncrypted);
+                if (string.IsNullOrWhiteSpace(decrypted)) return;
+
+                settings.SipPasswordEncrypted = TokenEncryption.Encrypt(decrypted);
+                var json = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsFilePath, json);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        /// <summary>
         /// Migrates legacy plaintext SipPassword -> SipPasswordEncrypted (best-effort).
         /// </summary>
         public static void MigratePlaintextToEncryptedIfNeeded(string settingsFilePath, AppSettings settings)

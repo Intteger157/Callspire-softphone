@@ -99,7 +99,7 @@ namespace Softphone
                 if (!string.IsNullOrEmpty(webRtcSessionId))
                     call.WebRtcSessionId = webRtcSessionId;
                 
-                // Обновляем статус на основе WasAnswered и Duration
+                // Обновляем статус на основе WasAnswered, Duration и EndedBy
                 // Если звонок был принят и есть длительность, статус должен быть Ended (не Cancelled или Calling)
                 if (call.WasAnswered && call.Duration.HasValue && 
                     (call.Status == CallStatus.Calling || call.Status == CallStatus.Cancelled))
@@ -110,6 +110,19 @@ namespace Softphone
                 else if (call.WasAnswered && call.Status == CallStatus.Calling)
                 {
                     call.Status = CallStatus.Ended;
+                }
+                // Если звонок НЕ был принят и был завершен локальным пользователем - это отмена
+                else if (!call.WasAnswered && endedBy == CallEndedBy.LocalUser && call.Status == CallStatus.Calling)
+                {
+                    call.Status = CallStatus.Cancelled;
+                    MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Call cancelled by local user (not answered), updating status to Cancelled");
+                }
+                // Если звонок НЕ был принят и был завершен удаленной стороной - это может быть Failed или Cancelled
+                else if (!call.WasAnswered && endedBy == CallEndedBy.RemoteParty && call.Status == CallStatus.Calling)
+                {
+                    // Если есть длительность (звонок длился какое-то время), это Failed, иначе Cancelled
+                    call.Status = duration.HasValue && duration.Value.TotalSeconds > 1 ? CallStatus.Failed : CallStatus.Cancelled;
+                    MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Call ended by remote party (not answered), updating status to {call.Status}");
                 }
                 
                 if (technicalDetails != null && technicalDetails.Count > 0)
@@ -150,6 +163,40 @@ namespace Softphone
         {
             return _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
                 Math.Abs((x.CallTime - callTime).TotalSeconds) < 5);
+        }
+
+        /// <summary>
+        /// Обновляет ID лида AmoCRM для звонка
+        /// </summary>
+        public void UpdateAmoCrmLeadId(string phoneNumber, DateTime callTime, long? leadId)
+        {
+            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
+                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
+            
+            if (call != null && leadId.HasValue)
+            {
+                call.AmoCrmLeadId = leadId.Value;
+                SaveHistory();
+                MainWindow.Log($"[CallHistoryService] AmoCrmLeadId updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {leadId}");
+            }
+        }
+
+        /// <summary>
+        /// Обновляет статус загрузки записи в AmoCRM для звонка
+        /// </summary>
+        public void UpdateAmoCrmUploadStatus(string phoneNumber, DateTime callTime, AmoCrmUploadStatus status, string? reason = null)
+        {
+            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
+                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
+            
+            if (call != null)
+            {
+                call.AmoCrmUploadStatus = status;
+                call.AmoCrmUploadReason = reason;
+                SaveHistory();
+                MainWindow.Log($"[CallHistoryService] AmoCrmUploadStatus updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {status}" + 
+                    (string.IsNullOrEmpty(reason) ? "" : $" ({reason})"));
+            }
         }
 
         private List<CallHistoryItem> LoadHistory()

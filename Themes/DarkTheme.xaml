@@ -2,9 +2,7 @@
                     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                     xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes">
 
-    <!-- Fluent System Icons Font Family - используем Segoe Fluent Icons (встроен в Windows 11) -->
-    <!-- Для Windows 10 и ниже нужно добавить шрифт вручную -->
-    <FontFamily x:Key="FluentIconFont">Segoe Fluent Icons</FontFamily>
+    <!-- NOTE: Do not depend on system icon fonts (e.g. Segoe Fluent Icons) because many Windows 10 installs don't have them. -->
 
     <!-- Colors -->
     <Color x:Key="BackgroundDark">#1E1E1E</Color>
@@ -30,6 +28,11 @@
     <SolidColorBrush x:Key="HoverBackgroundBrush" Color="{StaticResource HoverBackground}"/>
     <SolidColorBrush x:Key="BorderBrush" Color="{StaticResource BorderColor}"/>
 
+    <!-- Opaque surfaces for layered dialogs/popups (avoid Win11 Mica alpha artifacts like gray corners / transparent dropdowns). -->
+    <SolidColorBrush x:Key="DialogBackgroundBrush" Color="{StaticResource BackgroundDark}"/>
+    <SolidColorBrush x:Key="DialogChromeBrush" Color="{StaticResource BackgroundMedium}"/>
+    <SolidColorBrush x:Key="PopupBackgroundBrush" Color="{StaticResource BackgroundMedium}"/>
+
     <!-- Button Styles -->
     <Style x:Key="SidebarButtonStyle" TargetType="Button">
         <Setter Property="Width" Value="64"/>
@@ -39,7 +42,7 @@
         <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="FontSize" Value="24"/>
-        <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+        <!-- Icon glyph font removed (use FluentIcons.Wpf SymbolIcon in XAML instead) -->
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -151,7 +154,7 @@
         <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="FontSize" Value="24"/>
-        <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+        <!-- Icon glyph font removed (use FluentIcons.Wpf SymbolIcon in XAML instead) -->
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Template">
             <Setter.Value>
@@ -245,7 +248,7 @@
         <Setter Property="Background" Value="Transparent"/>
         <Setter Property="BorderThickness" Value="0"/>
         <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
-        <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+        <!-- Icon glyph font removed (use FluentIcons.Wpf SymbolIcon in XAML instead) -->
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -274,7 +277,7 @@
         <Setter Property="Foreground" Value="White"/>
         <Setter Property="FontSize" Value="24"/>
         <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="FontFamily" Value="{StaticResource FluentIconFont}"/>
+        <!-- Icon glyph font removed (use FluentIcons.Wpf SymbolIcon in XAML instead) -->
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="Button">
@@ -397,6 +400,43 @@
         <Setter Property="VerticalContentAlignment" Value="Center"/>
         <Setter Property="SnapsToDevicePixels" Value="True"/>
         <Setter Property="Height" Value="36"/>
+        <Setter Property="ItemContainerStyle">
+            <Setter.Value>
+                <Style TargetType="ComboBoxItem">
+                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="Padding" Value="10,8"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Left"/>
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ComboBoxItem">
+                                <Border x:Name="ItemBorder"
+                                        Background="{TemplateBinding Background}"
+                                        CornerRadius="4"
+                                        SnapsToDevicePixels="True">
+                                    <ContentPresenter
+                                        Margin="0"
+                                        VerticalAlignment="Center"
+                                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                        TextElement.Foreground="{TemplateBinding Foreground}"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
+                                    <Trigger Property="IsHighlighted" Value="True">
+                                        <Setter TargetName="ItemBorder" Property="Background" Value="{StaticResource HoverBackgroundBrush}"/>
+                                    </Trigger>
+                                    <Trigger Property="IsSelected" Value="True">
+                                        <Setter TargetName="ItemBorder" Property="Background" Value="#3A3A3A"/>
+                                    </Trigger>
+                                    <Trigger Property="IsEnabled" Value="False">
+                                        <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+                                    </Trigger>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Setter.Value>
+        </Setter>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="ComboBox">
@@ -423,7 +463,8 @@
                                                     ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}"
                                                     Margin="12,0,0,0"
                                                     VerticalAlignment="Center"
-                                                    HorizontalAlignment="Left"/>
+                                                    HorizontalAlignment="Left"
+                                                    TextElement.Foreground="{TemplateBinding Foreground}"/>
                                     <Path x:Name="Arrow"
                                         Grid.Column="1"
                                         Fill="{TemplateBinding Foreground}"
@@ -455,7 +496,7 @@
                                 MinWidth="{TemplateBinding ActualWidth}"
                                 MaxHeight="{TemplateBinding MaxDropDownHeight}">
                                 <Border x:Name="DropDownBorder"
-                                    Background="{StaticResource BackgroundDarkBrush}"
+                                    Background="{DynamicResource PopupBackgroundBrush}"
                                     BorderThickness="1"
                                     BorderBrush="{StaticResource BorderBrush}"
                                     CornerRadius="4">

@@ -56,3 +56,8 @@ artifacts/
 # VS Code
 .vscode/
 
+# AmoCRM Widget - отдельный репозиторий
+amocrm-widget/
+
+# Windows reserved names
+nul
