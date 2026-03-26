@@ -10,7 +10,7 @@
         SnapsToDevicePixels="True"
         UseLayoutRounding="True">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8" GlassFrameThickness="0"/>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8,8,8,8" GlassFrameThickness="0"/>
     </WindowChrome.WindowChrome>
     
     <Window.Resources>
@@ -99,8 +99,9 @@
     <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
         <Border x:Name="WindowSurface"
                 Background="{DynamicResource BackgroundDarkBrush}" 
-                CornerRadius="16" 
-                ClipToBounds="True">
+                CornerRadius="8" 
+                ClipToBounds="False"
+                Margin="0">
             <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
@@ -112,8 +113,9 @@
             <Border x:Name="TitleBarBorder"
                     Grid.Row="0"
                     Background="{DynamicResource BackgroundMediumBrush}" 
-                    CornerRadius="16,16,0,0"
-                    ClipToBounds="True">
+                    CornerRadius="8,8,0,0"
+                    ClipToBounds="False"
+                    Margin="0">
                 <Grid MouseDown="TitleBar_MouseDown" WindowChrome.IsHitTestVisibleInChrome="True">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -125,25 +127,27 @@
                               VerticalAlignment="Center"
                               Foreground="{DynamicResource TextPrimaryBrush}"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
-                        <Button Content="─" Width="46" Height="32" 
+                        <Button Content="─" Width="46"
                                Background="Transparent" Foreground="{DynamicResource TextSecondaryBrush}"
                                BorderThickness="0" Click="MinimizeButton_Click"
-                               FontSize="16" Cursor="Hand">
-                            <Button.Style>
-                                <Style TargetType="Button">
-                                    <Setter Property="Background" Value="Transparent"/>
-                                    <Style.Triggers>
+                               FontSize="16" Cursor="Hand"
+                               VerticalAlignment="Stretch">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="Bg" Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <ControlTemplate.Triggers>
                                         <Trigger Property="IsMouseOver" Value="True">
-                                            <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                                            <Setter TargetName="Bg" Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
                                         </Trigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </Button.Style>
+                                    </ControlTemplate.Triggers>
+                                </ControlTemplate>
+                            </Button.Template>
                         </Button>
                         <Button Content="✕"
                                Click="CloseButton_Click"
-                               Style="{DynamicResource TitleBarCloseButtonStyle}"
-                               Height="32"/>
+                               Style="{DynamicResource TitleBarCloseButtonStyle}"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -360,8 +364,9 @@
                 Background="Transparent"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="16"
-                IsHitTestVisible="False"/>
+                CornerRadius="8"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"/>
     </Grid>
 </Window>
 

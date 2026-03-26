@@ -22,54 +22,22 @@ namespace Softphone
             {
                 using (var deviceEnumerator = new MMDeviceEnumerator())
                 {
-                    // Используем Role.Communications - это роль для VoIP приложений
-                    // Это обеспечит правильное отображение иконки в трее Windows
                     try
                     {
-                        var defaultDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-                        
-                        if (defaultDevice != null)
+                        // ВАЖНО:
+                        // Мьют для Role.Communications на некоторых ноутбуках/драйверах (Realtek)
+                        // может "затронуть" и рендер (динамики), из-за чего вы пропадаете в трубке.
+                        // Поэтому для mute используем только Role.Multimedia (обычный capture device).
+                        var multimediaDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
+                        if (multimediaDevice?.AudioEndpointVolume != null)
                         {
-                            var audioEndpointVolume = defaultDevice.AudioEndpointVolume;
-                            if (audioEndpointVolume != null)
-                            {
-                                audioEndpointVolume.Mute = mute;
-                                success = true;
-                                
-                                // Также устанавливаем для Multimedia роли для совместимости
-                                try
-                                {
-                                    var multimediaDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
-                                    if (multimediaDevice != null && multimediaDevice.AudioEndpointVolume != null)
-                                    {
-                                        multimediaDevice.AudioEndpointVolume.Mute = mute;
-                                    }
-                                }
-                                catch
-                                {
-                                    // Игнорируем ошибки для Multimedia роли
-                                }
-                            }
+                            multimediaDevice.AudioEndpointVolume.Mute = mute;
+                            success = true;
                         }
                     }
                     catch (Exception ex)
                     {
                         System.Diagnostics.Debug.WriteLine($"Error muting microphone (Communications role): {ex.Message}");
-                        
-                        // Fallback: пробуем для Multimedia роли
-                        try
-                        {
-                            var multimediaDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
-                            if (multimediaDevice != null && multimediaDevice.AudioEndpointVolume != null)
-                            {
-                                multimediaDevice.AudioEndpointVolume.Mute = mute;
-                                success = true;
-                            }
-                        }
-                        catch
-                        {
-                            // Игнорируем ошибки
-                        }
                     }
                 }
             }
@@ -79,6 +47,37 @@ namespace Softphone
             }
             
             return success;
+        }
+
+        /// <summary>
+        /// Некоторые драйверы/микшеры Windows при mute микрофона для Role.Communications
+        /// могут неожиданно влиять и на рендер (динамики) для этого же device.
+        /// Чтобы при mute микрофона не пропадал звук собеседника, гарантируем
+        /// что Render-endpoint для Communications/Multimedia не будет примьютен.
+        /// </summary>
+        public static void EnsureRenderUnmuted()
+        {
+            try
+            {
+                using var deviceEnumerator = new MMDeviceEnumerator();
+
+                void unmuteEndpoint(DataFlow flow, Role role)
+                {
+                    try
+                    {
+                        var device = deviceEnumerator.GetDefaultAudioEndpoint(flow, role);
+                        if (device?.AudioEndpointVolume != null)
+                            device.AudioEndpointVolume.Mute = false;
+                    }
+                    catch { }
+                }
+
+                // Some systems primarily use Role.Console for speakers.
+                unmuteEndpoint(DataFlow.Render, Role.Console);
+                unmuteEndpoint(DataFlow.Render, Role.Communications);
+                unmuteEndpoint(DataFlow.Render, Role.Multimedia);
+            }
+            catch { }
         }
         
         /// <summary>
@@ -109,6 +108,23 @@ namespace Softphone
             }
             
             return false;
+        }
+
+        /// <summary>
+        /// Получает текущее состояние mute для render-endpoint'а по умолчанию
+        /// </summary>
+        public static bool IsRenderMuted(Role role)
+        {
+            try
+            {
+                using var deviceEnumerator = new MMDeviceEnumerator();
+                var defaultDevice = deviceEnumerator.GetDefaultAudioEndpoint(DataFlow.Render, role);
+                return defaultDevice?.AudioEndpointVolume?.Mute ?? false;
+            }
+            catch
+            {
+                return false;
+            }
         }
         
         /// <summary>

@@ -41,7 +41,7 @@ namespace Softphone
     {
         public CallTransport Transport { get; init; }
         public string? SipCallId { get; init; }
-        public string? WebRtcSessionId { get; init; }
+        public string? WebRtcSessionId { get; set; }
         public string RemoteNumber { get; init; } = "";
         public DateTime StartedAt { get; init; }
         public long? AmoCrmLeadId { get; init; } // ID лида в AmoCRM, если звонок инициирован из браузера
@@ -85,7 +85,10 @@ namespace Softphone
         public long? AmoCrmLeadId { get; set; } // ID лида в AmoCRM/Kommo, к которому прикреплён звонок
         public AmoCrmUploadStatus AmoCrmUploadStatus { get; set; } = AmoCrmUploadStatus.NotUploaded; // Статус загрузки записи в AmoCRM
         public string? AmoCrmUploadReason { get; set; } // Причина статуса (например, "File not found", "User cancelled", "Upload failed: ...")
-        
+
+        // Outbound CallerID from P-Asserted-Identity header (the number PBX presents to the remote party)
+        public string? OutboundCallerId { get; set; }
+
         // На будущее: можно добавить
         // public string? AudioCodec { get; set; } // opus / pcmu / g722
         // public string? MediaSource { get; set; } // RTP / RTCPeerConnection

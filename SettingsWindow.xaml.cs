@@ -92,6 +92,7 @@ namespace Softphone
             
             // Подписываемся на события статуса из MainWindow после загрузки окна
             Loaded += SettingsWindow_Loaded;
+            Activated += SettingsWindow_Activated;
             
             // Выделяем кнопку Connection при загрузке окна
             Loaded += (s, e) =>
@@ -164,6 +165,7 @@ namespace Softphone
         private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
         {
             UpdateConnectionStatus();
+            UpdateConnection2Status(); // Обновляем статус второго подключения при загрузке
             
             // Подписываемся на события статуса из MainWindow после установки Owner
             if (Owner is MainWindow mainWindow)
@@ -180,6 +182,14 @@ namespace Softphone
             // Загружаем настройки после полной загрузки окна
             // Это гарантирует, что все UI элементы инициализированы
             LoadSettings();
+        }
+        
+        private void SettingsWindow_Activated(object? sender, EventArgs e)
+        {
+            // Обновляем статус подключения при активации окна
+            // Это гарантирует, что статус всегда актуален, когда пользователь открывает настройки
+            UpdateConnectionStatus();
+            UpdateConnection2Status();
         }
         
         private void OnWebRtcEvent(WebRtcEventDto dto)
@@ -237,40 +247,39 @@ namespace Softphone
                     // Синхронизируем статус с главным окном
                     if (useWebRtc)
                     {
-                        if (mainWindowStatus == "Connected with WebRTC")
+                        // Проверяем статус более гибко (может содержать дополнительные символы)
+                        if (mainWindowStatus.Contains("Connected with WebRTC") || (isConnected && mainWindowStatus.Contains("Connected")))
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Connected with WebRTC";
+                            ConnectionStatusTextBlock.Text = "Connected (WebRTC)";
                             ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
                         }
                         else if (mainWindowStatus.Contains("Connecting") || mainWindowStatus.Contains("Initializing"))
                         {
-                            // Показываем промежуточный статус
-                            ConnectionStatusTextBlock.Text = $"Status: {mainWindowStatus}";
+                            ConnectionStatusTextBlock.Text = "Connecting...";
                             ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
                         }
                         else
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush");
+                            ConnectionStatusTextBlock.Text = "Not connected";
+                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
                         }
                     }
                     else
                     {
                         if (mainWindowStatus == "Connected with SIP")
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Connected with SIP";
+                            ConnectionStatusTextBlock.Text = "Connected (SIP)";
                             ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
                         }
                         else if (mainWindowStatus.Contains("Connecting") || mainWindowStatus.Contains("Initializing"))
                         {
-                            // Показываем промежуточный статус
-                            ConnectionStatusTextBlock.Text = $"Status: {mainWindowStatus}";
+                            ConnectionStatusTextBlock.Text = "Connecting...";
                             ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
                         }
                         else
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush");
+                            ConnectionStatusTextBlock.Text = "Not connected";
+                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
                         }
                     }
                 }
@@ -279,38 +288,36 @@ namespace Softphone
                     // Fallback: используем старую логику, если статус из MainWindow недоступен
                     if (useWebRtc)
                     {
-                        // WebRTC режим
                         if (isConnected)
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Connected with WebRTC";
+                            ConnectionStatusTextBlock.Text = "Connected (WebRTC)";
                             ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
                         }
                         else
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush");
+                            ConnectionStatusTextBlock.Text = "Not connected";
+                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
                         }
                     }
                     else
                     {
-                        // SIP режим
                         if (isConnected)
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Connected with SIP";
+                            ConnectionStatusTextBlock.Text = "Connected (SIP)";
                             ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
                         }
                         else
                         {
-                            ConnectionStatusTextBlock.Text = "Status: Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush");
+                            ConnectionStatusTextBlock.Text = "Not connected";
+                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
                         }
                     }
                 }
             }
             else
             {
-                ConnectionStatusTextBlock.Text = "Status: Not connected";
-                ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush");
+                ConnectionStatusTextBlock.Text = "Not connected";
+                ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
             }
         }
 
@@ -321,6 +328,7 @@ namespace Softphone
                 // Всегда обновляем статус подключения для синхронизации с MainWindow
                 // Это гарантирует, что статус в настройках всегда соответствует статусу в главном окне
                 UpdateConnectionStatus();
+                UpdateConnection2Status();
             });
         }
         
@@ -372,7 +380,7 @@ namespace Softphone
             return null;
         }
 
-        private void ShowView(Grid view)
+        private void ShowView(FrameworkElement view)
         {
             ConnectionSettingsView.Visibility = Visibility.Collapsed;
             AudioSettingsView.Visibility = Visibility.Collapsed;
@@ -473,6 +481,9 @@ namespace Softphone
         {
             UpdateButtonSelection(ConnectionButton);
             ShowView(ConnectionSettingsView);
+            // Обновляем статусы подключений при переключении на вкладку Connection
+            UpdateConnectionStatus();
+            UpdateConnection2Status();
         }
 
         private void AudioButton_Click(object sender, RoutedEventArgs e)
@@ -616,6 +627,29 @@ namespace Softphone
                             Dispatcher.Invoke(() =>
                             {
                                 CheckAmoCrmConnectionStatus();
+                            });
+                        }, TaskContinuationOptions.OnlyOnRanToCompletion);
+
+                        // MikoPBX CDR settings
+                        if (EnableMikoPbxCdrCheckBox != null)
+                        {
+                            EnableMikoPbxCdrCheckBox.IsChecked = settings.EnableMikoPbxCdr;
+                            UpdateMikoPbxCdrSettingsVisibility(settings.EnableMikoPbxCdr);
+                        }
+                        if (MikoPbxCdrServiceUrlTextBox != null && !string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl))
+                        {
+                            MikoPbxCdrServiceUrlTextBox.Text = settings.MikoPbxCdrServiceUrl;
+                        }
+                        if (MikoPbxCdrExtensionTextBox != null && !string.IsNullOrEmpty(settings.MikoPbxExtension))
+                        {
+                            MikoPbxCdrExtensionTextBox.Text = settings.MikoPbxExtension;
+                        }
+
+                        _ = Task.Delay(600).ContinueWith(_ =>
+                        {
+                            Dispatcher.Invoke(() =>
+                            {
+                                CheckMikoPbxCdrConnectionStatus();
                             });
                         }, TaskContinuationOptions.OnlyOnRanToCompletion);
                     }
@@ -1953,6 +1987,20 @@ namespace Softphone
                         }
                         System.Diagnostics.Debug.WriteLine($"LoadGeneralSettings: UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri='{settings.WebRtcWsUri}'");
                         
+                        // Загружаем TURN‑сервер (если задан)
+                        if (WebRtcTurnUriTextBox != null)
+                        {
+                            WebRtcTurnUriTextBox.Text = settings.WebRtcTurnUri ?? "";
+                        }
+                        if (WebRtcTurnUsernameTextBox != null)
+                        {
+                            WebRtcTurnUsernameTextBox.Text = settings.WebRtcTurnUsername ?? "";
+                        }
+                        if (WebRtcTurnPasswordBox != null)
+                        {
+                            WebRtcTurnPasswordBox.Password = settings.WebRtcTurnPassword ?? "";
+                        }
+                        
                         // Обновляем состояние кнопки тестирования
                         if (TestWebRtcConnectionButton != null)
                         {
@@ -2368,6 +2416,9 @@ namespace Softphone
                 // Сохраняем WebRTC настройки
                 settings.UseWebRtcAudio = UseWebRtcCheckBox.IsChecked ?? false;
                 settings.WebRtcWsUri = WebRtcWsUriTextBox.Text.Trim();
+                settings.WebRtcTurnUri = WebRtcTurnUriTextBox?.Text.Trim();
+                settings.WebRtcTurnUsername = WebRtcTurnUsernameTextBox?.Text.Trim();
+                settings.WebRtcTurnPassword = WebRtcTurnPasswordBox?.Password;
 
                 // IMPORTANT: Recording is available only in WebRTC mode.
                 // When WebRTC is disabled, ensure recording is disabled and the UI toggle is reset.
@@ -2559,7 +2610,10 @@ namespace Softphone
                 {
                     WsUri = wsUri,
                     SipUri = sipUri,
-                    Password = sipPassword ?? ""
+                    Password = sipPassword ?? "",
+                    TurnServer = settings.WebRtcTurnUri,
+                    TurnUsername = settings.WebRtcTurnUsername,
+                    TurnPassword = settings.WebRtcTurnPassword
                 };
                 
                 // Используем общий сервис для тестирования (он уже создан в конструкторе)
@@ -2805,6 +2859,61 @@ namespace Softphone
                         {
                             MainWindow.Log($"[SettingsWindow] LoadSettings: ERROR - SipPasswordBox is null!");
                         }
+                        
+                        if (MainConnectionNameTextBox != null)
+                        {
+                            MainConnectionNameTextBox.Text = settings.MainConnectionName ?? "";
+                        }
+
+                        // Загружаем настройки второго подключения
+                        if (!string.IsNullOrEmpty(settings.SipServer2) || !string.IsNullOrEmpty(settings.SipUsername2))
+                        {
+                            // Парсим server:port для второго подключения
+                            string server2 = settings.SipServer2 ?? "";
+                            string port2 = "5060";
+                            if (server2.Contains(":"))
+                            {
+                                var parts2 = server2.Split(':');
+                                server2 = parts2[0];
+                                if (parts2.Length > 1) port2 = parts2[1];
+                            }
+
+                            if (SipServer2TextBox != null)
+                            {
+                                SipServer2TextBox.Text = server2;
+                            }
+                            if (SipPort2TextBox != null)
+                            {
+                                SipPort2TextBox.Text = port2;
+                            }
+                            if (SipUsername2TextBox != null)
+                            {
+                                SipUsername2TextBox.Text = settings.SipUsername2 ?? "";
+                            }
+                            if (SipPassword2Box != null && !string.IsNullOrEmpty(settings.SipPasswordEncrypted2))
+                            {
+                                try
+                                {
+                                    SipPassword2Box.Password = TokenEncryption.Decrypt(settings.SipPasswordEncrypted2);
+                                }
+                                catch (Exception ex)
+                                {
+                                    MainWindow.Log($"[SettingsWindow] LoadSettings: Error decrypting password2: {ex.Message}");
+                                }
+                            }
+                            
+                            if (SecondaryConnectionNameTextBox != null)
+                            {
+                                SecondaryConnectionNameTextBox.Text = settings.SecondaryConnectionName ?? "";
+                            }
+
+                            // Показываем секцию второго подключения и скрываем кнопку "Add"
+                            if (SecondConnectionGrid != null)
+                            {
+                                SecondConnectionGrid.Visibility = Visibility.Visible;
+                                AddAnotherConnectionButton.Visibility = Visibility.Collapsed;
+                            }
+                        }
                     }
                     else
                     {
@@ -2850,6 +2959,11 @@ namespace Softphone
                         SipPasswordBox.IsEnabled = true;
                         SipPasswordBox.Focusable = true;
                     }
+                    
+                    // Обновляем статус подключения после загрузки настроек
+                    // Это гарантирует, что статус синхронизирован с MainWindow
+                    UpdateConnectionStatus();
+                    UpdateConnection2Status();
                 }), System.Windows.Threading.DispatcherPriority.Loaded);
             }
         }
@@ -2894,6 +3008,7 @@ namespace Softphone
                 settings.SipUsername = username;
                 settings.SipPasswordEncrypted = TokenEncryption.Encrypt(password);
                 settings.SipPassword = null; // do not persist plaintext
+                settings.MainConnectionName = MainConnectionNameTextBox?.Text?.Trim();
                 
                 // Сохраняем настройку выбора лида AmoCRM
                 if (EnableAmoCrmLeadSelectionCheckBox != null)
@@ -2906,13 +3021,13 @@ namespace Softphone
 
                 // Отключаем кнопку во время подключения
                 SaveAndConnectButton.IsEnabled = false;
-                ConnectionStatusTextBlock.Text = "Status: Saving settings...";
-                ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush");
+                ConnectionStatusTextBlock.Text = "Saving...";
+                ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
 
                 // Уведомляем главное окно о необходимости переподключения
                 if (Owner is MainWindow mainWindow)
                 {
-                    ConnectionStatusTextBlock.Text = "Status: Connecting...";
+                    ConnectionStatusTextBlock.Text = "Connecting...";
                     ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
                     
                     // Подписка уже есть в конструкторе, просто вызываем переподключение
@@ -2920,16 +3035,222 @@ namespace Softphone
                     
                     // Обновляем статус после переподключения
                     UpdateConnectionStatus();
+                    
+                    // Обновляем названия в сплит-кнопке
+                    mainWindow.UpdateCallButtonMode();
                 }
 
                 SaveAndConnectButton.IsEnabled = true;
             }
             catch (Exception ex)
             {
-                ConnectionStatusTextBlock.Text = $"Status: Error - {ex.Message}";
+                ConnectionStatusTextBlock.Text = $"Error: {ex.Message}";
                 ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
                 SaveAndConnectButton.IsEnabled = true;
                 CustomMessageBox.Show($"Error saving settings: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+
+        private void AddAnotherConnectionButton_Click(object sender, RoutedEventArgs e)
+        {
+            // Показываем карточку второго подключения и скрываем кнопку "Add"
+            // (ограничиваемся двумя подключениями максимум)
+            if (SecondConnectionGrid != null)
+            {
+                SecondConnectionGrid.Visibility = Visibility.Visible;
+                AddAnotherConnectionButton.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private async void SaveConnection2Settings_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                string server = SipServer2TextBox.Text.Trim();
+                string username = SipUsername2TextBox.Text.Trim();
+                string password = SipPassword2Box.Password;
+                string port = SipPort2TextBox?.Text?.Trim() ?? "5060";
+
+                if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+                {
+                    CustomMessageBox.Show("Please fill in all SIP connection fields.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    return;
+                }
+
+                if (!int.TryParse(port, out int portNum) || portNum < 1 || portNum > 65535)
+                {
+                    CustomMessageBox.Show("Invalid port number. Using default port 5060.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    portNum = 5060;
+                }
+
+                string serverWithPort = $"{server}:{portNum}";
+                
+                // Проверяем, не используются ли те же учетные данные, что и для основного подключения
+                string mainServer = SipServerTextBox?.Text?.Trim() ?? "";
+                string mainPort = SipPortTextBox?.Text?.Trim() ?? "5060";
+                string mainServerWithPort = $"{mainServer}:{mainPort}";
+                string mainUsername = SipUsernameTextBox?.Text?.Trim() ?? "";
+                
+                if (serverWithPort.Equals(mainServerWithPort, StringComparison.OrdinalIgnoreCase) && 
+                    username.Equals(mainUsername, StringComparison.OrdinalIgnoreCase))
+                {
+                    var result = CustomMessageBox.Show(
+                        "Warning: You are using the same server and username as the main connection.\n\n" +
+                        "This may cause registration conflicts (403 Forbidden error).\n\n" +
+                        "For the second connection, you should use:\n" +
+                        "• A different username on the same server, OR\n" +
+                        "• A different server\n\n" +
+                        "Do you want to continue anyway?",
+                        "Registration Conflict Warning",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning,
+                        this);
+                    
+                    if (result == MessageBoxResult.No)
+                    {
+                        return;
+                    }
+                }
+                
+                // Загружаем существующие настройки
+                AppSettings settings;
+                if (File.Exists(AppDataHelper.GetSettingsFilePath()))
+                {
+                    string existingJson = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
+                    settings = JsonConvert.DeserializeObject<AppSettings>(existingJson) ?? new AppSettings();
+                }
+                else
+                {
+                    settings = new AppSettings();
+                }
+
+                // Обновляем настройки второго подключения
+                settings.SipServer2 = serverWithPort;
+                settings.SipUsername2 = username; // Сохраняем как есть (может содержать '@' для некоторых провайдеров)
+                settings.SipPasswordEncrypted2 = TokenEncryption.Encrypt(password);
+                settings.SecondaryConnectionName = SecondaryConnectionNameTextBox?.Text?.Trim();
+
+                string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(AppDataHelper.GetSettingsFilePath(), json);
+
+                // Отключаем кнопку во время подключения
+                SaveAndConnect2Button.IsEnabled = false;
+                Connection2StatusTextBlock.Text = "Saving...";
+                Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+
+                // Уведомляем главное окно о необходимости переподключения
+                if (Owner is MainWindow mainWindow)
+                {
+                    Connection2StatusTextBlock.Text = "Connecting...";
+                    Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
+                    
+                    // Инициализируем второе подключение
+                    await mainWindow.InitializeSecondConnectionAsync();
+                    
+                    // Обновляем статус после переподключения
+                    UpdateConnection2Status();
+                    
+                    // Обновляем названия в сплит-кнопке
+                    mainWindow.UpdateCallButtonMode();
+                }
+
+                SaveAndConnect2Button.IsEnabled = true;
+            }
+            catch (Exception ex)
+            {
+                Connection2StatusTextBlock.Text = $"Error: {ex.Message}";
+                Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+                SaveAndConnect2Button.IsEnabled = true;
+                CustomMessageBox.Show($"Error saving settings: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+
+        private void UpdateConnection2Status()
+        {
+            try
+            {
+                if (Owner is MainWindow mainWindow)
+                {
+                    // Проверяем статус второго подключения
+                    bool isConnected2 = mainWindow.IsSecondConnectionConnected();
+                    if (isConnected2)
+                    {
+                        Connection2StatusTextBlock.Text = "Connected";
+                        Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
+                    }
+                    else
+                    {
+                        Connection2StatusTextBlock.Text = "Not connected";
+                        Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] UpdateConnection2Status error: {ex.Message}");
+            }
+        }
+
+        private void DeleteConnection2_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = CustomMessageBox.Show(
+                    "Are you sure you want to remove the additional connection?\nThis will disconnect and delete all its settings.",
+                    "Remove Connection",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question,
+                    this);
+
+                if (result != MessageBoxResult.Yes)
+                    return;
+
+                // 1. Disconnect second SIP service on MainWindow
+                if (Owner is MainWindow mainWindow)
+                {
+                    mainWindow.DisconnectSecondConnection();
+                    // Обновляем названия в сплит-кнопке
+                    mainWindow.UpdateCallButtonMode();
+                }
+
+                // 2. Clear settings from file
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+
+                    settings.SipServer2 = null;
+                    settings.SipUsername2 = null;
+                    settings.SipPasswordEncrypted2 = null;
+                    settings.RtpServer2 = null;
+                    settings.SecondaryConnectionName = null;
+
+                    string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                    File.WriteAllText(settingsPath, updatedJson);
+
+                    MainWindow.Log("[SettingsWindow] Second connection settings removed from settings.json");
+                }
+
+                // 3. Clear UI fields
+                if (SipServer2TextBox != null) SipServer2TextBox.Text = "";
+                if (SipUsername2TextBox != null) SipUsername2TextBox.Text = "";
+                if (SipPassword2Box != null) SipPassword2Box.Password = "";
+                if (SecondaryConnectionNameTextBox != null) SecondaryConnectionNameTextBox.Text = "";
+
+                // 4. Collapse the card & show "Add" button again
+                if (SecondConnectionGrid != null)
+                    SecondConnectionGrid.Visibility = Visibility.Collapsed;
+                if (AddAnotherConnectionButton != null)
+                    AddAnotherConnectionButton.Visibility = Visibility.Visible;
+
+                MainWindow.Log("[SettingsWindow] Additional connection removed successfully");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] DeleteConnection2_Click error: {ex.Message}");
+                CustomMessageBox.Show($"Error removing connection: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error, this);
             }
         }
 
@@ -3360,6 +3681,238 @@ namespace Softphone
             // Dispose будет вызван только при закрытии приложения или отключении WebRTC
             
             base.OnClosed(e);
+        }
+
+        // ===== MikoPBX gateway (Callspire proxy) =====
+
+        private void EnableMikoPbxCdrCheckBox_Checked(object sender, RoutedEventArgs e)
+        {
+            UpdateMikoPbxCdrSettingsVisibility(true);
+            SaveMikoPbxCdrSettings();
+        }
+
+        private void EnableMikoPbxCdrCheckBox_Unchecked(object sender, RoutedEventArgs e)
+        {
+            UpdateMikoPbxCdrSettingsVisibility(false);
+            SaveMikoPbxCdrSettings();
+        }
+
+        private void UpdateMikoPbxCdrSettingsVisibility(bool visible)
+        {
+            if (MikoPbxCdrSettingsPanel != null)
+            {
+                MikoPbxCdrSettingsPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        private void MikoPbxCdrAuthorizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                SaveMikoPbxCdrSettings();
+
+                string serviceUrl = MikoPbxCdrServiceUrlTextBox?.Text?.Trim() ?? "";
+                if (string.IsNullOrEmpty(serviceUrl) || serviceUrl == "https://")
+                {
+                    CustomMessageBox.Show(
+                        "Please enter the proxy service URL first.",
+                        "MikoPBX gateway",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning,
+                        this);
+                    return;
+                }
+
+                string callbackUri = "callspire://cdr-auth";
+                string loginUrl = $"{serviceUrl.TrimEnd('/')}/login?callback={Uri.EscapeDataString(callbackUri)}";
+
+                MainWindow.Log($"[MikoPBX CDR] Opening browser for authorization: {loginUrl}");
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = loginUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[MikoPBX CDR] Authorize error: {ex.Message}");
+                CustomMessageBox.Show(
+                    $"Failed to open browser: {ex.Message}",
+                    "MikoPBX gateway",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error,
+                    this);
+            }
+        }
+
+        private void ClearMikoPbxCdrSettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var result = CustomMessageBox.Show(
+                    "Are you sure you want to clear all MikoPBX gateway settings?\n\nThis will remove the service URL, extension, and authorization token.",
+                    "Clear MikoPBX gateway settings",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Warning,
+                    this);
+
+                if (result != MessageBoxResult.Yes) return;
+
+                if (MikoPbxCdrServiceUrlTextBox != null) MikoPbxCdrServiceUrlTextBox.Text = "https://";
+                if (MikoPbxCdrExtensionTextBox != null) MikoPbxCdrExtensionTextBox.Text = string.Empty;
+                if (EnableMikoPbxCdrCheckBox != null) EnableMikoPbxCdrCheckBox.IsChecked = false;
+
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                settings ??= new AppSettings();
+
+                settings.EnableMikoPbxCdr = false;
+                settings.MikoPbxCdrServiceUrl = null;
+                settings.MikoPbxCdrTokenEncrypted = null;
+                settings.MikoPbxExtension = null;
+
+                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, updatedJson);
+
+                var mainWindow = Application.Current.MainWindow as MainWindow;
+                mainWindow?.DisableMikoPbxCdrService();
+
+                UpdateMikoPbxCdrStatus("Not connected", false);
+                MainWindow.Log("[MikoPBX CDR] Settings cleared");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[MikoPBX CDR] Clear settings error: {ex.Message}");
+            }
+        }
+
+        private void SaveMikoPbxCdrSettings()
+        {
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                if (File.Exists(settingsPath))
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                settings ??= new AppSettings();
+
+                settings.EnableMikoPbxCdr = EnableMikoPbxCdrCheckBox?.IsChecked ?? false;
+                string url = MikoPbxCdrServiceUrlTextBox?.Text?.Trim() ?? "";
+                if (!string.IsNullOrEmpty(url) && url != "https://")
+                    settings.MikoPbxCdrServiceUrl = url;
+                string ext = MikoPbxCdrExtensionTextBox?.Text?.Trim() ?? "";
+                if (!string.IsNullOrEmpty(ext))
+                    settings.MikoPbxExtension = ext;
+
+                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, updatedJson);
+
+                if (settings.EnableMikoPbxCdr && !string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl)
+                    && !string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted))
+                {
+                    var mainWindow = Application.Current.MainWindow as MainWindow;
+                    mainWindow?.InitializeMikoPbxCdrService(settings);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[MikoPBX CDR] Save settings error: {ex.Message}");
+            }
+        }
+
+        private void CheckMikoPbxCdrConnectionStatus()
+        {
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (!File.Exists(settingsPath))
+                {
+                    UpdateMikoPbxCdrStatus("Not connected", false);
+                    return;
+                }
+                string json = File.ReadAllText(settingsPath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null || !settings.EnableMikoPbxCdr)
+                {
+                    UpdateMikoPbxCdrStatus("Not connected", false);
+                    return;
+                }
+
+                bool hasToken = !string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted);
+                bool hasUrl = !string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl);
+                bool hasExt = !string.IsNullOrEmpty(settings.MikoPbxExtension);
+
+                if (hasToken && hasUrl && hasExt)
+                    UpdateMikoPbxCdrStatus("Connected", true);
+                else if (hasUrl && !hasToken)
+                    UpdateMikoPbxCdrStatus("Not authorized", false);
+                else
+                    UpdateMikoPbxCdrStatus("Not configured", false);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[MikoPBX CDR] Check status error: {ex.Message}");
+                UpdateMikoPbxCdrStatus("Error", false);
+            }
+        }
+
+        public void UpdateMikoPbxCdrStatus(string statusText, bool isConnected)
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(() => UpdateMikoPbxCdrStatus(statusText, isConnected));
+                return;
+            }
+
+            if (MikoPbxCdrStatusTextBlock != null)
+                MikoPbxCdrStatusTextBlock.Text = statusText;
+            if (MikoPbxCdrStatusIndicator != null)
+                MikoPbxCdrStatusIndicator.Fill = isConnected
+                    ? new SolidColorBrush(Color.FromRgb(0x4C, 0xAF, 0x50))
+                    : new SolidColorBrush(Color.FromRgb(0x6A, 0x6A, 0x6A));
+        }
+
+        public void OnMikoPbxCdrTokenReceived(string token)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                try
+                {
+                    string settingsPath = AppDataHelper.GetSettingsFilePath();
+                    AppSettings? settings = null;
+                    if (File.Exists(settingsPath))
+                    {
+                        string json = File.ReadAllText(settingsPath);
+                        settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    }
+                    settings ??= new AppSettings();
+
+                    settings.MikoPbxCdrTokenEncrypted = TokenEncryption.Encrypt(token);
+
+                    string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                    File.WriteAllText(settingsPath, updatedJson);
+
+                    UpdateMikoPbxCdrStatus("Connected", true);
+
+                    var mainWindow = Application.Current.MainWindow as MainWindow;
+                    mainWindow?.InitializeMikoPbxCdrService(settings);
+
+                    MainWindow.Log("[MikoPBX CDR] Token received and saved");
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[MikoPBX CDR] Token save error: {ex.Message}");
+                    UpdateMikoPbxCdrStatus("Token save failed", false);
+                }
+            });
         }
     }
 

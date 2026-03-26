@@ -107,10 +107,27 @@ namespace Softphone
                     return;
                 }
                 
-                // Проверяем схему и хост
-                if (uri.Scheme != "callspire" || uri.Host != "call")
+                if (uri.Scheme != "callspire")
                 {
-                    Debug.WriteLine($"[App] Invalid protocol scheme or host: {uri.Scheme}://{uri.Host}");
+                    Debug.WriteLine($"[App] Invalid protocol scheme: {uri.Scheme}");
+                    return;
+                }
+
+                if (uri.Host == "cdr-auth")
+                {
+                    var cdrParams = ParseQueryString(uri.Query);
+                    string? token = cdrParams.ContainsKey("token") ? cdrParams["token"] : null;
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        Debug.WriteLine("[App] CDR auth token received via protocol");
+                        (this.MainWindow as MainWindow)?.HandleCdrAuthToken(token);
+                    }
+                    return;
+                }
+
+                if (uri.Host != "call")
+                {
+                    Debug.WriteLine($"[App] Unknown protocol host: {uri.Host}");
                     return;
                 }
                 

@@ -12,7 +12,7 @@
     <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
         <Border x:Name="WindowSurface"
                 Background="{DynamicResource BackgroundDarkBrush}" 
-                CornerRadius="16" 
+                CornerRadius="8" 
                 ClipToBounds="True">
             <Grid>
             <Grid.RowDefinitions>
@@ -25,8 +25,10 @@
             <Border x:Name="TitleBarBorder"
                     Grid.Row="0"
                     Background="{DynamicResource BackgroundMediumBrush}" 
-                    CornerRadius="16,16,0,0" 
-                    Height="48">
+                    CornerRadius="8,8,0,0" 
+                    Height="48"
+                    ClipToBounds="False"
+                    Margin="0">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
@@ -46,8 +48,8 @@
                             Content="✕"
                             Click="CancelButton_Click"
                             Style="{DynamicResource TitleBarCloseButtonStyle}"
-                            Height="32"
-                            Margin="0,8,0,8"/>
+                            VerticalAlignment="Stretch"
+                            Margin="0"/>
                 </Grid>
             </Border>
 
@@ -92,7 +94,7 @@
 
             <!-- Buttons -->
             <Border Grid.Row="2" Background="{DynamicResource BackgroundMediumBrush}" 
-                    CornerRadius="0,0,16,16" 
+                    CornerRadius="8" 
                     Height="64">
                 <Grid Margin="24,16">
                     <Grid.ColumnDefinitions>
@@ -120,8 +122,9 @@
                 Background="Transparent"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="16"
-                IsHitTestVisible="False"/>
+                CornerRadius="8"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"/>
     </Grid>
 </Window>
 

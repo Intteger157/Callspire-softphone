@@ -1,0 +1,71 @@
+<Window x:Class="Softphone.ConnectionSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Connection" Height="Auto" Width="340"
+        SizeToContent="Height"
+        WindowStyle="None" 
+        AllowsTransparency="False"
+        Background="{DynamicResource BackgroundDarkBrush}"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8,8,8,8" GlassFrameThickness="0"/>
+    </WindowChrome.WindowChrome>
+    
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+        <Border x:Name="WindowSurface"
+                Background="{DynamicResource BackgroundDarkBrush}"
+                CornerRadius="8"
+                ClipToBounds="False"
+                SnapsToDevicePixels="True"
+                Margin="0">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Title Bar -->
+                <Border x:Name="TitleBarBorder"
+                        Grid.Row="0"
+                        Background="{DynamicResource BackgroundMediumBrush}" 
+                        CornerRadius="8,8,0,0"
+                        ClipToBounds="False"
+                        Margin="0">
+                    <Grid MouseDown="TitleBar_MouseDown">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Select Connection" 
+                                  FontSize="14" FontWeight="SemiBold" 
+                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                  Margin="12,10,0,10" 
+                                  VerticalAlignment="Center"/>
+                        <Button Grid.Column="1"
+                                Content="✕"
+                                Click="CloseButton_Click"
+                                Style="{DynamicResource TitleBarCloseButtonStyle}"/>
+                    </Grid>
+                </Border>
+
+                <!-- Content -->
+                <StackPanel Grid.Row="1" Margin="12,10,12,12">
+                    <StackPanel Name="ConnectionsPanel">
+                        <!-- Connections will be added here programmatically -->
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+        <!-- Overlay border to clip corners properly -->
+        <Border x:Name="WindowStroke"
+                Background="Transparent"
+                BorderBrush="{DynamicResource BorderBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"/>
+    </Grid>
+</Window>

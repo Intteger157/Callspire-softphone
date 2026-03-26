@@ -26,6 +26,7 @@ namespace Softphone
     public partial class MainWindow : Window
     {
         private SipService? _sipService;
+        private SipService? _sipService2; // Второе SIP подключение (только SIP, независимо от основного)
         private CallHistoryService _callHistoryService;
         private LogWindow? _logWindow;
         private System.Collections.Generic.List<string> _logHistory = new System.Collections.Generic.List<string>();
@@ -42,6 +43,17 @@ namespace Softphone
 
         // AmoCRM сервис для интеграции
         private static AmoCrmService? _amoCrmService;
+
+        // MikoPBX CDR сервис
+        private MikoPbxCdrService? _mikoPbxCdrService;
+
+        // CallerID selection (PBX Originate)
+        private List<string> _allowedCallerIds = new List<string>();
+        private List<CallerIdItem> _callerIdItems = new List<CallerIdItem>();
+        private string? _pendingOriginateId;
+        private string? _pendingOriginateCallerId;
+        private string? _pendingOriginateDestination;
+        private CallWindow? _pendingOriginateCallWindow;
         
         // Дедупликация вызовов ProcessCallInAmoCrm для предотвращения множественных записей одного звонка
         // ИЗОЛЯЦИЯ: Используем sessionId как основной идентификатор для изоляции потоков обработки
@@ -152,6 +164,30 @@ namespace Softphone
             InitializeComponent();
             _instance = this; // Сохраняем ссылку на экземпляр
             _callHistoryService = new CallHistoryService();
+            
+            // Устанавливаем фон окна сразу после инициализации, чтобы избежать белой полосы сверху
+            try
+            {
+                if (Application.Current?.TryFindResource("BackgroundDarkBrush") is System.Windows.Media.Brush brush)
+                {
+                    this.Background = brush;
+                }
+            }
+            catch { }
+            
+            // Также устанавливаем фон в SourceInitialized, чтобы он точно был установлен до показа окна
+            this.SourceInitialized += (s, e) =>
+            {
+                try
+                {
+                    if (Application.Current?.TryFindResource("BackgroundDarkBrush") is System.Windows.Media.Brush brush)
+                    {
+                        this.Background = brush;
+                    }
+                }
+                catch { }
+            };
+            
             ShowView(DialerView);
 
             // Centralized Win10/Wpf vs Win11/DWM native appearance.
@@ -169,22 +205,39 @@ namespace Softphone
             
             // Инициализируем AmoCRM сервис при старте, если интеграция включена
             _ = InitializeAmoCrmServiceOnStartup();
+
+            // Инициализируем MikoPBX CDR сервис при старте
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    string settingsPath = AppDataHelper.GetSettingsFilePath();
+                    if (System.IO.File.Exists(settingsPath))
+                    {
+                        string json = System.IO.File.ReadAllText(settingsPath);
+                        var s = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                        if (s != null) InitializeMikoPbxCdrService(s);
+                    }
+                }
+                catch (Exception ex) { Log($"[MikoPBX CDR] Startup init error: {ex.Message}"); }
+            });
             // Воркеры очереди AmoCRM: обрабатывают звонки параллельно (до 3 одновременно), ждёт файл записи до 5 минут (колл-центр)
             for (int i = 0; i < MaxConcurrentAmoCrmWorkers; i++)
             {
                 _ = Task.Run(() => AmoCrmWorkerAsync());
             }
             
-            // Автоматическая очистка старых записей (старше 7 дней) при старте приложения
+            // Автоматическая очистка старых записей (старше 7 дней) и истории звонков при старте приложения
             _ = Task.Run(() =>
             {
                 try
                 {
                     AppDataHelper.CleanupOldRecordings(retentionDays: 7);
+                    _callHistoryService.CleanupOldHistory(retentionDays: 7);
                 }
                 catch (Exception ex)
                 {
-                    Log($"[MainWindow] Error during recordings cleanup on startup: {ex.Message}");
+                    Log($"[MainWindow] Error during cleanup on startup: {ex.Message}");
                 }
             });
             
@@ -360,6 +413,23 @@ namespace Softphone
                         try { await WebRtcService.Instance.ResetEngineAsync(); } catch { }
                     });
                 }
+                else
+                {
+                    // Для SIP режима переподключаем оба подключения при восстановлении сети
+                    Dispatcher.BeginInvoke(new Action(async () =>
+                    {
+                        try
+                        {
+                            Log("[MainWindow] NetworkAvailabilityChanged: Reconnecting SIP connections after network recovery");
+                            await TryConnectFromSettings();
+                            await InitializeSecondConnectionAsync();
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[MainWindow] NetworkAvailabilityChanged: Error reconnecting: {ex.Message}");
+                        }
+                    }), System.Windows.Threading.DispatcherPriority.Background);
+                }
             }
             catch { }
         }
@@ -378,6 +448,20 @@ namespace Softphone
             if (ShouldUseWebRtc())
             {
                 await RecoverWebRtcEngineAsync(reason);
+            }
+            else
+            {
+                // Для SIP режима переподключаем оба подключения после выхода из сна
+                try
+                {
+                    Log($"[MainWindow] HandleResumeAsync: Reconnecting SIP connections after resume (reason={reason})");
+                    await TryConnectFromSettings();
+                    await InitializeSecondConnectionAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] HandleResumeAsync: Error reconnecting SIP: {ex.Message}");
+                }
             }
 
             // Refresh UI status best-effort.
@@ -424,6 +508,18 @@ namespace Softphone
                 }, System.Windows.Threading.DispatcherPriority.Background);
 
                 await InitializeWebRtcServiceAsync();
+                
+                // Переподключаем второе подключение после восстановления WebRTC
+                try
+                {
+                    Log("[MainWindow] WebRTC recovery: Reconnecting second connection");
+                    await InitializeSecondConnectionAsync();
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] WebRTC recovery: Error reconnecting second connection: {ex.Message}");
+                }
+                
                 Log("[MainWindow] WebRTC recovery: completed");
             }
             finally
@@ -480,19 +576,32 @@ namespace Softphone
         
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
-            // Не трогаем WebRTC/WebView2, если WebRTC режим выключен.
-            // Инициализация будет выполнена при включении WebRTC (ReconnectFromSettingsAsync / Advanced settings).
-            if (!ShouldUseWebRtc())
-            {
-                return;
-            }
-
-            // Инициализируем WebRTC сервис после загрузки окна с ApplicationIdle приоритетом
-            // Это гарантирует, что окно полностью загружено и визуальное дерево готово
-            Log("[MainWindow] MainWindow_Loaded: Scheduling WebRTC initialization with ApplicationIdle priority...");
+            // Инициализируем подключения после загрузки окна
+            Log("[MainWindow] MainWindow_Loaded: Scheduling connection initialization...");
             Dispatcher.BeginInvoke(new System.Action(async () =>
             {
-                await InitializeWebRtcServiceAsync();
+                // Инициализируем основное подключение в соответствии с режимом
+                if (ShouldUseWebRtc())
+                {
+                    // WebRTC режим: инициализируем WebRTC сервис
+                    Log("[MainWindow] MainWindow_Loaded: WebRTC mode detected, initializing WebRTC service...");
+                    await InitializeWebRtcServiceAsync();
+                }
+                else
+                {
+                    // SIP режим: инициализируем SIP сервис
+                    Log("[MainWindow] MainWindow_Loaded: SIP mode detected, initializing SIP service...");
+                    await TryConnectFromSettings();
+                }
+                
+                // Параллельно основному подключению инициализируем дополнительное подключение (SIP-only)
+                // Оно работает независимо от режима основного подключения
+                // Инициализируется только если в настройках заполнены данные для второго подключения
+                Log("[MainWindow] MainWindow_Loaded: Initializing second connection (SIP-only) in parallel...");
+                await InitializeSecondConnectionAsync();
+                
+                // Обновляем все статусы после инициализации подключений
+                UpdateConnectionStatus();
             }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
         
@@ -549,8 +658,12 @@ namespace Softphone
                 // Обновляем статус на "Initializing..."
                 Dispatcher.Invoke(() =>
                 {
-                    StatusTextBlock.Text = "Initializing WebRTC...";
-                    UpdateStatusColor(false);
+                    if (MainStatusTextBlock != null)
+                    {
+                        MainStatusTextBlock.Text = "Initializing WebRTC...";
+                        if (MainStatusIndicator != null)
+                            MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                    }
                 });
                 
                 // Создаем скрытый WebView2 (1x1px)
@@ -632,8 +745,12 @@ namespace Softphone
                 // Обновляем статус на "Initializing JsSIP..."
                 Dispatcher.Invoke(() =>
                 {
-                    StatusTextBlock.Text = "Initializing JsSIP...";
-                    UpdateStatusColor(false);
+                    if (MainStatusTextBlock != null)
+                    {
+                        MainStatusTextBlock.Text = "Initializing JsSIP...";
+                        if (MainStatusIndicator != null)
+                            MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                    }
                 });
                 
                 // Инициализируем UA (фаза 2)
@@ -718,14 +835,22 @@ namespace Softphone
                 {
                         case "ua_started":
                             Log("[MainWindow] WebRTC UA started, connecting...");
-                            StatusTextBlock.Text = "Connecting to WebRTC...";
-                            UpdateStatusColor(false);
+                            if (MainStatusTextBlock != null)
+                            {
+                                MainStatusTextBlock.Text = "Connecting to WebRTC...";
+                                if (MainStatusIndicator != null)
+                                    MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                            }
                             break;
                         case "ws_connected":
                         case "ua_connected":
                             Log("[MainWindow] ✓ WebRTC WebSocket connected");
-                            StatusTextBlock.Text = "Connected to WebRTC...";
-                            UpdateStatusColor(true);
+                            if (MainStatusTextBlock != null)
+                            {
+                                MainStatusTextBlock.Text = "Connected to WebRTC...";
+                                if (MainStatusIndicator != null)
+                                    MainStatusIndicator.Background = (Brush)FindResource("AccentGreenBrush");
+                            }
                             // Обновляем статус подключения после подключения WebSocket
                             Dispatcher.BeginInvoke(new Action(() =>
                             {
@@ -748,26 +873,34 @@ namespace Softphone
                             UpdateWebRtcIndicator();
                             
                             // Проверяем результат обновления
-                            string finalStatus = StatusTextBlock.Text;
+                            string finalStatus = MainStatusTextBlock?.Text ?? "";
                             bool finalIsReady = WebRtcService.Instance?.IsReadyForCalls ?? false;
                             bool finalIsConnected = IsConnected;
-                            Log($"[MainWindow] After status update: StatusTextBlock.Text='{finalStatus}', IsReadyForCalls={finalIsReady}, IsConnected={finalIsConnected}");
+                            Log($"[MainWindow] After status update: MainStatusTextBlock.Text='{finalStatus}', IsReadyForCalls={finalIsReady}, IsConnected={finalIsConnected}");
                             
                             // ДОПОЛНИТЕЛЬНАЯ ПРОВЕРКА: Если статус все еще "Initializing..." или "Connecting..." или "Connected to WebRTC...", принудительно обновляем
                             if ((finalStatus.Contains("Connecting") || finalStatus.Contains("Initializing") || finalStatus.Contains("Connected to WebRTC")) && finalIsReady && finalIsConnected)
                             {
                                 Log($"[MainWindow] WARNING: Status still shows '{finalStatus}' but WebRTC is ready! Forcing update to 'Connected with WebRTC'...");
-                                StatusTextBlock.Text = "Connected with WebRTC";
-                                UpdateStatusColor(true);
-                                CallButton.IsEnabled = true;
+                                if (MainStatusTextBlock != null)
+                                {
+                                    MainStatusTextBlock.Text = "Connected with WebRTC";
+                                    if (MainStatusIndicator != null)
+                                        MainStatusIndicator.Background = (Brush)FindResource("AccentGreenBrush");
+                                }
+                                UpdateCallButtonMode();
                             }
                             else if (finalIsReady && finalIsConnected && finalStatus != "Connected with WebRTC")
                             {
                                 // Если WebRTC готов, но статус не обновился - принудительно обновляем
                                 Log($"[MainWindow] WARNING: WebRTC is ready but status is '{finalStatus}', forcing update to 'Connected with WebRTC'...");
-                                StatusTextBlock.Text = "Connected with WebRTC";
-                                UpdateStatusColor(true);
-                                CallButton.IsEnabled = true;
+                                if (MainStatusTextBlock != null)
+                                {
+                                    MainStatusTextBlock.Text = "Connected with WebRTC";
+                                    if (MainStatusIndicator != null)
+                                        MainStatusIndicator.Background = (Brush)FindResource("AccentGreenBrush");
+                                }
+                                UpdateCallButtonMode();
                             }
                             else if (!finalIsReady && finalStatus == "Connected to WebRTC...")
                             {
@@ -843,7 +976,65 @@ namespace Softphone
                     Log("[MainWindow] WARNING: Incoming call without sessionId or callerNumber");
                     return;
                 }
-                
+
+                // Check for PBX Originate correlation: if this INVITE matches a pending originate,
+                // auto-answer it and treat it as an outgoing call (no ringing UI).
+                // Strategy 1: Match by X-Callspire-Originate custom SIP header
+                // Strategy 2: Match by CallerID number (the trunk number we selected)
+                // Strategy 3: Match by destination number (MikoPBX sets pt1c_cid=destination in From URI)
+                bool isOriginateCallback = false;
+
+                if (!string.IsNullOrEmpty(_pendingOriginateId))
+                {
+                    string? originateId = null;
+                    if (dto.Data is System.Text.Json.JsonElement dataEl
+                        && dataEl.ValueKind == System.Text.Json.JsonValueKind.Object
+                        && dataEl.TryGetProperty("originateId", out var oidProp)
+                        && oidProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        originateId = oidProp.GetString();
+                    }
+
+                    if (!string.IsNullOrEmpty(originateId) && originateId == _pendingOriginateId)
+                    {
+                        Log($"[Call][Originate] Matched by X-Callspire-Originate header: {originateId}");
+                        isOriginateCallback = true;
+                    }
+                    else if (!string.IsNullOrEmpty(_pendingOriginateCallerId)
+                             && !string.IsNullOrEmpty(dto.CallerNumber)
+                             && (dto.CallerNumber == _pendingOriginateCallerId
+                                 || dto.CallerNumber.TrimStart('+') == _pendingOriginateCallerId.TrimStart('+')))
+                    {
+                        Log($"[Call][Originate] Matched by CallerID number: incoming={dto.CallerNumber}, expected={_pendingOriginateCallerId}");
+                        isOriginateCallback = true;
+                    }
+                    else if (!string.IsNullOrEmpty(_pendingOriginateDestination)
+                             && !string.IsNullOrEmpty(dto.CallerNumber)
+                             && (dto.CallerNumber == _pendingOriginateDestination
+                                 || dto.CallerNumber.TrimStart('+') == _pendingOriginateDestination.TrimStart('+')))
+                    {
+                        Log($"[Call][Originate] Matched by destination number: incoming={dto.CallerNumber}, expected={_pendingOriginateDestination}");
+                        isOriginateCallback = true;
+                    }
+                }
+
+                if (isOriginateCallback)
+                {
+                    Log($"[Call][Originate] Auto-answering PBX callback for originate to {_pendingOriginateDestination}");
+                    _pendingOriginateId = null;
+                    _pendingOriginateCallerId = null;
+                    _pendingOriginateDestination = null;
+
+                    _ = WebRtcService.Instance?.AnswerAsync(dto.SessionId);
+
+                    if (_pendingOriginateCallWindow != null)
+                    {
+                        _pendingOriginateCallWindow.SetOriginateWebRtcSessionId(dto.SessionId);
+                        _pendingOriginateCallWindow = null;
+                    }
+                    return;
+                }
+
                 Log($"[Call][WebRTC] Handling incoming call (sessionId: {dto.SessionId}, caller: {dto.CallerNumber})");
                 
                 var config = GetWebRtcConfig();
@@ -879,27 +1070,24 @@ namespace Softphone
                     
                     callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
                     {
-                        _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId);
+                        string? outboundCallerId = callWindow.GetOutboundCallerId();
+                        _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
                         
-                        // Обновляем UI истории после обновления деталей звонка (чтобы статус обновился в списке)
                         Dispatcher.Invoke(() => LoadCallHistory());
-                        
-                        // Обрабатываем звонок в AmoCRM (если интеграция включена)
+
+                        if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
+                            TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
+
                         string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
-                        
-                        // ОПТИМИЗАЦИЯ: Используем найденный лид из CallWindow (если поиск был выполнен во время звонка)
-                        // Ищем CallWindow по sessionId для получения найденного leadId
+
                         long? foundLeadId = null;
                         if (!string.IsNullOrEmpty(sessionId))
                         {
-                            // Ищем CallWindow, который соответствует этому звонку через sessionId
-                            // Используем существующий механизм получения leadId из CallWindow
                             var callWindows = Application.Current.Windows.OfType<CallWindow>().ToList();
                             foreach (var window in callWindows)
                             {
                                 try
                                 {
-                                    // Получаем leadId из CallWindow (может быть из браузера или найденный во время звонка)
                                     var windowLeadId = window.GetAmoCrmLeadId();
                                     if (windowLeadId.HasValue)
                                     {
@@ -908,10 +1096,7 @@ namespace Softphone
                                         break;
                                     }
                                 }
-                                catch
-                                {
-                                    // Игнорируем ошибки при получении leadId
-                                }
+                                catch { }
                             }
                         }
                         
@@ -1087,7 +1272,7 @@ namespace Softphone
                     Dispatcher.Invoke(() =>
                     {
                         bool isConnected = IsConnected;
-                        string currentStatus = StatusTextBlock.Text;
+                        string currentStatus = MainStatusTextBlock?.Text ?? "";
                         
                         // Не показываем окно, если идет инициализация или подключение
                         bool isInitializing = currentStatus.Contains("Initializing") || 
@@ -1234,6 +1419,9 @@ namespace Softphone
                         // Автоматически подключаемся при запуске, если есть настройки
                         await ConnectWithSettings(settings);
                     }
+                    
+                    // ПРИМЕЧАНИЕ: Второе подключение теперь инициализируется в MainWindow_Loaded
+                    // для обоих режимов (WebRTC и SIP), чтобы избежать дублирования
                 }
             }
             catch
@@ -1277,7 +1465,9 @@ namespace Softphone
                     settings.SpeakerDeviceNumber,
                     settings.AudioCodec ?? "PCMU",
                     settings.AudioSampleRate > 0 ? settings.AudioSampleRate : 16000,
-                    settings.AudioBitrate > 0 ? settings.AudioBitrate : 64000);
+                    settings.AudioBitrate > 0 ? settings.AudioBitrate : 64000,
+                    isSecondaryConnection: false);
+                _sipService.EnableAec = settings.EnableEchoCancellation;
                 
                 // Если включен WebRTC, пропускаем инициализацию аудио в SIPSorcery
                 if (settings.UseWebRtcAudio)
@@ -1299,7 +1489,17 @@ namespace Softphone
                             // ВАЖНО: НЕ перезаписываем статус для WebRTC режима, чтобы не конфликтовать с UpdateConnectionStatus()
                             if (!ShouldUseWebRtc())
                             {
-                                StatusTextBlock.Text = userFriendlyStatus;
+                                if (MainStatusTextBlock != null)
+                                {
+                                    MainStatusTextBlock.Text = userFriendlyStatus;
+                                    if (MainStatusIndicator != null)
+                                    {
+                                        bool isConnected = _sipService?.IsRegistered ?? false;
+                                        MainStatusIndicator.Background = isConnected 
+                                            ? (Brush)FindResource("AccentGreenBrush")
+                                            : (Brush)FindResource("TextSecondaryBrush");
+                                    }
+                                }
                             }
                             // Для WebRTC режима НЕ обновляем статус здесь - это делает UpdateConnectionStatus()
                             // Это предотвращает перезапись WebRTC статуса SIP сообщениями
@@ -1371,19 +1571,27 @@ namespace Softphone
                 // Для WebRTC режима статус должен устанавливаться в ReconnectFromSettingsAsync
                 if (!ShouldUseWebRtc())
                 {
-                    StatusTextBlock.Text = "Connecting to server...";
-                    UpdateStatusColor(false);
+                    if (MainStatusTextBlock != null)
+                    {
+                        MainStatusTextBlock.Text = "Connecting to server...";
+                        if (MainStatusIndicator != null)
+                            MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                    }
                 }
                 // Если WebRTC режим включен, не меняем статус здесь (он уже установлен в ReconnectFromSettingsAsync)
 
                 await _sipService.StartAsync();
 
-                CallButton.IsEnabled = true;
+                UpdateCallButtonMode();
             }
             catch (Exception ex)
             {
-                StatusTextBlock.Text = $"Connection error: {ex.Message}";
-                UpdateStatusColor(false);
+                if (MainStatusTextBlock != null)
+                {
+                    MainStatusTextBlock.Text = $"Connection error: {ex.Message}";
+                    if (MainStatusIndicator != null)
+                        MainStatusIndicator.Background = (Brush)FindResource("AccentRedBrush");
+                }
             }
         }
 
@@ -1425,16 +1633,39 @@ namespace Softphone
             ShowView(DialerView);
         }
 
-        private void HistoryButton_Click(object sender, RoutedEventArgs e)
+        private async void HistoryButton_Click(object sender, RoutedEventArgs e)
         {
             ShowView(HistoryView);
-            LoadCallHistory();
+            await LoadCallHistoryAsync();
         }
 
+        /// <summary>
+        /// Асинхронная загрузка истории звонков, тяжелая часть выполняется в фоне,
+        /// на UI потоке только биндинг данных.
+        /// </summary>
+        private async System.Threading.Tasks.Task LoadCallHistoryAsync()
+        {
+            // Забираем и сортируем историю в фоновом потоке,
+            // чтобы не блокировать UI при больших объёмах данных.
+            var history = await System.Threading.Tasks.Task.Run(() => _callHistoryService.GetHistory());
+
+            Dispatcher.Invoke(() => BindCallHistory(history));
+        }
+
+        /// <summary>
+        /// Синхронная загрузка истории (для внутренних обновлений, когда изменений немного).
+        /// </summary>
         private void LoadCallHistory()
         {
             var history = _callHistoryService.GetHistory();
-            
+            BindCallHistory(history);
+        }
+
+        /// <summary>
+        /// Привязывает коллекцию звонков к UI.
+        /// </summary>
+        private void BindCallHistory(System.Collections.Generic.List<CallHistoryItem> history)
+        {
             if (history.Count == 0)
             {
                 HistoryItemsControl.ItemsSource = null;
@@ -1447,7 +1678,12 @@ namespace Softphone
             // Преобразуем в формат для отображения
             var displayItems = history.Select(call => new
             {
+                PhoneNumberDisplay = call.PhoneNumber,
                 PhoneNumber = call.PhoneNumber,
+                TransportLabel = call.Transport == CallTransport.WebRtc ? "WebRTC" : "SIP",
+                TransportBrush = call.Transport == CallTransport.WebRtc
+                    ? new SolidColorBrush(Color.FromRgb(37, 99, 235))   // синий для WebRTC
+                    : new SolidColorBrush(Color.FromRgb(16, 185, 129)), // зелёный для SIP
                 Status = GetStatusText(call.Status),
                 StatusColor = GetStatusColor(call.Status),
                 CallTimeText = call.CallTime.ToString("yyyy-MM-dd HH:mm:ss"),
@@ -1606,6 +1842,36 @@ namespace Softphone
             OpenSettingsWindow();
         }
 
+        private async void MainRefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (MainRefreshButton?.IsEnabled == false || MainStatusTextBlock == null) return;
+            MainRefreshButton!.IsEnabled = false;
+            try
+            {
+                MainStatusTextBlock.Text = "Reconnecting...";
+                await ReconnectFromSettingsAsync();
+            }
+            finally
+            {
+                if (MainRefreshButton != null) MainRefreshButton.IsEnabled = true;
+            }
+        }
+
+        private async void SecondaryRefreshButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (SecondaryRefreshButton?.IsEnabled == false || SecondaryStatusTextBlock == null) return;
+            SecondaryRefreshButton!.IsEnabled = false;
+            try
+            {
+                SecondaryStatusTextBlock.Text = "Reconnecting...";
+                await InitializeSecondConnectionAsync();
+            }
+            finally
+            {
+                if (SecondaryRefreshButton != null) SecondaryRefreshButton.IsEnabled = true;
+            }
+        }
+
         private void PhoneNumberTextBox_GotFocus(object sender, RoutedEventArgs e)
         {
             if (PhoneNumberTextBox.Text == "Enter the number")
@@ -1645,7 +1911,12 @@ namespace Softphone
             // Enter для звонка
             if (e.Key == System.Windows.Input.Key.Enter)
             {
-                if (CallButton.IsEnabled)
+                // Если видна сплит-кнопка — звоним через основное подключение по Enter
+                if (SplitCallButtonPanel?.Visibility == Visibility.Visible && (SplitCallPrimaryButton?.IsEnabled ?? false))
+                {
+                    SplitCallPrimary_Click(sender, e);
+                }
+                else if (CallButton.IsEnabled)
                 {
                     CallButton_Click(sender, e);
                 }
@@ -1731,8 +2002,12 @@ namespace Softphone
                     Log("[MainWindow] ReconnectFromSettingsAsync: Active call detected, deferring reconnection until call ends");
                     Dispatcher.Invoke(() =>
                     {
-                        StatusTextBlock.Text = "Settings saved. Changes will be applied after current call ends.";
-                        UpdateStatusColor(false);
+                        if (MainStatusTextBlock != null)
+                        {
+                            MainStatusTextBlock.Text = "Settings saved. Changes will be applied after current call ends.";
+                            if (MainStatusIndicator != null)
+                                MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                        }
                     });
                     return;
                 }
@@ -1754,8 +2029,12 @@ namespace Softphone
                     // Это предотвращает отображение старого SIP статуса "Connecting to server..."
                     Dispatcher.Invoke(() =>
                     {
-                        StatusTextBlock.Text = "Initializing WebRTC...";
-                        UpdateStatusColor(false);
+                        if (MainStatusTextBlock != null)
+                        {
+                            MainStatusTextBlock.Text = "Initializing WebRTC...";
+                            if (MainStatusIndicator != null)
+                                MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                        }
                         Log("[MainWindow] ReconnectFromSettingsAsync: Status reset to 'Initializing WebRTC...' for WebRTC mode");
                     });
                     
@@ -1833,7 +2112,7 @@ namespace Softphone
                     {
                         UpdateConnectionStatus();
                         UpdateWebRtcIndicator();
-                        Log($"[MainWindow] ReconnectFromSettingsAsync: Status updated after WebRTC init - StatusTextBlock.Text='{StatusTextBlock.Text}', IsReadyForCalls={WebRtcService.Instance?.IsReadyForCalls ?? false}, IsConnected={IsConnected}");
+                        Log($"[MainWindow] ReconnectFromSettingsAsync: Status updated after WebRTC init - MainStatusTextBlock.Text='{MainStatusTextBlock?.Text ?? ""}', IsReadyForCalls={WebRtcService.Instance?.IsReadyForCalls ?? false}, IsConnected={IsConnected}");
                     });
                 }
                 else
@@ -1846,6 +2125,9 @@ namespace Softphone
                     
                     // Переподключаем SIP сервис
                     await TryConnectFromSettings();
+                    
+                    // Инициализируем второе подключение параллельно
+                    await InitializeSecondConnectionAsync();
                     
                     // Обновляем статус подключения
                     Dispatcher.Invoke(() =>
@@ -1916,29 +2198,214 @@ namespace Softphone
             await ReconnectFromSettingsAsync();
         }
 
-        private void HandleIncomingCall(string callerNumber)
+        /// <summary>
+        /// Инициализирует второе SIP подключение (только SIP, независимо от основного)
+        /// </summary>
+        public async System.Threading.Tasks.Task InitializeSecondConnectionAsync()
+        {
+            try
+            {
+                string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                if (!File.Exists(settingsFilePath))
+                {
+                    Log("[MainWindow] InitializeSecondConnectionAsync: Settings file not found");
+                    return;
+                }
+
+                string json = File.ReadAllText(settingsFilePath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null)
+                {
+                    Log("[MainWindow] InitializeSecondConnectionAsync: Settings is null");
+                    return;
+                }
+
+                // Проверяем наличие настроек второго подключения
+                if (string.IsNullOrEmpty(settings.SipServer2) || 
+                    string.IsNullOrEmpty(settings.SipUsername2) || 
+                    string.IsNullOrEmpty(settings.SipPasswordEncrypted2))
+                {
+                    Log("[MainWindow] InitializeSecondConnectionAsync: Second connection settings not found, skipping initialization");
+                    // Если настроек нет, освобождаем существующее подключение
+                    _sipService2?.Dispose();
+                    _sipService2 = null;
+                    return;
+                }
+
+                Log($"[MainWindow] InitializeSecondConnectionAsync: Found second connection settings - Server2='{settings.SipServer2}', Username2='{settings.SipUsername2}'");
+
+                // Парсим server:port
+                int port2 = 5060;
+                string server2 = settings.SipServer2;
+                if (server2.Contains(":"))
+                {
+                    var parts = server2.Split(':');
+                    server2 = parts[0];
+                    if (parts.Length > 1 && int.TryParse(parts[1], out int parsedPort2))
+                    {
+                        port2 = parsedPort2;
+                    }
+                }
+
+                Log($"[MainWindow] InitializeSecondConnectionAsync: Parsed server2='{server2}', port2={port2}");
+
+                // Парсим username - если содержит '@', используем только часть до '@'
+                // Это важно, так как некоторые провайдеры требуют username в формате "user@domain"
+                // но при формировании SIP URI домен уже будет добавлен автоматически
+                string username2 = settings.SipUsername2;
+                if (username2.Contains("@"))
+                {
+                    var usernameParts = username2.Split('@');
+                    username2 = usernameParts[0]; // Используем только часть до '@'
+                    Log($"[MainWindow] InitializeSecondConnectionAsync: Username2 contains '@', extracted username='{username2}'");
+                }
+
+                Log($"[MainWindow] InitializeSecondConnectionAsync: Final username2='{username2}'");
+
+                // Расшифровываем пароль
+                string password2 = "";
+                try
+                {
+                    password2 = TokenEncryption.Decrypt(settings.SipPasswordEncrypted2);
+                    Log($"[MainWindow] InitializeSecondConnectionAsync: Password2 decrypted successfully (length={password2.Length})");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] InitializeSecondConnectionAsync: Error decrypting password2: {ex.Message}");
+                    return;
+                }
+
+                // Освобождаем существующее подключение
+                _sipService2?.Dispose();
+
+                // Создаем новое подключение с флагом isSecondaryConnection = true
+                Log($"[MainWindow] InitializeSecondConnectionAsync: Creating SipService2 with username='{username2}', server='{server2}', port={port2}");
+                // Используем настройки аудио из файла настроек для второго подключения
+                // ВАЖНО: Используем те же настройки, что и для основного подключения, чтобы избежать проблем с качеством
+                string audioCodec2 = settings.AudioCodec ?? "PCMU";
+                // Используем настройки из файла, если они есть, иначе используем значения по умолчанию
+                // По умолчанию используем 16000 Hz для лучшего качества (WindowsAudioEndPoint работает с этой частотой)
+                int audioSampleRate2 = settings.AudioSampleRate > 0 ? settings.AudioSampleRate : 16000;
+                int audioBitrate2 = settings.AudioBitrate > 0 ? settings.AudioBitrate : 64000;
+                
+                // ВАЖНО: НЕ принуждаем 8000 Hz для PCMU, так как WindowsAudioEndPoint работает с 16000 Hz
+                // Кодек PCMU сам преобразует частоту при необходимости
+                // Принудительная установка 8000 Hz может вызывать проблемы с качеством звука
+                Log($"[MainWindow] InitializeSecondConnectionAsync: Audio settings - Codec={audioCodec2}, SampleRate={audioSampleRate2}, Bitrate={audioBitrate2}");
+                
+                _sipService2 = new SipService(
+                    username2, 
+                    password2, 
+                    server2, 
+                    port2,
+                    settings.MicrophoneDeviceNumber, 
+                    settings.SpeakerDeviceNumber,
+                    audioCodec2,
+                    audioSampleRate2,
+                    audioBitrate2,
+                    isSecondaryConnection: true); // ВАЖНО: помечаем как вторичное подключение
+                _sipService2.EnableAec = settings.EnableEchoCancellation;
+                Log($"[MainWindow] InitializeSecondConnectionAsync: SipService2 created successfully");
+
+                // Обработка событий статуса второго подключения
+                _sipService2.OnStatusChanged += (status) =>
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        Log($"[MainWindow] [Connection2] {status}");
+                        OnConnectionStatusChanged?.Invoke($"[Connection2] {status}");
+                        // Обновляем все статусы (включая второе подключение)
+                        UpdateConnectionStatus();
+                        // Обновляем режим кнопки вызова при смене статуса второго подключения
+                        UpdateCallButtonMode();
+                    });
+                };
+
+                // Обработка входящих звонков на второе подключение
+                _sipService2.OnIncomingCall += (callerNumber) =>
+                {
+                    Log($"[MainWindow] [Connection2] OnIncomingCall event received: {callerNumber}");
+                    if (Dispatcher.CheckAccess())
+                    {
+                        HandleIncomingCall(callerNumber, _sipService2);
+                    }
+                    else
+                    {
+                        Dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            HandleIncomingCall(callerNumber, _sipService2);
+                        }), System.Windows.Threading.DispatcherPriority.Send);
+                    }
+                };
+
+                // Запускаем второе подключение
+                await _sipService2.StartAsync();
+                Log("[MainWindow] InitializeSecondConnectionAsync: Second connection started");
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] ERROR in InitializeSecondConnectionAsync: {ex.Message}");
+                Log($"[MainWindow] Stack trace: {ex.StackTrace}");
+            }
+        }
+
+        /// <summary>
+        /// Проверяет, подключено ли второе SIP подключение
+        /// </summary>
+        public bool IsSecondConnectionConnected()
+        {
+            return _sipService2?.IsRegistered ?? false;
+        }
+
+        /// <summary>
+        /// Отключает и удаляет второе SIP подключение
+        /// </summary>
+        public void DisconnectSecondConnection()
+        {
+            try
+            {
+                Log("[MainWindow] DisconnectSecondConnection: Disposing second SIP service...");
+                _sipService2?.Dispose();
+                _sipService2 = null;
+                Log("[MainWindow] DisconnectSecondConnection: Second connection removed");
+                
+                // Обновляем UI — переключаем на обычную кнопку вызова
+                Dispatcher.Invoke(() => UpdateCallButtonMode());
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] DisconnectSecondConnection error: {ex.Message}");
+            }
+        }
+
+        private void HandleIncomingCall(string callerNumber, SipService? sipService = null)
         {
             try
             {
                 Log($"HandleIncomingCall called with callerNumber: {callerNumber}");
 
+                // Используем переданный сервис или основной по умолчанию
+                SipService? serviceToUse = sipService ?? _sipService;
+                
                 // IMPORTANT: When WebRTC mode is enabled, SIP incoming calls must be ignored/disabled.
-                if (ShouldUseWebRtc())
+                // ВАЖНО: Второе подключение всегда работает через SIP, не проверяет WebRTC
+                if (serviceToUse != _sipService2 && ShouldUseWebRtc())
                 {
                     Log($"[MainWindow] HandleIncomingCall: SIP incoming call from {callerNumber} ignored: WebRTC mode enabled");
                     return;
                 }
                 
-            if (_sipService == null)
+            if (serviceToUse == null)
                 {
-                    Log("HandleIncomingCall: _sipService is null, cannot handle incoming call");
+                    Log("HandleIncomingCall: sipService is null, cannot handle incoming call");
                 return;
                 }
 
             // Гейт: если есть активный WebRTC звонок, игнорируем SIP входящий
-            if (CallHandlingHelpers.IsWebRtcCallActive())
+            // ВАЖНО: Для второго подключения не блокируем WebRTC, так как оно независимо
+            if (serviceToUse == _sipService && CallHandlingHelpers.IsWebRtcCallActive())
             {
-                Log($"[MainWindow] HandleIncomingCall: SIP incoming call from {callerNumber} ignored: WebRTC call active");
+                Log($"[MainWindow] HandleIncomingCall: SIP incoming call from {callerNumber} ignored: WebRTC call active (main connection only)");
                 return;
             }
 
@@ -1947,13 +2414,27 @@ namespace Softphone
             var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
             if (existingCallWindow != null)
             {
-                Log($"[MainWindow] HandleIncomingCall: CallWindow already exists, ignoring duplicate call from {callerNumber}");
-                return;
+                // Проверяем, действительно ли окно активно (не закрывается)
+                bool isWindowActive = existingCallWindow.IsLoaded && existingCallWindow.IsVisible && !existingCallWindow.IsClosing();
+                string connectionName = (serviceToUse == _sipService2) ? "Secondary" : "Main";
+                if (isWindowActive)
+                {
+                    Log($"[MainWindow] HandleIncomingCall: Active CallWindow already exists (Connection: {connectionName}), ignoring duplicate call from {callerNumber}");
+                    return;
+                }
+                else
+                {
+                    Log($"[MainWindow] HandleIncomingCall: Found CallWindow but it's closing/inactive, proceeding with new call from {callerNumber}");
+                }
             }
-            Log($"[MainWindow] HandleIncomingCall: No existing CallWindow found, proceeding with new call");
+            else
+            {
+                string connectionName = (serviceToUse == _sipService2) ? "Secondary" : "Main";
+                Log($"[MainWindow] HandleIncomingCall: No existing CallWindow found, proceeding with new call from {callerNumber} (Connection: {connectionName})");
+            }
 
             // Логируем хеш-код для диагностики
-            int serviceHash = _sipService.GetHashCode();
+            int serviceHash = serviceToUse.GetHashCode();
             Log($"[MainWindow] HandleIncomingCall: Creating CallWindow with SipService hash: {serviceHash}, CallerNumber: {callerNumber}");
             
             // Сохраняем время начала входящего звонка для истории
@@ -1964,7 +2445,7 @@ namespace Softphone
             CallWindow callWindow;
             try
             {
-                callWindow = new CallWindow(_sipService, callerNumber, isIncomingCall: true)
+                callWindow = new CallWindow(serviceToUse, callerNumber, isIncomingCall: true)
                 {
                     Owner = this
                 };
@@ -1987,9 +2468,12 @@ namespace Softphone
                 // Подписываемся на события обновления детальной информации о звонке
                 callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
                 {
-                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId);
+                    string? outboundCallerId = callWindow.GetOutboundCallerId();
+                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
+
+                    if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
+                        TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
                     
-                    // Обрабатываем звонок в AmoCRM (если интеграция включена)
                     string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
                     ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId);
                 };
@@ -2070,6 +2554,199 @@ namespace Softphone
             await PerformCall();
         }
 
+        private async void SplitCallPrimary_Click(object sender, RoutedEventArgs e)
+        {
+            var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
+            if (existingCallWindow != null)
+            {
+                MainWindow.Log($"[MainWindow] SplitCallPrimary_Click: Active call window already exists, ignoring call");
+                existingCallWindow.Activate();
+                return;
+            }
+
+            string number = PhoneNumberTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(number) || number == "Enter the number")
+            {
+                CustomMessageBox.Show("Please enter a phone number.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                return;
+            }
+
+            Log($"[MainWindow] SplitCallPrimary_Click: Calling {number} via primary connection");
+            await PerformCallWithConnection(number, null, ConnectionSelectionWindow.ConnectionType.Main);
+        }
+
+        private async void SplitCallSecondary_Click(object sender, RoutedEventArgs e)
+        {
+            var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
+            if (existingCallWindow != null)
+            {
+                MainWindow.Log($"[MainWindow] SplitCallSecondary_Click: Active call window already exists, ignoring call");
+                existingCallWindow.Activate();
+                return;
+            }
+
+            string number = PhoneNumberTextBox.Text.Trim();
+            if (string.IsNullOrEmpty(number) || number == "Enter the number")
+            {
+                CustomMessageBox.Show("Please enter a phone number.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                return;
+            }
+
+            Log($"[MainWindow] SplitCallSecondary_Click: Calling {number} via secondary connection");
+            await PerformCallWithConnection(number, null, ConnectionSelectionWindow.ConnectionType.Secondary);
+        }
+
+        /// <summary>
+        /// Устанавливает доступность всех кнопок вызова (обычной и сплит)
+        /// </summary>
+        private void SetCallButtonsEnabled(bool enabled)
+        {
+            try
+            {
+                if (CallButton != null) CallButton.IsEnabled = enabled;
+                if (SplitCallPrimaryButton != null) SplitCallPrimaryButton.IsEnabled = enabled;
+                if (SplitCallSecondaryButton != null) SplitCallSecondaryButton.IsEnabled = enabled;
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Находит элемент в визуальном дереве по имени
+        /// </summary>
+        private T? FindChildByName<T>(DependencyObject parent, string name) where T : DependencyObject
+        {
+            if (parent == null) return null;
+            
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                
+                if (child is T t && (child as FrameworkElement)?.Name == name)
+                {
+                    return t;
+                }
+                
+                var result = FindChildByName<T>(child, name);
+                if (result != null) return result;
+            }
+            
+            return null;
+        }
+        
+        /// <summary>
+        /// Обновляет названия подключений в сплит-кнопке вызова
+        /// </summary>
+        private void UpdateSplitCallButtonLabels()
+        {
+            try
+            {
+                if (SplitCallPrimaryButton == null || SplitCallSecondaryButton == null) return;
+                
+                // Загружаем названия подключений из настроек
+                string? mainConnectionName = null;
+                string? secondaryConnectionName = null;
+                try
+                {
+                    string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                    if (File.Exists(settingsFilePath))
+                    {
+                        string json = File.ReadAllText(settingsFilePath);
+                        var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                        if (settings != null)
+                        {
+                            mainConnectionName = settings.MainConnectionName;
+                            secondaryConnectionName = settings.SecondaryConnectionName;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] UpdateSplitCallButtonLabels: Error loading connection names: {ex.Message}");
+                }
+                
+                // Обновляем название основного подключения
+                bool useWebRtc = ShouldUseWebRtc();
+                string defaultMainName = useWebRtc ? "PBX" : "PBX";
+                string mainName = !string.IsNullOrWhiteSpace(mainConnectionName) 
+                    ? mainConnectionName 
+                    : defaultMainName;
+                
+                // Обновляем название второго подключения
+                string defaultSecondaryName = "SIP";
+                string secondaryName = !string.IsNullOrWhiteSpace(secondaryConnectionName)
+                    ? secondaryConnectionName
+                    : defaultSecondaryName;
+                
+                // Обновляем через Dispatcher, чтобы кнопки были отрендерены
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        var primaryLabel = FindChildByName<TextBlock>(SplitCallPrimaryButton, "SplitCallPrimaryLabel");
+                        if (primaryLabel != null)
+                        {
+                            primaryLabel.Text = mainName;
+                        }
+                        
+                        var secondaryLabel = FindChildByName<TextBlock>(SplitCallSecondaryButton, "SplitCallSecondaryLabel");
+                        if (secondaryLabel != null)
+                        {
+                            secondaryLabel.Text = secondaryName;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[MainWindow] UpdateSplitCallButtonLabels (dispatcher) error: {ex.Message}");
+                    }
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] UpdateSplitCallButtonLabels error: {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Обновляет видимость кнопок вызова: одна кнопка или сплит-кнопка
+        /// Вызывается при изменении статуса подключений
+        /// </summary>
+        public void UpdateCallButtonMode()
+        {
+            try
+            {
+                if (SplitCallButtonPanel == null || CallButton == null) return;
+
+                bool useWebRtc = ShouldUseWebRtc();
+                bool hasMainConnection = useWebRtc 
+                    ? (WebRtcService.Instance?.IsReadyForCalls ?? false) 
+                    : (_sipService?.IsRegistered ?? false);
+                bool hasSecondaryConnection = _sipService2?.IsRegistered ?? false;
+
+                if (hasMainConnection && hasSecondaryConnection)
+                {
+                    // Оба подключения активны — показываем сплит-кнопку
+                    CallButton.Visibility = Visibility.Collapsed;
+                    SplitCallButtonPanel.Visibility = Visibility.Visible;
+                    SplitCallPrimaryButton.IsEnabled = true;
+                    SplitCallSecondaryButton.IsEnabled = true;
+                    
+                    // Обновляем названия подключений в сплит-кнопке
+                    UpdateSplitCallButtonLabels();
+                }
+                else
+                {
+                    // Одно или ни одного подключения — показываем обычную кнопку
+                    SplitCallButtonPanel.Visibility = Visibility.Collapsed;
+                    CallButton.Visibility = Visibility.Visible;
+                    CallButton.IsEnabled = hasMainConnection || hasSecondaryConnection;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] UpdateCallButtonMode error: {ex.Message}");
+            }
+        }
+
         private async System.Threading.Tasks.Task PerformCall()
         {
             string number = PhoneNumberTextBox.Text.Trim();
@@ -2097,14 +2774,29 @@ namespace Softphone
                     return;
                 }
                 
-                // Проверяем схему и хост
-                if (uri.Scheme != "callspire" || uri.Host != "call")
+                if (uri.Scheme != "callspire")
                 {
-                    Log($"[MainWindow] Invalid protocol scheme or host: {uri.Scheme}://{uri.Host}");
+                    Log($"[MainWindow] Invalid protocol scheme: {uri.Scheme}");
+                    return;
+                }
+
+                if (uri.Host == "cdr-auth")
+                {
+                    var cdrParams = ParseQueryString(uri.Query);
+                    string? token = cdrParams.ContainsKey("token") ? cdrParams["token"] : null;
+                    if (!string.IsNullOrEmpty(token))
+                    {
+                        HandleCdrAuthToken(token);
+                    }
+                    return;
+                }
+
+                if (uri.Host != "call")
+                {
+                    Log($"[MainWindow] Unknown protocol host: {uri.Host}");
                     return;
                 }
                 
-                // Парсим query параметры
                 var queryParams = ParseQueryString(uri.Query);
                 string? phoneNumber = queryParams.ContainsKey("phone") ? queryParams["phone"] : null;
                 string? leadIdStr = queryParams.ContainsKey("leadId") ? queryParams["leadId"] : null;
@@ -2253,8 +2945,163 @@ namespace Softphone
                 return;
             }
 
-            // Проверяем, нужно ли использовать WebRTC
+            // Определяем доступные подключения и показываем окно выбора, если нужно
             bool useWebRtc = ShouldUseWebRtc();
+            
+            // По факту наличия/готовности сервисов определяем активность подключений.
+            // Важно: не полагаться только на “configured” из файла настроек, т.к. во время click-to-call
+            // сервис может уже быть инициализирован и зарегистрирован даже при расхождении настроек на диске.
+            bool hasMainConnectionConfigured = useWebRtc
+                ? (WebRtcService.Instance != null)
+                : (_sipService != null);
+            
+            bool hasSecondaryConnectionConfigured = _sipService2 != null;
+
+            Log($"[MainWindow] PerformCall: Connection check - Main configured={hasMainConnectionConfigured}, Secondary configured={hasSecondaryConnectionConfigured}");
+            
+            string? mainStatus = null;
+            string? secondaryStatus = null;
+            
+            if (hasMainConnectionConfigured)
+            {
+                if (useWebRtc)
+                {
+                    mainStatus = WebRtcService.Instance?.IsReadyForCalls == true ? "Connected with WebRTC" : "Not connected";
+                }
+                else
+                {
+                    mainStatus = _sipService?.IsRegistered == true ? "Connected" : "Not connected";
+                }
+            }
+            
+            if (hasSecondaryConnectionConfigured)
+            {
+                secondaryStatus = _sipService2?.IsRegistered == true ? "Connected" : "Not connected";
+            }
+            
+            // Проверяем активность подключений
+            bool isMainConnectionActive = hasMainConnectionConfigured
+                ? (useWebRtc
+                    ? WebRtcService.Instance?.IsReadyForCalls == true
+                    : _sipService?.IsRegistered == true)
+                : false;
+            
+            bool isSecondaryConnectionActive = (_sipService2?.IsRegistered == true);
+            
+            // Показываем окно выбора подключения, только если оба подключения активны
+            ConnectionSelectionWindow.ConnectionType? selectedConnectionType = null;
+            string? selectedMainCallerId = null;
+            
+            // Caller ID выбор имеет смысл только для Main подключения в WebRTC режиме
+            // (там используется PBX Originate).
+            bool canSelectCallerId = useWebRtc && _callerIdItems.Count > 0 && _mikoPbxCdrService != null;
+            List<CallerIdItem>? mainCallerIdItemsForDialog = canSelectCallerId ? _callerIdItems : null;
+            string? currentSelectedCallerId = null;
+            try
+            {
+                if (CallerIdComboBox?.SelectedItem is CallerIdItem ci && !string.IsNullOrWhiteSpace(ci.Number))
+                {
+                    currentSelectedCallerId = ci.Number;
+                }
+            }
+            catch { }
+            if (canSelectCallerId && mainCallerIdItemsForDialog != null && !string.IsNullOrWhiteSpace(currentSelectedCallerId) &&
+                !mainCallerIdItemsForDialog.Any(i => i.Number == currentSelectedCallerId))
+            {
+                currentSelectedCallerId = null;
+            }
+            
+            if (isMainConnectionActive && isSecondaryConnectionActive)
+            {
+                // Загружаем названия подключений из настроек
+                string? mainConnectionName = null;
+                string? secondaryConnectionName = null;
+                try
+                {
+                    string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                    if (File.Exists(settingsFilePath))
+                    {
+                        string json = File.ReadAllText(settingsFilePath);
+                        var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                        if (settings != null)
+                        {
+                            mainConnectionName = settings.MainConnectionName;
+                            secondaryConnectionName = settings.SecondaryConnectionName;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] PerformCall: Error loading connection names: {ex.Message}");
+                }
+                
+                // Оба подключения активны - показываем окно выбора
+                Log($"[MainWindow] PerformCall: Both connections active, showing selection window");
+                var selectionWindow = new ConnectionSelectionWindow(
+                    hasMainConnection: hasMainConnectionConfigured,
+                    isMainWebRtc: useWebRtc,
+                    mainConnectionStatus: mainStatus,
+                    hasSecondaryConnection: hasSecondaryConnectionConfigured,
+                    secondaryConnectionStatus: secondaryStatus,
+                    mainConnectionName: mainConnectionName,
+                    secondaryConnectionName: secondaryConnectionName,
+                    mainCallerIdItems: mainCallerIdItemsForDialog,
+                    selectedMainCallerId: currentSelectedCallerId)
+                {
+                    Owner = this
+                };
+                
+                if (selectionWindow.ShowDialog() == true && selectionWindow.SelectedConnection.HasValue)
+                {
+                    selectedConnectionType = selectionWindow.SelectedConnection.Value;
+                    selectedMainCallerId = selectionWindow.SelectedCallerId;
+                    Log($"[MainWindow] PerformCall: User selected connection: {selectedConnectionType}");
+                }
+                else
+                {
+                    // Пользователь отменил выбор
+                    Log($"[MainWindow] PerformCall: User cancelled connection selection");
+                    return;
+                }
+            }
+            else if (isMainConnectionActive)
+            {
+                // Только основное подключение активно - используем его автоматически
+                selectedConnectionType = ConnectionSelectionWindow.ConnectionType.Main;
+                Log($"[MainWindow] PerformCall: Using main connection automatically (only main active)");
+                selectedMainCallerId = currentSelectedCallerId;
+            }
+            else if (isSecondaryConnectionActive)
+            {
+                // Только второе подключение активно - используем его автоматически
+                selectedConnectionType = ConnectionSelectionWindow.ConnectionType.Secondary;
+                Log($"[MainWindow] PerformCall: Using secondary connection automatically (only secondary active)");
+                selectedMainCallerId = null;
+            }
+            else
+            {
+                // Нет активных подключений
+                Log($"[MainWindow] PerformCall: No active connections");
+                CustomMessageBox.Show(
+                    "No active connections are available. Please check your connection settings and ensure at least one connection is connected.",
+                    "No Active Connection",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Warning,
+                    this);
+                return;
+            }
+            
+            // Используем выбранное подключение для звонка
+            await PerformCallWithConnection(number, leadId, selectedConnectionType.Value, selectedMainCallerId);
+        }
+        
+        private async System.Threading.Tasks.Task PerformCallWithConnection(string number, long? leadId, ConnectionSelectionWindow.ConnectionType connectionType, string? selectedOutboundCallerIdForOriginate = null)
+        {
+            // Определяем, какое подключение использовать
+            SipService? sipServiceToUse = null;
+            
+            // Проверяем, нужно ли использовать WebRTC (только для основного подключения)
+            bool useWebRtc = connectionType == ConnectionSelectionWindow.ConnectionType.Main && ShouldUseWebRtc();
             
             // Проверяем состояние WebRTC и SIP сервисов
             if (useWebRtc)
@@ -2304,11 +3151,38 @@ namespace Softphone
             }
             else
             {
-                // SIP режим - проверяем наличие SIP сервиса и подключение
-                if (_sipService == null || !IsConnected)
+                // SIP режим - определяем, какое подключение использовать
+                if (connectionType == ConnectionSelectionWindow.ConnectionType.Secondary)
                 {
-                    CustomMessageBox.Show("Please connect first.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    return;
+                    // Используем второе подключение
+                    if (_sipService2 == null || !IsSecondConnectionConnected())
+                    {
+                        CustomMessageBox.Show(
+                            "The second connection is not available. Please check your connection settings.",
+                            "Connection Not Available",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning,
+                            this);
+                        return;
+                    }
+                    sipServiceToUse = _sipService2;
+                    Log($"[Call] Using secondary connection (SIP) for call to {number}");
+                }
+                else
+                {
+                    // Используем основное подключение
+                    if (_sipService == null || !IsConnected)
+                    {
+                        CustomMessageBox.Show(
+                            "The main connection is not available. Please check your connection settings.",
+                            "Connection Not Available",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning,
+                            this);
+                        return;
+                    }
+                    sipServiceToUse = _sipService;
+                    Log($"[Call] Using main connection (SIP) for call to {number}");
                 }
             }
 
@@ -2317,7 +3191,7 @@ namespace Softphone
 
             try
             {
-                CallButton.IsEnabled = false;
+                SetCallButtonsEnabled(false);
 
                 Log($"[Call] Making call to {number} - Transport: {(useWebRtc ? "WebRTC" : "SIP")}");
                 
@@ -2355,8 +3229,68 @@ namespace Softphone
                     Owner = this
                         };
                         
-                        // Инициируем звонок через WebRTC сервис.
-                        // IMPORTANT: await here to surface "WebRTC not ready" and avoid ghost calls that never reach PBX.
+                        // Check if CallerID Originate should be used instead of direct WebRTC call
+                        bool useOriginate = _allowedCallerIds.Count > 0 && _mikoPbxCdrService != null;
+                        if (useOriginate)
+                        {
+                            string selectedCallerId =
+                                !string.IsNullOrWhiteSpace(selectedOutboundCallerIdForOriginate) &&
+                                _allowedCallerIds.Contains(selectedOutboundCallerIdForOriginate)
+                                    ? selectedOutboundCallerIdForOriginate
+                                    : (_allowedCallerIds.Count == 1
+                                        ? _allowedCallerIds[0]
+                                        : ((CallerIdComboBox.SelectedItem as CallerIdItem)?.Number ?? _allowedCallerIds[0]));
+
+                            Log($"[Call][Originate] Using PBX Originate: dst={number}, callerId={selectedCallerId}");
+
+                            try
+                            {
+                                var origResult = await _mikoPbxCdrService!.OriginateCallAsync(number, selectedCallerId);
+                                if (origResult.Success)
+                                {
+                                    _pendingOriginateId = origResult.OriginateId;
+                                    _pendingOriginateCallerId = selectedCallerId;
+                                    _pendingOriginateDestination = number;
+                                    _pendingOriginateCallWindow = callWindow;
+                                    callWindow.SetOutboundCallerId(selectedCallerId);
+                                    Log($"[Call][Originate] Success. Waiting for PBX callback, originateId={origResult.OriginateId}, callerId={selectedCallerId}");
+
+                                    // Save last selected CallerID
+                                    try
+                                    {
+                                        string settingsPath = System.IO.Path.Combine(
+                                            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                            "Callspire", "settings.json");
+                                        if (System.IO.File.Exists(settingsPath))
+                                        {
+                                            string json = System.IO.File.ReadAllText(settingsPath);
+                                            var sett = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                                            if (sett != null)
+                                            {
+                                                sett.SelectedOutboundCallerId = selectedCallerId;
+                                                System.IO.File.WriteAllText(settingsPath,
+                                                    Newtonsoft.Json.JsonConvert.SerializeObject(sett, Newtonsoft.Json.Formatting.Indented));
+                                            }
+                                        }
+                                    }
+                                    catch { }
+
+                                    // Don't call MakeCallAsync — PBX will ring our extension via INVITE
+                                    // CallWindow is already created, waiting for auto-answer in HandleIncomingWebRtcCall
+                                    goto afterCallWindowCreated;
+                                }
+                                else
+                                {
+                                    Log($"[Call][Originate] Failed: {origResult.Error}. Falling back to direct WebRTC call.");
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Log($"[Call][Originate] Exception: {ex.Message}. Falling back to direct WebRTC call.");
+                            }
+                        }
+
+                        // Direct WebRTC call (standard path or fallback from Originate failure)
                         try
                         {
                             await WebRtcService.Instance.MakeCallAsync(number);
@@ -2365,7 +3299,7 @@ namespace Softphone
                         {
                             Log($"[Call][WebRTC] ERROR: MakeCallAsync failed for {number}: {ex.Message}");
                             try { callWindow.Close(); } catch { }
-                            CallButton.IsEnabled = true;
+                            SetCallButtonsEnabled(true);
                             return;
                         }
                     }
@@ -2379,17 +3313,17 @@ namespace Softphone
                             MessageBoxButton.OK,
                             MessageBoxImage.Warning,
                             this);
-                        CallButton.IsEnabled = true;
+                        SetCallButtonsEnabled(true);
                         return;
                     }
                 }
                 else
                 {
                     Log($"[Call][SIP] Making outgoing call to {number}");
-                    if (_sipService == null)
+                    if (sipServiceToUse == null)
                     {
-                        Log($"[Call][SIP] ERROR: _sipService is null, cannot create CallWindow");
-                        CallButton.IsEnabled = true;
+                        Log($"[Call][SIP] ERROR: sipServiceToUse is null, cannot create CallWindow");
+                        SetCallButtonsEnabled(true);
                         return;
                     }
                     
@@ -2406,25 +3340,25 @@ namespace Softphone
                     LoadCallHistory();
                     currentCallHistoryItem = outgoingCallItem;
                     
-                    callWindow = new CallWindow(_sipService, number, isIncomingCall: false, callStartTime: callStartTime, amoCrmLeadId: leadId)
+                    callWindow = new CallWindow(sipServiceToUse, number, isIncomingCall: false, callStartTime: callStartTime, amoCrmLeadId: leadId)
                     {
                         Owner = this
                     };
                 }
                 
+                afterCallWindowCreated:
                 // Подписываемся на события обновления детальной информации о звонке для исходящих звонков
                 callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
                 {
-                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId);
+                    string? outboundCallerId = callWindow.GetOutboundCallerId();
+                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
                     
-                    // Обновляем UI истории после обновления деталей звонка (чтобы статус обновился в списке)
                     Dispatcher.Invoke(() => LoadCallHistory());
+
+                    if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
+                        TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
                     
-                    // КРИТИЧНО: Обрабатываем звонок в AmoCRM только один раз для каждого звонка
-                    // Используем дедупликацию по ключу (phoneNumber + callTime + sessionId) для предотвращения множественных записей
-                    // sessionId позволяет различать разные звонки, даже если они происходят в одну секунду
                     string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
-                    // Получаем leadId из контекста звонка, если он был передан из браузера
                     long? callLeadId = callWindow.GetAmoCrmLeadId();
                     Log($"[MainWindow] OnCallDetailsChanged: Retrieved leadId from CallWindow: {callLeadId?.ToString() ?? "null"}");
                     ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId, callLeadId);
@@ -2434,9 +3368,9 @@ namespace Softphone
                 DateTime? callConnectedTime = null;
                 
                 // Подписываемся на события статуса для отслеживания состояния звонка (только для SIP звонков)
-                if (_sipService != null && !useWebRtc)
+                if (sipServiceToUse != null && !useWebRtc)
                 {
-                    _sipService.OnStatusChanged += (status) =>
+                    sipServiceToUse.OnStatusChanged += (status) =>
                     {
                         // Устанавливаем callConnected только при реальном подключении, а не при начале звонка
                         if (status.Contains("Call connected") || status.Contains("Call answered") || 
@@ -2453,11 +3387,11 @@ namespace Softphone
                     };
                     
                     // Подписываемся на событие завершения звонка для обновления состояния кнопки
-                    _sipService.OnCallEnded += () =>
+                    sipServiceToUse.OnCallEnded += () =>
                     {
                         Dispatcher.Invoke(() =>
                         {
-                            CallButton.IsEnabled = true;
+                            SetCallButtonsEnabled(true);
 
                             // Обновляем историю звонка
                             if (currentCallHistoryItem != null)
@@ -2482,9 +3416,9 @@ namespace Softphone
                 callWindow.Closed += (s, e) =>
                 {
                     // Если окно закрылось, но звонок еще активен, завершаем его
-                    if (_sipService != null && _sipService.IsInCall)
+                    if (sipServiceToUse != null && sipServiceToUse.IsInCall)
                     {
-                        _sipService.Hangup();
+                        sipServiceToUse.Hangup();
                     }
                     
                     // Обновляем историю, если звонок был отменен (только если он не был принят)
@@ -2512,15 +3446,15 @@ namespace Softphone
                         LoadCallHistory();
                     }
                     
-                    CallButton.IsEnabled = true;
+                    SetCallButtonsEnabled(true);
                 };
                 
                 callWindow.Show();
 
                 // Инициируем звонок только для SIPSorcery (не для WebRTC)
-                if (!useWebRtc && _sipService != null)
+                if (!useWebRtc && sipServiceToUse != null)
                 {
-                    await _sipService.CallAsync(number);
+                    await sipServiceToUse.CallAsync(number);
                 }
             }
             catch (Exception ex)
@@ -2535,7 +3469,7 @@ namespace Softphone
                 }
                 
                 CustomMessageBox.Show($"Call error: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
-                CallButton.IsEnabled = true;
+                SetCallButtonsEnabled(true);
             }
         }
 
@@ -2750,6 +3684,7 @@ namespace Softphone
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
             _sipService?.Dispose();
+            _sipService2?.Dispose();
             Close();
         }
 
@@ -2781,9 +3716,11 @@ namespace Softphone
                     }
                 }
                 
-                // Останавливаем SIP сервис
+                // Останавливаем SIP сервисы
                 _sipService?.Dispose();
                 _sipService = null;
+                _sipService2?.Dispose();
+                _sipService2 = null;
                 
                 // Останавливаем watchdog timer WebRTC
                 WebRtcService.Instance.StopWatchdog();
@@ -2991,8 +3928,18 @@ namespace Softphone
                     WebRtcIndicator.Visibility = useWebRtc ? Visibility.Visible : Visibility.Collapsed;
                     if (useWebRtc)
                     {
-                        // Зеленый индикатор если WebRTC активен
-                        WebRtcIndicator.Background = new SolidColorBrush(Color.FromRgb(76, 175, 80));
+                        // Цвет индикатора зависит от состояния подключения
+                        bool isConnected = WebRtcService.Instance?.IsReadyForCalls ?? false;
+                        if (isConnected)
+                        {
+                            // Зеленый — подключено
+                            WebRtcIndicator.Background = new SolidColorBrush(Color.FromRgb(76, 175, 80));
+                        }
+                        else
+                        {
+                            // Серый — не подключено / подключается
+                            WebRtcIndicator.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
+                        }
                     }
                 }
             }
@@ -3002,9 +3949,6 @@ namespace Softphone
             }
         }
 
-        // Сохраняем предыдущий статус для предотвращения избыточного логирования
-        private string? _lastConnectionStatus = null;
-        
         // Throttling для UpdateConnectionStatus - предотвращает слишком частые вызовы
         private DateTime _lastStatusUpdateTime = DateTime.MinValue;
         private const int STATUS_UPDATE_THROTTLE_MS = 500; // Минимум 500мс между обновлениями
@@ -3016,7 +3960,7 @@ namespace Softphone
         {
             get
             {
-                return StatusTextBlock?.Text ?? "Not connected";
+                return MainStatusTextBlock?.Text ?? "Not connected";
             }
         }
         
@@ -3028,9 +3972,35 @@ namespace Softphone
         {
             try
             {
+                // Обновляем статус основного подключения
+                UpdateMainConnectionStatus();
+                
+                // Обновляем статус второго подключения
+                UpdateSecondaryConnectionStatus();
+                
+                // Обновляем статус интеграции AmoCRM
+                UpdateAmoCrmConnectionStatus();
+                
+                // Обновляем кнопки вызова (single vs split)
+                UpdateCallButtonMode();
+            }
+            catch (Exception ex)
+            {
+                // Обрабатываем ошибки без блокировки UI
+                Log($"[MainWindow] Error in UpdateConnectionStatus: {ex.Message}");
+            }
+        }
+        
+        private void UpdateMainConnectionStatus()
+        {
+            try
+            {
+                if (MainStatusTextBlock == null || MainStatusIndicator == null) return;
+                
                 bool useWebRtc = ShouldUseWebRtc();
                 bool isConnected = IsConnected;
                 string newStatus = "";
+                Brush statusColor;
                 
                 if (useWebRtc)
                 {
@@ -3039,25 +4009,24 @@ namespace Softphone
                     {
                         _webRtcDisconnectedSince = DateTime.MinValue;
                         newStatus = "Connected with WebRTC";
+                        statusColor = (Brush)FindResource("AccentGreenBrush");
                     }
                     else
                     {
                         // WebRTC не подключен
-                        // Проверяем, не идет ли инициализация (чтобы не перезаписать статус "Initializing..." или "Connecting...")
-                        string currentStatus = StatusTextBlock?.Text ?? "";
+                        string currentStatus = MainStatusTextBlock.Text ?? "";
                         
                         if (!currentStatus.Contains("Initializing") && 
                             !currentStatus.Contains("Connecting") && 
-                            !currentStatus.Contains("Connected to WebRTC"))
+                            !currentStatus.Contains("Connected"))
                         {
-                            // If we were connected recently, show a stable "Reconnecting..." state instead of flickering.
                             if (_lastIsConnected)
                             {
                                 if (_webRtcDisconnectedSince == DateTime.MinValue)
                                     _webRtcDisconnectedSince = DateTime.Now;
 
                                 if ((DateTime.Now - _webRtcDisconnectedSince).TotalSeconds < 6)
-                                    newStatus = "Reconnecting to WebRTC...";
+                                    newStatus = "Reconnecting...";
                                 else
                                     newStatus = "Not connected";
                             }
@@ -3068,8 +4037,9 @@ namespace Softphone
                         }
                         else
                         {
-                            newStatus = currentStatus; // Сохраняем текущий статус инициализации
+                            newStatus = currentStatus;
                         }
+                        statusColor = (Brush)FindResource("TextSecondaryBrush");
                     }
                 }
                 else
@@ -3077,50 +4047,130 @@ namespace Softphone
                     // SIP режим
                     if (isConnected)
                     {
-                        newStatus = "Connected with SIP";
+                        newStatus = "Connected";
+                        statusColor = (Brush)FindResource("AccentGreenBrush");
                     }
                     else
                     {
                         newStatus = "Not connected";
+                        statusColor = (Brush)FindResource("TextSecondaryBrush");
                     }
                 }
                 
-                // Throttling: skip only if we would not change anything and the call is too frequent.
-                var now = DateTime.Now;
-                if (_lastConnectionStatus == newStatus &&
-                    (now - _lastStatusUpdateTime).TotalMilliseconds < STATUS_UPDATE_THROTTLE_MS)
-                {
-                    return;
-                }
-                _lastStatusUpdateTime = now;
-
                 // Обновляем UI только если статус изменился
-                if (_lastConnectionStatus != newStatus && StatusTextBlock != null)
+                if (MainStatusTextBlock.Text != newStatus)
                 {
-                    StatusTextBlock.Text = newStatus;
-                    UpdateStatusColor(isConnected);
-                    
-                    // Обновляем кнопку вызова
-                    if (CallButton != null)
-                    {
-                        CallButton.IsEnabled = isConnected;
-                    }
-                    
-                    // Обновляем флаг последнего состояния подключения
+                    MainStatusTextBlock.Text = newStatus;
+                    MainStatusIndicator.Background = statusColor;
                     _lastIsConnected = isConnected;
                     
-                    // Логируем только при изменении статуса
-                    Log($"[MainWindow] UpdateConnectionStatus: Status changed to '{newStatus}' (useWebRtc={useWebRtc}, isConnected={isConnected})");
-                    _lastConnectionStatus = newStatus;
-                    
                     // Уведомляем SettingsWindow об изменении статуса для синхронизации
-                    OnConnectionStatusChanged?.Invoke(newStatus);
+                    string fullStatus = useWebRtc ? newStatus : $"Connected with SIP";
+                    OnConnectionStatusChanged?.Invoke(fullStatus);
                 }
             }
             catch (Exception ex)
             {
-                // Обрабатываем ошибки без блокировки UI
-                Log($"[MainWindow] Error in UpdateConnectionStatus: {ex.Message}");
+                Log($"[MainWindow] Error in UpdateMainConnectionStatus: {ex.Message}");
+            }
+        }
+        
+        private void UpdateSecondaryConnectionStatus()
+        {
+            try
+            {
+                if (SecondaryStatusPanel == null || SecondaryStatusTextBlock == null || SecondaryStatusIndicator == null) return;
+                
+                // Проверяем, настроено ли второе подключение
+                AppSettings? settings = null;
+                try
+                {
+                    string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                    if (File.Exists(settingsFilePath))
+                    {
+                        string json = File.ReadAllText(settingsFilePath);
+                        settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    }
+                }
+                catch { }
+                
+                bool hasSecondaryConfig = settings != null && 
+                                        !string.IsNullOrEmpty(settings.SipServer2) && 
+                                        !string.IsNullOrEmpty(settings.SipUsername2) && 
+                                        !string.IsNullOrEmpty(settings.SipPasswordEncrypted2);
+                
+                if (!hasSecondaryConfig)
+                {
+                    SecondaryStatusPanel.Visibility = Visibility.Collapsed;
+                    return;
+                }
+                
+                SecondaryStatusPanel.Visibility = Visibility.Visible;
+                
+                bool isConnected = _sipService2?.IsRegistered ?? false;
+                string newStatus = isConnected ? "Connected" : "Not connected";
+                Brush statusColor = isConnected 
+                    ? (Brush)FindResource("AccentGreenBrush")
+                    : (Brush)FindResource("TextSecondaryBrush");
+                
+                if (SecondaryStatusTextBlock.Text != newStatus)
+                {
+                    SecondaryStatusTextBlock.Text = newStatus;
+                    SecondaryStatusIndicator.Background = statusColor;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Error in UpdateSecondaryConnectionStatus: {ex.Message}");
+            }
+        }
+        
+        private void UpdateAmoCrmConnectionStatus()
+        {
+            try
+            {
+                if (AmoCrmStatusPanel == null || AmoCrmStatusTextBlock == null || AmoCrmStatusIndicator == null) return;
+                
+                // Проверяем, включена ли интеграция AmoCRM
+                AppSettings? settings = null;
+                try
+                {
+                    string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                    if (File.Exists(settingsFilePath))
+                    {
+                        string json = File.ReadAllText(settingsFilePath);
+                        settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                    }
+                }
+                catch { }
+                
+                bool isEnabled = settings != null && 
+                               settings.EnableAmoCrmIntegration && 
+                               !string.IsNullOrEmpty(settings.AmoCrmSubdomain);
+                
+                if (!isEnabled)
+                {
+                    AmoCrmStatusPanel.Visibility = Visibility.Collapsed;
+                    return;
+                }
+                
+                AmoCrmStatusPanel.Visibility = Visibility.Visible;
+                
+                bool isConnected = IsAmoCrmServiceInitialized();
+                string newStatus = isConnected ? "Connected" : "Not connected";
+                Brush statusColor = isConnected 
+                    ? (Brush)FindResource("AccentGreenBrush")
+                    : (Brush)FindResource("TextSecondaryBrush");
+                
+                if (AmoCrmStatusTextBlock.Text != newStatus)
+                {
+                    AmoCrmStatusTextBlock.Text = newStatus;
+                    AmoCrmStatusIndicator.Background = statusColor;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Error in UpdateAmoCrmConnectionStatus: {ex.Message}");
             }
         }
         
@@ -3315,7 +4365,10 @@ namespace Softphone
                             WsUri = settings.WebRtcWsUri,
                             SipUri = sipUri,
                             Password = sipPassword,
-                            EnableDebug = settings.EnableWebRtcDebug
+                            EnableDebug = settings.EnableWebRtcDebug,
+                            TurnServer = settings.WebRtcTurnUri,
+                            TurnUsername = settings.WebRtcTurnUsername,
+                            TurnPassword = settings.WebRtcTurnPassword
                         };
                         Log($"[MainWindow] GetWebRtcConfig: Created config - WsUri={config.WsUri}, SipUri={config.SipUri}");
                         return config;
@@ -3608,6 +4661,9 @@ namespace Softphone
                                 {
                                     Log("[MainWindow] SettingsWindow not found, status will be updated when window opens");
                                 }
+                                
+                                // Обновляем статусы в главном окне
+                                UpdateConnectionStatus();
                             });
                         }
                         else
@@ -3747,6 +4803,8 @@ namespace Softphone
                 _amoCrmService.Dispose();
                 _amoCrmService = null;
                 Log("[MainWindow] AmoCRM service disconnected");
+                // Обновляем статусы в главном окне
+                UpdateConnectionStatus();
             }
         }
 
@@ -3878,6 +4936,8 @@ namespace Softphone
                     {
                         wasAnswered = true; // Если есть AnswerTime, значит был connect
                     }
+                    // Логируем для диагностики
+                    Log($"[MainWindow] AmoCrmWorkerAsync: call?.WasAnswered={call?.WasAnswered}, call?.AnswerTime.HasValue={call?.AnswerTime.HasValue}, final wasAnswered={wasAnswered}, duration={durationSeconds}s");
                     var endedBy = call?.EndedBy ?? CallEndedBy.Unknown;
                     var ringbackStart = call?.RingbackStartTime;
                     var ringbackEnd = call?.RingbackEndTime;
@@ -3938,6 +4998,35 @@ namespace Softphone
                         }
                         if (!File.Exists(job.RecordingFilePath))
                             Log($"[MainWindow] AmoCRM queue: file still not found after {waitSeconds}s, sending without recording");
+                    }
+                    
+                    // КРИТИЧНО: Перечитываем историю после ожидания файла, чтобы получить актуальные данные
+                    // (WasAnswered и AnswerTime могут быть обновлены после первого чтения)
+                    callHistory = _callHistoryService.GetHistory();
+                    call = callHistory
+                        .Where(x => x.PhoneNumber == job.PhoneNumber && Math.Abs((x.CallTime - job.CallTime).TotalSeconds) < 1)
+                        .OrderByDescending(x => x.CallTime)
+                        .FirstOrDefault();
+                    if (call == null)
+                    {
+                        call = callHistory
+                            .Where(x => x.PhoneNumber == job.PhoneNumber)
+                            .OrderByDescending(x => x.CallTime)
+                            .FirstOrDefault();
+                    }
+                    
+                    // Обновляем данные из актуальной истории
+                    if (call != null)
+                    {
+                        isIncoming = call.IsIncoming;
+                        durationSeconds = call.Duration?.TotalSeconds != null ? (int)call.Duration.Value.TotalSeconds : 0;
+                        wasAnswered = call.WasAnswered;
+                        if (call.AnswerTime.HasValue)
+                        {
+                            wasAnswered = true; // Если есть AnswerTime, значит был connect
+                        }
+                        endedBy = call.EndedBy;
+                        Log($"[MainWindow] AmoCrmWorkerAsync: After re-reading history - call?.WasAnswered={call.WasAnswered}, call?.AnswerTime.HasValue={call.AnswerTime.HasValue}, final wasAnswered={wasAnswered}, duration={durationSeconds}s");
                     }
 
                     bool enableLeadSelection = false;
@@ -4052,44 +5141,6 @@ namespace Softphone
                         _processedCalls.TryRemove(job.DedupKey, out _);
                     }
                 }
-                catch (UnauthorizedAccessException ex)
-                {
-                    // КРИТИЧНО: Токен истек или недействителен во время обработки звонка
-                    Log($"[MainWindow] AmoCRM: UnauthorizedAccessException during call processing: {ex.Message}");
-                    
-                    // Отключаем сервис, так как токен недействителен
-                    DisconnectAmoCrmService();
-                    
-                    // Определяем режим авторизации для правильного сообщения
-                    string authMode = "oauth";
-                    try
-                    {
-                        string settingsPath = AppDataHelper.GetSettingsFilePath();
-                        if (File.Exists(settingsPath))
-                        {
-                            string json = File.ReadAllText(settingsPath);
-                            var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                            authMode = settings?.AmoCrmAuthMode ?? "oauth";
-                        }
-                    }
-                    catch
-                    {
-                        // Используем значение по умолчанию
-                    }
-                    
-                    // Показываем предупреждение пользователю в UI потоке
-                    Dispatcher.Invoke(() =>
-                    {
-                        string errorMessage = authMode == "oauth"
-                            ? "Token is invalid or expired. Please re-authorize the application."
-                            : "Token is invalid or expired. Please check your access token in settings.";
-                        
-                        ShowKommoIntegrationWarning(authMode, errorMessage);
-                    });
-                    
-                    // Удаляем из словаря даже при ошибке, чтобы не блокировать повторную попытку через длительное время
-                    _processedCalls.TryRemove(job.DedupKey, out _);
-                }
                 catch (Exception ex)
                 {
                     Log($"[MainWindow] AmoCRM: Error processing call: {ex.Message}");
@@ -4106,8 +5157,196 @@ namespace Softphone
             public List<string>? TechnicalDetails { get; set; }
             public string? RecordingFilePath { get; set; }
             public string DedupKey { get; set; } = "";
-            public string? SessionId { get; set; } // WebRtcSessionId или SipCallId для различения разных звонков
-            public long? AmoCrmLeadId { get; set; } // ID лида из браузера AmoCRM, если звонок инициирован из браузера
+            public string? SessionId { get; set; }
+            public long? AmoCrmLeadId { get; set; }
+        }
+
+        // ===== MikoPBX CDR Integration =====
+
+        public void HandleCdrAuthToken(string token)
+        {
+            Log($"[MikoPBX CDR] Auth token received (length={token.Length})");
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                if (System.IO.File.Exists(settingsPath))
+                {
+                    string json = System.IO.File.ReadAllText(settingsPath);
+                    settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                }
+                settings ??= new AppSettings();
+
+                settings.MikoPbxCdrTokenEncrypted = TokenEncryption.Encrypt(token);
+
+                string updatedJson = Newtonsoft.Json.JsonConvert.SerializeObject(settings, Newtonsoft.Json.Formatting.Indented);
+                System.IO.File.WriteAllText(settingsPath, updatedJson);
+
+                InitializeMikoPbxCdrService(settings);
+
+                Dispatcher.Invoke(() =>
+                {
+                    var settingsWindow = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault();
+                    settingsWindow?.UpdateMikoPbxCdrStatus("Connected", true);
+                });
+
+                Log("[MikoPBX CDR] Token saved and service initialized");
+            }
+            catch (Exception ex)
+            {
+                Log($"[MikoPBX CDR] Error saving token: {ex.Message}");
+            }
+        }
+
+        public void InitializeMikoPbxCdrService(AppSettings settings)
+        {
+            if (!settings.EnableMikoPbxCdr
+                || string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl)
+                || string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted)
+                || string.IsNullOrEmpty(settings.MikoPbxExtension))
+            {
+                return;
+            }
+
+            try
+            {
+                string token = TokenEncryption.Decrypt(settings.MikoPbxCdrTokenEncrypted);
+                if (string.IsNullOrEmpty(token))
+                {
+                    Log("[MikoPBX CDR] Failed to decrypt token");
+                    return;
+                }
+
+                _mikoPbxCdrService = new MikoPbxCdrService(
+                    settings.MikoPbxCdrServiceUrl,
+                    token,
+                    settings.MikoPbxExtension);
+
+                Log($"[MikoPBX CDR] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
+
+                _ = LoadCallerIdsAsync(settings);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MikoPBX CDR] Init error: {ex.Message}");
+            }
+        }
+
+        public void DisableMikoPbxCdrService()
+        {
+            _mikoPbxCdrService?.Dispose();
+            _mikoPbxCdrService = null;
+            Log("[MikoPBX CDR] Service disabled");
+        }
+
+        public MikoPbxCdrService? GetMikoPbxCdrService() => _mikoPbxCdrService;
+
+        /// <summary>
+        /// Fetches the CallerID list from the proxy and populates the CallerIdComboBox.
+        /// </summary>
+        private async Task LoadCallerIdsAsync(AppSettings settings)
+        {
+            try
+            {
+                if (_mikoPbxCdrService == null) return;
+
+                _callerIdItems = await _mikoPbxCdrService.GetMyCallerIdItemsAsync();
+                _allowedCallerIds = _callerIdItems.Select(i => i.Number).ToList();
+
+                // Cache for offline
+                settings.CachedOutboundCallerIds = _allowedCallerIds.Count > 0 ? _allowedCallerIds : null;
+
+                Dispatcher.Invoke(() =>
+                {
+                    CallerIdComboBox.Items.Clear();
+                    CallerIdComboBox.DisplayMemberPath = "";
+
+                    if (_allowedCallerIds.Count >= 2)
+                    {
+                        foreach (var item in _callerIdItems)
+                            CallerIdComboBox.Items.Add(item);
+
+                        // Restore last selection or pick first
+                        var restored = _callerIdItems.FirstOrDefault(i => i.Number == settings.SelectedOutboundCallerId);
+                        if (restored != null)
+                            CallerIdComboBox.SelectedItem = restored;
+                        else
+                            CallerIdComboBox.SelectedIndex = 0;
+
+                        CallerIdPanel.Visibility = Visibility.Visible;
+                        Log($"[CallerID] Showing dropdown with {_allowedCallerIds.Count} CallerIDs");
+                    }
+                    else
+                    {
+                        CallerIdPanel.Visibility = Visibility.Collapsed;
+                        if (_allowedCallerIds.Count == 1)
+                            Log($"[CallerID] Single CallerID assigned: {_allowedCallerIds[0]} (auto-selected, no dropdown)");
+                        else
+                            Log("[CallerID] No CallerIDs assigned, using standard WebRTC calling");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Log($"[CallerID] LoadCallerIdsAsync error: {ex.Message}");
+
+                // Fall back to cached CallerIDs
+                if (settings.CachedOutboundCallerIds?.Count > 0)
+                {
+                    _allowedCallerIds = settings.CachedOutboundCallerIds;
+                    _callerIdItems = _allowedCallerIds.Select(n => new CallerIdItem(n, "")).ToList();
+                    Log($"[CallerID] Using {_allowedCallerIds.Count} cached CallerID(s)");
+                    Dispatcher.Invoke(() =>
+                    {
+                        CallerIdComboBox.Items.Clear();
+                        if (_callerIdItems.Count >= 2)
+                        {
+                            foreach (var item in _callerIdItems)
+                                CallerIdComboBox.Items.Add(item);
+                            CallerIdComboBox.SelectedIndex = 0;
+                            CallerIdPanel.Visibility = Visibility.Visible;
+                        }
+                    });
+                }
+            }
+        }
+
+        /// <summary>
+        /// Fire-and-forget: queries MikoPBX CDR for the outbound CallerID and updates the history entry.
+        /// </summary>
+        private void TryFetchOutboundCallerIdFromCdr(string phoneNumber, DateTime callTime)
+        {
+            if (_mikoPbxCdrService == null) return;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    string? callerId = null;
+                    for (int attempt = 1; attempt <= 4; attempt++)
+                    {
+                        int delayMs = attempt == 1 ? 3000 : attempt == 2 ? 5000 : attempt == 3 ? 10000 : 15000;
+                        await Task.Delay(delayMs);
+
+                        callerId = await _mikoPbxCdrService.GetCallCallerIdAsync(phoneNumber, callTime);
+                        if (!string.IsNullOrEmpty(callerId))
+                        {
+                            Log($"[MikoPBX CDR] Got CallerID from CDR: {callerId} for call to {phoneNumber} (attempt {attempt})");
+                            _callHistoryService.UpdateOutboundCallerId(phoneNumber, callTime, callerId);
+                            Dispatcher.Invoke(() => LoadCallHistory());
+                            return;
+                        }
+
+                        Log($"[MikoPBX CDR] Attempt {attempt}/4: no CDR yet for call to {phoneNumber}, retrying...");
+                    }
+
+                    Log($"[MikoPBX CDR] No CallerID found in CDR for call to {phoneNumber} after 4 attempts");
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MikoPBX CDR] CDR lookup failed: {ex.Message}");
+                }
+            });
         }
     }
 }

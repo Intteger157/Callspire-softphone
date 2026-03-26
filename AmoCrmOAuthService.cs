@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
 using System.Net;
@@ -140,17 +141,18 @@ namespace Softphone
 
                 using (var httpClient = new HttpClient())
                 {
-                    var requestData = new
+                    // Kommo/Amo ожидет параметры в формате application/x-www-form-urlencoded
+                    // (иначе параметры могут не распознаться корректно).
+                    var requestData = new Dictionary<string, string>
                     {
-                        client_id = clientId,
-                        client_secret = clientSecret,
-                        grant_type = "authorization_code",
-                        code = authorizationCode,
-                        redirect_uri = redirectUri
+                        { "client_id", clientId },
+                        { "client_secret", clientSecret },
+                        { "grant_type", "authorization_code" },
+                        { "code", authorizationCode },
+                        { "redirect_uri", redirectUri }
                     };
 
-                    string jsonContent = JsonConvert.SerializeObject(requestData);
-                    var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+                    var content = new FormUrlEncodedContent(requestData);
 
                     var response = await httpClient.PostAsync(tokenUrl, content).ConfigureAwait(false);
                     string responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
@@ -200,16 +202,15 @@ namespace Softphone
 
                 using (var httpClient = new HttpClient())
                 {
-                    var requestData = new
+                    var requestData = new Dictionary<string, string>
                     {
-                        client_id = clientId,
-                        client_secret = clientSecret,
-                        grant_type = "refresh_token",
-                        refresh_token = refreshToken
+                        { "client_id", clientId },
+                        { "client_secret", clientSecret },
+                        { "grant_type", "refresh_token" },
+                        { "refresh_token", refreshToken }
                     };
 
-                    string jsonContent = JsonConvert.SerializeObject(requestData);
-                    var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+                    var content = new FormUrlEncodedContent(requestData);
 
                     var response = await httpClient.PostAsync(tokenUrl, content).ConfigureAwait(false);
                     string responseContent = await response.Content.ReadAsStringAsync().ConfigureAwait(false);

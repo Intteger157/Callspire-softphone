@@ -66,7 +66,10 @@ namespace Softphone
         
         // Call context with transport information
         private CallContext _callContext = null!; // Инициализируется в конструкторах
-        
+
+        // Outbound CallerID from P-Asserted-Identity (the number PBX/carrier presents to the remote party)
+        private string? _outboundCallerId;
+
         // AmoCRM lead ID found during call (for optimization - search happens in parallel with conversation)
         private long? _foundAmoCrmLeadId = null;
         private bool _isSearchingAmoCrmLead = false; // Флаг для предотвращения повторного поиска
@@ -123,6 +126,7 @@ namespace Softphone
             {
                 _sipService.OnStatusChanged += UpdateCallStatus;
                 _sipService.OnCallEnded += OnCallEnded;
+                _sipService.OnOutboundCallerIdReceived += OnOutboundCallerIdReceived;
             }
 
             // НЕ запускаем таймер сразу - он запустится только когда звонок будет принят
@@ -320,6 +324,14 @@ namespace Softphone
         
         private bool _isClosing = false;
         
+        /// <summary>
+        /// Проверяет, закрывается ли окно
+        /// </summary>
+        public bool IsClosing()
+        {
+            return _isClosing;
+        }
+        
         private void OnCallEnded()
         {
             // КРИТИЧНО: OnCallEnded теперь используется только для SIP звонков
@@ -357,18 +369,22 @@ namespace Softphone
                 }
                 
                 // Вычисляем длительность звонка
+                // Для SIP звонков запись начинается после 200 OK (когда устанавливается _answerTime)
+                // Поэтому используем _answerTime для вычисления Duration, если он установлен
                 TimeSpan? duration = null;
                 if (_wasAnswered)
                 {
-                    var startTime = _isIncomingCall ? (_answerTime ?? _incomingCallStartTime) : _callStartTime;
+                    // Для входящих используем _answerTime, для исходящих тоже используем _answerTime (время начала записи)
+                    var startTime = _answerTime ?? (_isIncomingCall ? _incomingCallStartTime : _callStartTime);
                     if (startTime != default)
                     {
                         duration = DateTime.Now - startTime;
                     }
                 }
                 
-                // Отправляем детальную информацию перед завершением (с длительностью)
-                SendCallDetails();
+                // Обновляем статус перед закрытием
+                CallStatusTextBlock.Text = "Call ended";
+                CallTimerTextBlock.Text = "";
                 
                 // Уведомляем MainWindow о завершении входящего звонка
                 if (_wasAnswered)
@@ -381,23 +397,30 @@ namespace Softphone
                     OnIncomingCallStatusChanged?.Invoke(_phoneNumber, _incomingCallStartTime, CallStatus.Cancelled, null);
                 }
                 
-                // Обновляем статус перед закрытием
-                CallStatusTextBlock.Text = "Call ended";
-                CallTimerTextBlock.Text = "";
+                // Отправляем детальную информацию перед завершением (с длительностью)
+                SendCallDetails();
                 
-                // КРИТИЧНО: Закрываем окно немедленно
+                // КРИТИЧНО: Закрываем окно немедленно после обновления UI
                 MainWindow.Log($"{GetTransportLogPrefix()} OnCallEnded: Closing window immediately");
-                try
+                
+                // Закрываем окно с небольшой задержкой, чтобы UI успел обновиться
+                _ = Task.Delay(300).ContinueWith(_ =>
                 {
-                    if (IsLoaded)
+                    Dispatcher.Invoke(() =>
                     {
-                        Close();
-                    }
-                }
-                catch (Exception closeEx)
-                {
-                    MainWindow.Log($"{GetTransportLogPrefix()} OnCallEnded: Error closing window: {closeEx.Message}");
-                }
+                        try
+                        {
+                            if (IsLoaded)
+                            {
+                                Close();
+                            }
+                        }
+                        catch (Exception closeEx)
+                        {
+                            MainWindow.Log($"{GetTransportLogPrefix()} OnCallEnded: Error closing window: {closeEx.Message}");
+                        }
+                    });
+                });
             });
         }
         
@@ -487,6 +510,12 @@ namespace Softphone
         private void StopRingbackUiTimer()
         {
             try { _ringbackUiTimer?.Stop(); } catch { }
+        }
+
+        private void OnOutboundCallerIdReceived(string callerId)
+        {
+            _outboundCallerId = callerId;
+            MainWindow.Log($"{GetTransportLogPrefix()} Outbound CallerID received: {callerId}");
         }
 
         private void UpdateCallStatus(string status)
@@ -622,6 +651,13 @@ namespace Softphone
                     // Удаленная сторона завершила звонок
                     _endedBy = CallEndedBy.RemoteParty;
                 }
+                else if (status.Contains("486") || status.Contains("Busy Here") || 
+                         (status.Contains("Call failed") && (status.Contains("486") || status.Contains("Busy"))))
+                {
+                    // Удаленная сторона отклонила звонок (486 Busy Here)
+                    _endedBy = CallEndedBy.RemoteParty;
+                    MainWindow.Log($"{GetTransportLogPrefix()} UpdateCallStatus: Remote party rejected call (486 Busy Here), setting EndedBy=RemoteParty");
+                }
                 else if (status.Contains("Call ended") || status.Contains("Hanging up") || status.Contains("Call failed"))
                 {
                     // SIP call recording removed (WebRTC-only)
@@ -644,15 +680,17 @@ namespace Softphone
                         }
                         
                         // Вычисляем длительность звонка
-                        // Для входящих звонков используем _answerTime (время ответа), для исходящих - _callStartTime (время подключения)
+                        // Для SIP звонков запись начинается после 200 OK (когда устанавливается _answerTime)
+                        // Поэтому используем _answerTime для вычисления Duration, если он установлен
                         TimeSpan? duration = null;
                         if (_wasAnswered)
                         {
-                            var startTime = _isIncomingCall ? (_answerTime ?? _incomingCallStartTime) : _callStartTime;
+                            // Для входящих и исходящих используем _answerTime (время начала записи), если он установлен
+                            var startTime = _answerTime ?? (_isIncomingCall ? _incomingCallStartTime : _callStartTime);
                             if (startTime != default)
-                        {
+                            {
                                 duration = DateTime.Now - startTime;
-                        }
+                            }
                         }
                         
                         // Отправляем детальную информацию перед завершением
@@ -1505,6 +1543,7 @@ namespace Softphone
                 
                 _sipService.OnStatusChanged -= UpdateCallStatus;
                 _sipService.OnCallEnded -= OnCallEnded;
+                _sipService.OnOutboundCallerIdReceived -= OnOutboundCallerIdReceived;
                 
                 // Записываем время окончания гудков, если еще не записано
                 CallWindowHelpers.UpdateRingbackEndTime(_ringbackStartTime, ref _ringbackEndTime);
@@ -1535,6 +1574,21 @@ namespace Softphone
                 }
             }
             
+            // WebRTC: если окно закрыли без call_ended (крестик, сбой), история не получала SendCallDetails — досылаем.
+            if (_useWebRtc)
+            {
+                if (_endedBy == CallEndedBy.Unknown)
+                    _endedBy = CallEndedBy.LocalUser;
+                try
+                {
+                    SendCallDetails();
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[CallWindow] OnClosed: SendCallDetails error (WebRTC): {ex.Message}");
+                }
+            }
+
             // КРИТИЧНО: Для WebRTC также вызываем Hangup при закрытии с правильным sessionId
             if (_useWebRtc && !_isClosing)
             {
@@ -1565,8 +1619,16 @@ namespace Softphone
             var callTime = _isIncomingCall ? _incomingCallStartTime : _originalCallStartTime;
             
             // Вычисляем длительность звонка
+            // Для SIP звонков запись начинается после 200 OK (когда устанавливается _answerTime)
+            // Поэтому используем _answerTime для вычисления Duration, если он установлен
+            // Для WebRTC звонков запись начинается при makeCall_started (до call_accepted),
+            // поэтому используем _originalCallStartTime (время начала звонка), а не _answerTime
+            // Определяем, какой транспорт используется: если _useWebRtc=true, то это WebRTC
+            var startTimeForDuration = _useWebRtc 
+                ? (_isIncomingCall ? _incomingCallStartTime : _originalCallStartTime)  // WebRTC: используем время начала звонка
+                : (_isIncomingCall ? _incomingCallStartTime : _callStartTime);          // SIP: используем _callStartTime
             TimeSpan? duration = CallWindowHelpers.CalculateCallDuration(
-                _isIncomingCall ? _incomingCallStartTime : _callStartTime,
+                startTimeForDuration,
                 _answerTime,
                 _wasAnswered,
                 _isIncomingCall);
@@ -1593,7 +1655,7 @@ namespace Softphone
             // Получаем путь к записи
             string? recordingFilePath = CallWindowHelpers.GetRecordingFilePath(
                 null,
-                null,
+                _sipService?.CurrentRecordingFilePath, // Путь к файлу записи SIP звонка
                 _webRtcRecorder?.RecordingFilePath,
                 _webRtcRecordingFilePath);
             
@@ -1655,12 +1717,33 @@ namespace Softphone
         /// Возвращает ID лида AmoCRM: сначала из браузера (если звонок инициирован из AmoCRM),
         /// затем найденный во время звонка (если был выполнен поиск)
         /// </summary>
+        /// <summary>
+        /// Returns the outbound CallerID (P-Asserted-Identity) if PBX sent one.
+        /// </summary>
+        public string? GetOutboundCallerId() => _outboundCallerId;
+
         public long? GetAmoCrmLeadId()
         {
             // Приоритет: сначала лид из браузера, затем найденный во время звонка
             long? leadId = _callContext.AmoCrmLeadId ?? _foundAmoCrmLeadId;
             MainWindow.Log($"[CallWindow] GetAmoCrmLeadId: returning {leadId?.ToString() ?? "null"} (browser={_callContext.AmoCrmLeadId?.ToString() ?? "null"}, found={_foundAmoCrmLeadId?.ToString() ?? "null"})");
             return leadId;
+        }
+
+        /// <summary>
+        /// Associates this CallWindow with the WebRTC session created by the PBX Originate callback.
+        /// Called when the PBX rings our extension as part of an Originate flow and the softphone auto-answers.
+        /// </summary>
+        public void SetOriginateWebRtcSessionId(string sessionId)
+        {
+            MainWindow.Log($"[CallWindow][Originate] Associating session {sessionId} with outgoing call to {_phoneNumber}");
+            _callContext.WebRtcSessionId = sessionId;
+        }
+
+        public void SetOutboundCallerId(string callerId)
+        {
+            _outboundCallerId = callerId;
+            MainWindow.Log($"{GetTransportLogPrefix()} Outbound CallerID set (originate): {callerId}");
         }
         
         /// <summary>
@@ -1785,8 +1868,9 @@ namespace Softphone
                 LoadContactNameFromAmoCrm(phoneNumber);
                 
                 // КРИТИЧНО: Устанавливаем таймаут для статуса "Connecting..."
-                // Если через 10 секунд нет события makeCall_started или call_progress, показываем ошибку
-                _ = Task.Delay(10000).ContinueWith(_ =>
+                // В некоторых сетях (VPN/proxy/NAT) ICE/DTLS/SDP может устанавливаться дольше 10 секунд,
+                // поэтому увеличиваем окно.
+                _ = Task.Delay(25000).ContinueWith(_ =>
                 {
                     Dispatcher.Invoke(() =>
                     {
@@ -1898,7 +1982,14 @@ namespace Softphone
                             MainWindow.Log($"{logPrefix} Making call...");
                             CallStatusTextBlock.Text = "Calling...";
                             CallStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
-                            
+
+                            // РАНЬШЕ: здесь запускали StartWebRtcRecording(), чтобы писать гудки с самого начала.
+                            // Но на этом этапе еще нет активной WebRTC-сессии (session/PeerConnection),
+                            // поэтому JS выдавал RecordingError "Cannot start recording: no active session"
+                            // и запись вообще не создавалась.
+                            // Теперь запись надёжно запускается на событиях call_accepted / audio_connected
+                            // (когда sessionId уже установлен и медиа-сессия активна).
+
                             // КРИТИЧНО: Устанавливаем таймаут для статуса "Calling..."
                             // Если через 30 секунд нет события call_progress или call_accepted, считаем звонок неудачным
                             _ = Task.Delay(30000).ContinueWith(_ =>
@@ -3274,6 +3365,11 @@ namespace Softphone
         /// Используется для управления объемом логов без пересборки.
         /// </summary>
         public bool EnableDebug { get; set; } = true;
+        
+        // Пользовательский TURN‑сервер и креды (опционально).
+        public string? TurnServer { get; set; }
+        public string? TurnUsername { get; set; }
+        public string? TurnPassword { get; set; }
     }
     
     // WebRTC Event

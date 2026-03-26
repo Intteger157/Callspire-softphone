@@ -150,6 +150,9 @@ window.SoftphoneWebRtc = (function () {
     // Фаза 2: Инициализация JsSIP UA без медиа (prewarm)
     async function initUA(cfg) {
         try {
+            // Сохраняем текущую конфигурацию, чтобы исходящий makeCall мог также использовать
+            // пользовательский TURN (если задан) из C# настроек.
+            window._softphoneWebRtcCfg = cfg;
             if (!window.JsSIP) {
                 console.warn('[WebRTC] JsSIP is not defined, attempting to load dynamically...');
                 const loaded = await loadJsSIPOnce();
@@ -258,6 +261,39 @@ window.SoftphoneWebRtc = (function () {
             }
             // ----- конец перехвата WSS -----
 
+            // Формируем список ICE‑серверов
+            const iceServers = [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ];
+
+            // Пользовательский TURN‑сервер из настроек (если задан в C#)
+            if (cfg.turnServer && typeof cfg.turnServer === 'string' && cfg.turnServer.trim() !== '') {
+                let turnUrl = cfg.turnServer.trim();
+                if (!/^turns?:/i.test(turnUrl)) {
+                    turnUrl = 'turn:' + turnUrl;
+                }
+                const turnEntry = { urls: turnUrl };
+                if (cfg.turnUsername && typeof cfg.turnUsername === 'string' && cfg.turnUsername.trim() !== '') {
+                    turnEntry.username = cfg.turnUsername.trim();
+                }
+                if (cfg.turnPassword && typeof cfg.turnPassword === 'string' && cfg.turnPassword.trim() !== '') {
+                    turnEntry.credential = cfg.turnPassword.trim();
+                }
+                iceServers.push(turnEntry);
+                console.log('[WebRTC] Using custom TURN server from config:', turnUrl);
+            } else {
+                // Публичный TURN сервер как fallback (может не работать без учетных данных):
+                iceServers.push(
+                    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                    { urls: 'turn:openrelay.metered.ca:443?transport=udp', username: 'openrelayproject', credential: 'openrelayproject' }, // UDP 443 для обхода firewall
+                    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }, // По умолчанию UDP
+                    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' } // TCP 443 как fallback
+                );
+            }
+
+            console.log('[WebRTC] ICE servers:', iceServers);
+
             console.log('[WebRTC] Creating JsSIP UA with SIP URI:', cfg.sipUri);
             ua = new JsSIP.UA({
                 sockets: [socket],
@@ -270,11 +306,8 @@ window.SoftphoneWebRtc = (function () {
                 connection_recovery_max_interval: 30,
                 // STUN нужен для NAT traversal: MikoPBX выполняет ICE negotiation ДО отправки 200 OK.
                 // Без публичных (srflx) кандидатов PBX не может завершить ICE → 200 OK не отправляется.
-                // Для symmetric NAT также потребуется TURN сервер (настраивается на PBX).
-                ice_servers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ],
+                // Для symmetric NAT также потребуется TURN сервер (настраивается на PBX или в настройках клиента).
+                ice_servers: iceServers,
                 // Минимальное логирование JsSIP - только ошибки и предупреждения
                 log: {
                     level: 'warn', // Только warn и error
@@ -369,12 +402,25 @@ window.SoftphoneWebRtc = (function () {
                     // Входящий звонок
                     const callerNumber = e.session.remote_identity ? e.session.remote_identity.uri.user : 'Unknown';
                     window._incomingSession = e.session;
-                    
+
+                    // Extract PBX Originate correlation header (set by AMI Originate via SIPADDHEADER)
+                    let originateId = null;
+                    try {
+                        const hdr = e.session.request.getHeader('X-Callspire-Originate');
+                        if (hdr) {
+                            originateId = hdr.trim();
+                            console.log('[WebRTC] Detected X-Callspire-Originate header:', originateId);
+                        }
+                    } catch (ex) {
+                        console.warn('[WebRTC] Could not read X-Callspire-Originate header:', ex);
+                    }
+
                     sendEvent({ 
                         type: 'incoming',
                         data: {
                             sessionId: sessionId,
-                            callerNumber: callerNumber
+                            callerNumber: callerNumber,
+                            originateId: originateId
                         }
                     });
                 } else {
@@ -1749,6 +1795,37 @@ window.SoftphoneWebRtc = (function () {
             });
         });
         
+        // КРИТИЧНО: Логируем получение SIP ответов через request/response
+        if (s.request) {
+            s.request.on('onRequestTimeout', () => {
+                console.error('[WebRTC] ❌❌❌ SIP REQUEST TIMEOUT ❌❌❌');
+                console.error('[WebRTC] Session ID:', sessionId);
+                sendEvent({
+                    type: 'js_log',
+                    data: {
+                        level: 'critical',
+                        message: `[WebRTC] ❌❌❌ SIP REQUEST TIMEOUT ❌❌❌ SessionID=${sessionId} - No response from PBX!`
+                    }
+                });
+            });
+        }
+        
+        // Подписываемся на все возможные события ответов
+        s.on('sdp', (e) => {
+            console.log('[WebRTC] ⚠️⚠️⚠️ JSSIP SDP EVENT ⚠️⚠️⚠️');
+            console.log('[WebRTC] Session ID:', sessionId);
+            console.log('[WebRTC] SDP type:', e?.type || 'N/A');
+            console.log('[WebRTC] SDP:', e?.sdp ? e.sdp.substring(0, 500) : 'N/A');
+            
+            sendEvent({
+                type: 'js_log',
+                data: {
+                    level: 'critical',
+                    message: `[WebRTC] ⚠️⚠️⚠️ JSSIP SDP EVENT ⚠️⚠️⚠️ SessionID=${sessionId}, Type=${e?.type || 'N/A'}`
+                }
+            });
+        });
+        
         // Подписываемся на все возможные события JsSIP для диагностики
         // ВАЖНО: Некоторые события могут уже быть подписаны ниже, но мы добавляем логирование здесь для полноты
         s.on('sdpCreated', (e) => {
@@ -1891,7 +1968,7 @@ window.SoftphoneWebRtc = (function () {
             }
             // Для исходящих звонков отправляем событие "ringing" для воспроизведения ringback tone
             if (originator === 'local') {
-                console.log('[WebRTC] ⚠️ Outgoing call - sending ringing event to start ringback tone');
+                console.log('[WebRTC] Outgoing call - sending ringing event to start ringback tone');
                 sendEvent({ 
                     type: 'ringing',
                     data: { sessionId: sessionId }
@@ -2713,21 +2790,61 @@ window.SoftphoneWebRtc = (function () {
 
             // STUN нужен для NAT traversal: MikoPBX выполняет ICE negotiation ДО 200 OK.
             // Без srflx-кандидатов PBX не может достучаться до клиента за NAT.
-            // Также пробуем STUN на самом PBX (если coturn настроен, порт 3478).
+            // TURN сервер нужен для обхода строгого NAT (symmetric NAT) и firewall, которые блокируют входящие UDP соединения.
+            // UDP 443 используется для обхода firewall, которые блокируют другие UDP порты.
             const pbxHost = (ua.configuration.uri.host || '').replace(/:\d+$/, '');
+            // Используем те же ICE серверы, что и в initUA (включая UDP 443)
             const iceServers = [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
+                // TURN-сервер на PBX (если настроен coturn) - раскомментируйте и укажите учетные данные:
+                // { urls: `turn:${pbxHost}:3478`, username: 'user', credential: 'pass' },
+                // Публичный TURN сервер как fallback (может не работать без учетных данных):
+                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
+                { urls: 'turn:openrelay.metered.ca:443?transport=udp', username: 'openrelayproject', credential: 'openrelayproject' }, // UDP 443 для обхода firewall
+                { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }, // По умолчанию UDP
+                { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' } // TCP 443 как fallback
             ];
-            // TURN-сервер на PBX (если настроен coturn):
-            // iceServers.push({ urls: `turn:${pbxHost}:3478`, username: 'user', credential: 'pass' });
+
+            // Пользовательский TURN из конфигурации (заданный в C#) тоже добавляем в iceServers.
+            // Это важно для symmetric NAT / корпоративных VPN, где публичный openrelay может быть недоступен.
+            const runtimeCfg = window._softphoneWebRtcCfg || {};
+            if (runtimeCfg.turnServer && typeof runtimeCfg.turnServer === 'string' && runtimeCfg.turnServer.trim() !== '') {
+                let turnUrl = runtimeCfg.turnServer.trim();
+                if (!/^turns?:/i.test(turnUrl)) {
+                    turnUrl = 'turn:' + turnUrl;
+                }
+
+                const turnEntry = { urls: turnUrl };
+                if (runtimeCfg.turnUsername && typeof runtimeCfg.turnUsername === 'string' && runtimeCfg.turnUsername.trim() !== '') {
+                    turnEntry.username = runtimeCfg.turnUsername.trim();
+                }
+                if (runtimeCfg.turnPassword && typeof runtimeCfg.turnPassword === 'string' && runtimeCfg.turnPassword.trim() !== '') {
+                    turnEntry.credential = runtimeCfg.turnPassword.trim();
+                }
+
+                iceServers.push(turnEntry);
+                console.log('[WebRTC] makeCall: Using custom TURN server from initUA config:', turnUrl);
+            } else {
+                console.log('[WebRTC] makeCall: No custom TURN server found in initUA config (using fallback TURN only)');
+            }
             // НЕ добавляем stun:pbx:3478 по умолчанию — если порт закрыт, это задерживает ICE gathering на 30+ секунд.
             console.log('[WebRTC] makeCall: ICE servers:', JSON.stringify(iceServers));
             sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WebRTC] makeCall: ICE servers: ' + JSON.stringify(iceServers) } });
 
-            // Упрощенные constraints для исходящих: избегаем нестабильных advanced-опций
-            // (в WebView2 они могут ломать gUM и приводить к отсутствию INVITE).
-            const mediaOpts = { audio: true, video: false };
+            // Media constraints for outgoing calls.
+            // Previously this was `audio: true`, which lets the browser pick defaults.
+            // In practice that can disable/weakly apply AEC/NS/AGC, causing echo for the remote side.
+            //
+            // Keep it simple (only AEC/NS/AGC with ideal) to avoid breaking getUserMedia/INVITE in WebView2.
+            const mediaOpts = {
+                audio: {
+                    echoCancellation: { ideal: true },   // Reduce acoustic echo (critical for VoIP)
+                    noiseSuppression: { ideal: true }, // Reduce surrounding room pickup
+                    autoGainControl: { ideal: true }    // Keep operator voice at a stable level
+                },
+                video: false
+            };
 
             // Гарантируем, что разрешение на микрофон получено ДО ua.call.
             // Это убирает задержку разрешения в WebView2, из-за которой INVITE не формируется.
@@ -2745,11 +2862,42 @@ window.SoftphoneWebRtc = (function () {
                 eventHandlers: {
                     sending: (e) => {
                         console.log('[WebRTC] ✅ SIP INVITE SENT! Call-ID:', e.request?.call_id);
-                        sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WebRTC] ✅ SIP INVITE SENT! Request sent to network.' } });
+                        sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WebRTC] ✅ SIP INVITE SENT! Request sent to network. Call-ID: ' + (e.request?.call_id || 'N/A') } });
                     },
-                    progress: () => { console.log('[WebRTC] Call is in progress (ringing)'); },
-                    failed: (e) => { console.error('[WebRTC] Call failed (eventHandlers):', e?.cause); },
-                    confirmed: () => { console.log('[WebRTC] Call confirmed (answered)'); }
+                    progress: (e) => { 
+                        console.log('[WebRTC] ⚠️⚠️⚠️ PROGRESS EVENT (180 Ringing) ⚠️⚠️⚠️');
+                        console.log('[WebRTC] Progress event:', e);
+                        sendEvent({ 
+                            type: 'js_log', 
+                            data: { 
+                                level: 'critical', 
+                                message: '[WebRTC] ⚠️⚠️⚠️ PROGRESS EVENT (180 Ringing) ⚠️⚠️⚠️ - PBX is ringing remote party!' 
+                            } 
+                        });
+                    },
+                    failed: (e) => { 
+                        console.error('[WebRTC] ❌❌❌ CALL FAILED (eventHandlers) ❌❌❌');
+                        console.error('[WebRTC] Failed event:', e);
+                        console.error('[WebRTC] Cause:', e?.cause);
+                        sendEvent({ 
+                            type: 'js_log', 
+                            data: { 
+                                level: 'critical', 
+                                message: '[WebRTC] ❌❌❌ CALL FAILED (eventHandlers) ❌❌❌ Cause: ' + (e?.cause || 'Unknown') 
+                            } 
+                        });
+                    },
+                    confirmed: (e) => { 
+                        console.log('[WebRTC] ✅✅✅ CALL CONFIRMED (eventHandlers) ✅✅✅');
+                        console.log('[WebRTC] Confirmed event:', e);
+                        sendEvent({ 
+                            type: 'js_log', 
+                            data: { 
+                                level: 'critical', 
+                                message: '[WebRTC] ✅✅✅ CALL CONFIRMED (eventHandlers) ✅✅✅ - Call fully established!' 
+                            } 
+                        });
+                    }
                 }
             };
 
@@ -3382,8 +3530,9 @@ window.SoftphoneWebRtc = (function () {
                 recordingChunks = [];
             }
             
-            // Сбрасываем флаг запуска записи
+            // Сбрасываем флаги записи
             _isRecordingStarting = false;
+            _recordingAborted = false;
             
             // Очищаем recordingStream и его AudioContext
             if (recordingStream && recordingStream._audioContext) {
@@ -4238,6 +4387,8 @@ window.SoftphoneWebRtc = (function () {
     
     // Флаг для предотвращения повторного вызова startRecording
     let _isRecordingStarting = false;
+    // Флаг для отмены записи если stopRecording вызван во время startRecording (стабилизации)
+    let _recordingAborted = false;
     
     // Запуск записи звонка
     async function startRecording() {
@@ -4254,6 +4405,7 @@ window.SoftphoneWebRtc = (function () {
         }
         
         _isRecordingStarting = true;
+        _recordingAborted = false;
         
         try {
             // КРИТИЧНО: Принудительно очищаем старый MediaRecorder перед началом новой записи
@@ -4634,16 +4786,22 @@ window.SoftphoneWebRtc = (function () {
             // Увеличено время ожидания для более надежной проверки готовности аудио потоков
             // Это дает время IVR начать говорить перед началом записи
             let stabilizationWaitTime = 0;
-            const maxWaitTime = 5000; // 5 секунд максимум (увеличено с 3 до 5 для ожидания начала речи IVR)
+            const maxWaitTime = 1500; // 1.5 секунды максимум — достаточно для подключения потоков, не блокирует короткие звонки
             const checkInterval = 100; // проверяем каждые 100ms
             
             const waitForStabilization = () => {
                 return new Promise((resolve) => {
                     const checkStabilization = () => {
+                        if (_recordingAborted) {
+                            console.warn(`[WebRTC] Recording aborted during stabilization (waited ${stabilizationWaitTime}ms)`);
+                            sendEvent({ type: 'js_log', data: { level: 'critical', message: `[WebRTC] Recording aborted during stabilization (${stabilizationWaitTime}ms)` } });
+                            resolve();
+                            return;
+                        }
+
                         stabilizationWaitTime += checkInterval;
                         const streamsActive = checkStreamsActive();
                         
-                        // Если потоки активны ИЛИ прошло максимальное время ожидания — начинаем запись
                         if (streamsActive || stabilizationWaitTime >= maxWaitTime) {
                             if (streamsActive) {
                                 console.log(`[WebRTC] Streams stabilized after ${stabilizationWaitTime}ms - audio detected, starting recording`);
@@ -4664,6 +4822,21 @@ window.SoftphoneWebRtc = (function () {
             
             // Ждём стабилизации, затем начинаем запись
             await waitForStabilization();
+
+            if (_recordingAborted) {
+                console.warn('[WebRTC] Recording was aborted during stabilization, skipping MediaRecorder start');
+                _isRecordingStarting = false;
+                audioContext.close().catch(() => {});
+                recordingStream = null;
+                sendEvent({
+                    type: 'recording_stopped',
+                    data: {
+                        reason: 'aborted_during_stabilization',
+                        message: 'Recording aborted because call ended during stream stabilization'
+                    }
+                });
+                return;
+            }
             
             // КРИТИЧНО: Финальная проверка перед началом записи
             // Убеждаемся, что AudioContext в состоянии "running" и destination stream имеет активные треки
@@ -4804,10 +4977,16 @@ window.SoftphoneWebRtc = (function () {
     // Остановка записи звонка
     function stopRecording() {
         try {
-            // Сбрасываем флаг запуска записи при остановке
+            console.log('[WebRTC] stopRecording called, mediaRecorder state:', mediaRecorder?.state, 'chunks count:', recordingChunks.length, ', _isRecordingStarting:', _isRecordingStarting);
+
+            if (_isRecordingStarting) {
+                console.warn('[WebRTC] stopRecording: Recording is still starting (in stabilization phase), setting abort flag');
+                _recordingAborted = true;
+                _isRecordingStarting = false;
+                return;
+            }
+
             _isRecordingStarting = false;
-            
-            console.log('[WebRTC] stopRecording called, mediaRecorder state:', mediaRecorder?.state, 'chunks count:', recordingChunks.length);
             
             // Сохраняем ссылку на mediaRecorder и обработчик перед остановкой
             const recorder = mediaRecorder;

@@ -15,6 +15,37 @@ namespace Softphone
             _history = LoadHistory();
         }
 
+        /// <summary>
+        /// Finds the history row for an in-flight update. Uses a wide time window and, when several
+        /// rows match (same number, close timestamps), prefers Calling/Connected so we do not leave
+        /// duplicate "Calling..." rows stuck when <see cref="UpdateCallStatus"/> used to match only ±5s.
+        /// </summary>
+        private CallHistoryItem? FindMatchingCall(string phoneNumber, DateTime callTime, CallTransport? transport, bool preferInProgress)
+        {
+            const double primaryWindowSec = 180;
+            IEnumerable<CallHistoryItem> inWindow = _history.Where(x =>
+                x.PhoneNumber == phoneNumber &&
+                (!transport.HasValue || x.Transport == transport.Value) &&
+                Math.Abs((x.CallTime - callTime).TotalSeconds) <= primaryWindowSec);
+
+            var list = inWindow.ToList();
+            if (list.Count == 0)
+            {
+                return _history.FirstOrDefault(x =>
+                    x.PhoneNumber == phoneNumber &&
+                    (!transport.HasValue || x.Transport == transport.Value) &&
+                    Math.Abs((x.CallTime - callTime).TotalSeconds) <= 600);
+            }
+
+            if (!preferInProgress)
+                return list.OrderBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds)).First();
+
+            return list
+                .OrderBy(x => x.Status == CallStatus.Calling ? 0 : x.Status == CallStatus.Connected ? 1 : 2)
+                .ThenBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds))
+                .First();
+        }
+
         public List<CallHistoryItem> GetHistory()
         {
             return _history.OrderByDescending(x => x.CallTime).ToList();
@@ -29,15 +60,18 @@ namespace Softphone
 
         public void UpdateCallStatus(string phoneNumber, DateTime callTime, CallStatus status, TimeSpan? duration = null, string? errorMessage = null)
         {
-            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 5);
-            
+            var call = FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: true);
+
             if (call != null)
             {
                 call.Status = status;
                 call.Duration = duration;
                 call.ErrorMessage = errorMessage;
                 SaveHistory();
+            }
+            else
+            {
+                MainWindow.Log($"[CallHistoryService] UpdateCallStatus: no row for {phoneNumber} near {callTime:O} (status={status})");
             }
         }
 
@@ -46,12 +80,11 @@ namespace Softphone
             DateTime? answerTime = null, bool wasAnswered = false, 
             CallEndedBy endedBy = CallEndedBy.Unknown,
             List<string>? technicalDetails = null, TimeSpan? duration = null, string? recordingFilePath = null,
-            CallTransport? transport = null, string? sipCallId = null, string? webRtcSessionId = null)
+            CallTransport? transport = null, string? sipCallId = null, string? webRtcSessionId = null,
+            string? outboundCallerId = null)
         {
-            // Увеличиваем допуск до 30 секунд, чтобы учесть возможные задержки
-            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
-            
+            var call = FindMatchingCall(phoneNumber, callTime, transport, preferInProgress: true);
+
             if (call != null)
             {
                 MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Found call for {phoneNumber} at {callTime:HH:mm:ss.fff}, updating details...");
@@ -63,9 +96,17 @@ namespace Softphone
                 if (answerTime.HasValue)
                     call.AnswerTime = answerTime;
                 
-                // Обновляем WasAnswered только если передано true (чтобы не перезаписывать true на false)
+                // Обновляем WasAnswered: если передано true, всегда устанавливаем true
+                // Если передано false, НЕ перезаписываем существующее true (чтобы не потерять информацию о принятом звонке)
                 if (wasAnswered)
+                {
                     call.WasAnswered = true;
+                }
+                // Если wasAnswered=false, но AnswerTime установлен, значит звонок был принят
+                else if (answerTime.HasValue && !call.WasAnswered)
+                {
+                    call.WasAnswered = true;
+                }
                     
                 if (endedBy != CallEndedBy.Unknown)
                     call.EndedBy = endedBy;
@@ -98,6 +139,8 @@ namespace Softphone
                     call.SipCallId = sipCallId;
                 if (!string.IsNullOrEmpty(webRtcSessionId))
                     call.WebRtcSessionId = webRtcSessionId;
+                if (!string.IsNullOrEmpty(outboundCallerId))
+                    call.OutboundCallerId = outboundCallerId;
                 
                 // Обновляем статус на основе WasAnswered, Duration и EndedBy
                 // Если звонок был принят и есть длительность, статус должен быть Ended (не Cancelled или Calling)
@@ -161,8 +204,7 @@ namespace Softphone
 
         public CallHistoryItem? GetCall(string phoneNumber, DateTime callTime)
         {
-            return _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 5);
+            return FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: true);
         }
 
         /// <summary>
@@ -178,6 +220,32 @@ namespace Softphone
                 call.AmoCrmLeadId = leadId.Value;
                 SaveHistory();
                 MainWindow.Log($"[CallHistoryService] AmoCrmLeadId updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {leadId}");
+            }
+        }
+
+        public void UpdateOutboundCallerId(string phoneNumber, DateTime callTime, string callerId)
+        {
+            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber &&
+                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
+
+            if (call != null)
+            {
+                call.OutboundCallerId = callerId;
+                SaveHistory();
+                MainWindow.Log($"[CallHistoryService] OutboundCallerId updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {callerId}");
+            }
+        }
+
+        public void UpdateRecordingFilePath(string phoneNumber, DateTime callTime, string recordingFilePath)
+        {
+            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber &&
+                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
+
+            if (call != null)
+            {
+                call.RecordingFilePath = recordingFilePath;
+                SaveHistory();
+                MainWindow.Log($"[CallHistoryService] RecordingFilePath updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {recordingFilePath}");
             }
         }
 
@@ -207,8 +275,18 @@ namespace Softphone
                 if (File.Exists(historyFilePath))
                 {
                     string json = File.ReadAllText(historyFilePath);
-                    var history = JsonConvert.DeserializeObject<List<CallHistoryItem>>(json);
-                    return history ?? new List<CallHistoryItem>();
+                    var history = JsonConvert.DeserializeObject<List<CallHistoryItem>>(json) ?? new List<CallHistoryItem>();
+                    if (RepairStaleCallingEntries(history, out int repaired))
+                    {
+                        try
+                        {
+                            string outJson = JsonConvert.SerializeObject(history, Formatting.Indented);
+                            File.WriteAllText(historyFilePath, outJson);
+                            MainWindow.Log($"[CallHistoryService] Repaired {repaired} stale Calling entr(y/ies) on load");
+                        }
+                        catch { /* ignore */ }
+                    }
+                    return history;
                 }
             }
             catch
@@ -216,6 +294,33 @@ namespace Softphone
                 // Если не удалось загрузить, возвращаем пустой список
             }
             return new List<CallHistoryItem>();
+        }
+
+        /// <summary>
+        /// Rows stuck in Calling long after start (e.g. WebRTC window closed without SendCallDetails, or bad time match on save).
+        /// </summary>
+        private static bool RepairStaleCallingEntries(List<CallHistoryItem> list, out int repairedCount)
+        {
+            repairedCount = 0;
+            var now = DateTime.Now;
+            foreach (var c in list)
+            {
+                if (c.Status != CallStatus.Calling) continue;
+                if ((now - c.CallTime).TotalMinutes <= 30) continue;
+
+                if (c.WasAnswered || c.Duration.HasValue || c.AnswerTime.HasValue)
+                {
+                    c.Status = CallStatus.Ended;
+                    if (!c.Duration.HasValue && c.AnswerTime.HasValue)
+                        c.Duration = now - c.AnswerTime.Value;
+                }
+                else
+                    c.Status = CallStatus.Cancelled;
+
+                repairedCount++;
+            }
+
+            return repairedCount > 0;
         }
 
         private void SaveHistory()
@@ -236,6 +341,47 @@ namespace Softphone
         {
             _history.Clear();
             SaveHistory();
+        }
+
+        /// <summary>
+        /// Удаляет записи истории старше указанного количества дней.
+        /// Возвращает количество удалённых записей.
+        /// </summary>
+        public int CleanupOldHistory(int retentionDays)
+        {
+            try
+            {
+                if (retentionDays <= 0)
+                {
+                    return 0;
+                }
+
+                DateTime cutoff = DateTime.Now.AddDays(-retentionDays);
+                int beforeCount = _history.Count;
+
+                _history = _history
+                    .Where(c => c.CallTime >= cutoff)
+                    .ToList();
+
+                int removed = beforeCount - _history.Count;
+
+                if (removed > 0)
+                {
+                    SaveHistory();
+                    MainWindow.Log($"[CallHistoryService] CleanupOldHistory: removed {removed} call(s) older than {retentionDays} days");
+                }
+                else
+                {
+                    MainWindow.Log($"[CallHistoryService] CleanupOldHistory: no calls older than {retentionDays} days found");
+                }
+
+                return removed;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[CallHistoryService] CleanupOldHistory error: {ex.Message}");
+                return 0;
+            }
         }
     }
 }

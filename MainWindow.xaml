@@ -3,18 +3,15 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ic="clr-namespace:FluentIcons.Wpf;assembly=FluentIcons.Wpf"
         Title="Softphone" Height="780" Width="1250" MinHeight="560" MinWidth="780"
-        WindowStyle="SingleBorderWindow" 
-        Background="Transparent"
+        WindowStyle="None" 
+        AllowsTransparency="False"
+        Background="{DynamicResource BackgroundDarkBrush}"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
         SnapsToDevicePixels="True"
         UseLayoutRounding="True">
     <WindowChrome.WindowChrome>
-        <!-- CaptionHeight=32: стандартная высота заголовка для сохранения всех стандартных поведений Windows 11,
-             включая плавные анимации минимизации. Мы используем custom drag handling в code-behind,
-             но CaptionHeight нужен для правильной работы системных анимаций.
-             Top resize border is set to 0 so the user can drag the window by the very top edge. -->
-        <WindowChrome CaptionHeight="32" ResizeBorderThickness="8,0,8,8" GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8,8,8,8" GlassFrameThickness="0" UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
     
     <Window.Resources>
@@ -78,29 +75,26 @@
     </Window.Resources>
 
     <!-- Surface (clipped) + Stroke overlay (does not affect layout), so corners stay rounded and close button can sit flush -->
-    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
+    <Grid SnapsToDevicePixels="True" UseLayoutRounding="True" 
+          HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+          Margin="0"
+          ClipToBounds="True">
         <Border x:Name="WindowSurface"
                 Background="{DynamicResource BackgroundDarkBrush}"
-                ClipToBounds="True"
-            SnapsToDevicePixels="True"
-            UseLayoutRounding="True">
-            <Border.Style>
-                <Style TargetType="Border">
-                    <Setter Property="CornerRadius" Value="16"/>
-                    <Style.Triggers>
-                        <!-- When maximized, remove rounded corners to avoid clipping/overlap with screen edges -->
-                        <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=WindowState}" Value="Maximized">
-                            <Setter Property="CornerRadius" Value="0"/>
-                        </DataTrigger>
-                    </Style.Triggers>
-                </Style>
-            </Border.Style>
+                CornerRadius="8"
+                ClipToBounds="False"
+                SnapsToDevicePixels="True"
+                UseLayoutRounding="True"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Stretch"
+                Margin="0">
 
         <Grid x:Name="RootGrid" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
               SnapsToDevicePixels="True"
               UseLayoutRounding="True"
               RenderOptions.BitmapScalingMode="LowQuality"
-              RenderOptions.CachingHint="Cache">
+              RenderOptions.CachingHint="Cache"
+              Margin="0">
             <Grid.RenderTransform>
                 <ScaleTransform ScaleX="1" ScaleY="1"/>
             </Grid.RenderTransform>
@@ -114,8 +108,11 @@
                 <Border x:Name="TitleBarBorder"
                         Grid.Row="0"
                         Background="{DynamicResource BackgroundMediumBrush}" 
-                        CornerRadius="16,16,0,0"
-                        ClipToBounds="True">
+                        CornerRadius="8,8,0,0"
+                        ClipToBounds="False"
+                        VerticalAlignment="Top"
+                        Margin="0"
+                        HorizontalAlignment="Stretch">
                     <Grid Background="Transparent"
                           MouseLeftButtonDown="TitleBar_MouseLeftButtonDown"
                           MouseLeftButtonUp="TitleBar_MouseLeftButtonUp"
@@ -173,21 +170,27 @@
                     </TextBlock>
                 </StackPanel>
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
-                    <Button Content="─" Width="46" Height="32" 
+                    <Button Content="─" Width="46"
                            Background="Transparent" Foreground="{DynamicResource TextSecondaryBrush}"
                            BorderThickness="0" Click="MinimizeButton_Click"
                            FontSize="16" Cursor="Hand"
+                           VerticalAlignment="Stretch"
                            WindowChrome.IsHitTestVisibleInChrome="True">
-                        <Button.Style>
-                            <Style TargetType="Button">
-                                <Setter Property="Background" Value="Transparent"/>
-                                <Style.Triggers>
+                        <Button.Template>
+                            <ControlTemplate TargetType="Button">
+                                <Border x:Name="Bg"
+                                        Background="{TemplateBinding Background}"
+                                        SnapsToDevicePixels="True">
+                                    <ContentPresenter HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center"/>
+                                </Border>
+                                <ControlTemplate.Triggers>
                                     <Trigger Property="IsMouseOver" Value="True">
-                                        <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                                        <Setter TargetName="Bg" Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
                                     </Trigger>
-                                </Style.Triggers>
-                            </Style>
-                        </Button.Style>
+                                </ControlTemplate.Triggers>
+                            </ControlTemplate>
+                        </Button.Template>
                     </Button>
                     <!-- Maximize/restore disabled by request -->
                     <Button Content="✕"
@@ -209,7 +212,7 @@
                     <Border x:Name="SidebarBorder"
                        Grid.Column="0" Background="{DynamicResource BackgroundMediumBrush}" 
                        BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0"
-                       CornerRadius="0,0,0,16" ClipToBounds="True">
+                       CornerRadius="0,0,0,8" ClipToBounds="True">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -270,7 +273,7 @@
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <!-- Status -->
@@ -292,75 +295,328 @@
                                        VerticalAlignment="Center"
                                        Margin="0,0,8,0"/>
                             </StackPanel>
-                            <TextBlock Name="StatusTextBlock"
-                                      Text="Not connected" 
-                                      Foreground="{DynamicResource TextSecondaryBrush}"
-                                      FontSize="14"
-                                      HorizontalAlignment="Center"/>
+                            <!-- Status indicators -->
+                            <StackPanel Name="StatusPanel"
+                                       HorizontalAlignment="Center"
+                                       Orientation="Vertical">
+                                <!-- Main connection status -->
+                                <StackPanel Orientation="Horizontal" 
+                                           HorizontalAlignment="Center"
+                                           Margin="0,0,0,4">
+                                    <TextBlock Text="Main:"
+                                              FontSize="12"
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontWeight="SemiBold"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,4,0"/>
+                                    <Border Name="MainStatusIndicator"
+                                           Width="8" Height="8"
+                                           CornerRadius="4"
+                                           Background="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,4,0"/>
+                                    <TextBlock Name="MainStatusTextBlock"
+                                              Text="Not connected" 
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontSize="12"
+                                              VerticalAlignment="Center"/>
+                                    <Button Name="MainRefreshButton"
+                                            Width="20" Height="20"
+                                            Margin="4,0,0,0"
+                                            VerticalAlignment="Center"
+                                            ToolTip="Reconnect main connection"
+                                            Click="MainRefreshButton_Click"
+                                            Style="{StaticResource StatusRefreshButtonStyle}">
+                                        <Viewbox Width="12" Height="12" Stretch="Uniform">
+                                            <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                                  Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                        </Viewbox>
+                                    </Button>
+                                </StackPanel>
+                                
+                                <!-- Secondary connection status -->
+                                <StackPanel Name="SecondaryStatusPanel"
+                                           Orientation="Horizontal" 
+                                           HorizontalAlignment="Center"
+                                           Margin="0,0,0,4"
+                                           Visibility="Collapsed">
+                                    <TextBlock Text="Secondary:"
+                                              FontSize="12"
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontWeight="SemiBold"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,4,0"/>
+                                    <Border Name="SecondaryStatusIndicator"
+                                           Width="8" Height="8"
+                                           CornerRadius="4"
+                                           Background="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,4,0"/>
+                                    <TextBlock Name="SecondaryStatusTextBlock"
+                                              Text="Not connected" 
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontSize="12"
+                                              VerticalAlignment="Center"/>
+                                    <Button Name="SecondaryRefreshButton"
+                                            Width="20" Height="20"
+                                            Margin="4,0,0,0"
+                                            VerticalAlignment="Center"
+                                            ToolTip="Reconnect secondary connection"
+                                            Click="SecondaryRefreshButton_Click"
+                                            Style="{StaticResource StatusRefreshButtonStyle}">
+                                        <Viewbox Width="12" Height="12" Stretch="Uniform">
+                                            <Path Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                                  Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                        </Viewbox>
+                                    </Button>
+                                </StackPanel>
+                                
+                                <!-- AmoCRM integration status -->
+                                <StackPanel Name="AmoCrmStatusPanel"
+                                           Orientation="Horizontal" 
+                                           HorizontalAlignment="Center"
+                                           Visibility="Collapsed">
+                                    <TextBlock Text="AmoCRM:"
+                                              FontSize="12"
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontWeight="SemiBold"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,4,0"/>
+                                    <Border Name="AmoCrmStatusIndicator"
+                                           Width="8" Height="8"
+                                           CornerRadius="4"
+                                           Background="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,4,0"/>
+                                    <TextBlock Name="AmoCrmStatusTextBlock"
+                                              Text="Not connected" 
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontSize="12"
+                                              VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </StackPanel>
                         </StackPanel>
 
-                        <!-- Phone Number Input -->
-                        <TextBox Grid.Row="1" 
-                                 Name="PhoneNumberTextBox"
-                                 Text="Enter the number"
-                                 FontSize="28"
-                                 FontWeight="Light"
-                                 Foreground="{DynamicResource TextPrimaryBrush}"
-                                 Margin="0,0,0,32"
-                                 BorderThickness="0,0,0,2"
-                                 BorderBrush="{DynamicResource AccentBlueBrush}"
-                                 HorizontalAlignment="Stretch"
-                                 HorizontalContentAlignment="Center"
-                                 CaretBrush="{DynamicResource AccentBlueBrush}"
-                                 GotFocus="PhoneNumberTextBox_GotFocus"
-                                 LostFocus="PhoneNumberTextBox_LostFocus"
-                                 KeyDown="PhoneNumberTextBox_KeyDown"
-                                 TextChanged="PhoneNumberTextBox_TextChanged"/>
-
-                        <!-- Numpad -->
-                        <Grid Grid.Row="2" 
-                              HorizontalAlignment="Center"
-                              VerticalAlignment="Top">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
+                        <!-- Phone Number Input with Backspace -->
+                        <Grid Grid.Row="1" Margin="0,0,0,10">
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-
-                            <Button Grid.Row="0" Grid.Column="0" Content="1" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="0" Grid.Column="1" Content="2" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="0" Grid.Column="2" Content="3" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="1" Grid.Column="0" Content="4" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="1" Grid.Column="1" Content="5" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="1" Grid.Column="2" Content="6" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="2" Grid.Column="0" Content="7" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="2" Grid.Column="1" Content="8" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="2" Grid.Column="2" Content="9" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="3" Grid.Column="0" Content="*" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="3" Grid.Column="1" Content="0" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="3" Grid.Column="2" Content="#" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8"/>
-                            <Button Grid.Row="4" Grid.Column="1" Name="CallButton"
-                                   Style="{DynamicResource NumpadCallButtonStyle}" 
-                                   Click="CallButton_Click"
-                                   Margin="8,16,8,8"
-                                   HorizontalAlignment="Center"
-                                   IsEnabled="False">
-                                <ic:SymbolIcon Symbol="Call" Width="24" Height="24" IconVariant="Regular" Foreground="White"/>
-                            </Button>
-                            <Button Grid.Row="4" Grid.Column="2" Name="BackspaceButton"
+                            
+                            <TextBox Grid.Column="0" Grid.ColumnSpan="2"
+                                     Name="PhoneNumberTextBox"
+                                     Text="Enter the number"
+                                     FontSize="28"
+                                     FontWeight="Light"
+                                     Foreground="{DynamicResource TextPrimaryBrush}"
+                                     BorderThickness="0"
+                                     HorizontalAlignment="Stretch"
+                                     HorizontalContentAlignment="Center"
+                                     VerticalContentAlignment="Center"
+                                     TextAlignment="Center"
+                                     CaretBrush="{DynamicResource AccentBlueBrush}"
+                                     GotFocus="PhoneNumberTextBox_GotFocus"
+                                     LostFocus="PhoneNumberTextBox_LostFocus"
+                                     KeyDown="PhoneNumberTextBox_KeyDown"
+                                     TextChanged="PhoneNumberTextBox_TextChanged"/>
+                            
+                            <Button Grid.Column="1" Name="BackspaceButton"
                                    Style="{DynamicResource BackspaceButtonStyle}" 
                                    Click="BackspaceButton_Click"
-                                   Margin="8,16,8,8">
+                                   Margin="8,0,0,0"
+                                   VerticalAlignment="Center">
                                 <ic:SymbolIcon Symbol="Backspace" Width="20" Height="20" IconVariant="Regular"/>
                             </Button>
+                            
+                            <!-- Blue underline extending under both TextBox and Button -->
+                            <Border Grid.Column="0" Grid.ColumnSpan="2"
+                                    BorderThickness="0,0,0,2"
+                                    BorderBrush="{DynamicResource AccentBlueBrush}"
+                                    VerticalAlignment="Bottom"
+                                    Margin="0,0,0,0"/>
                         </Grid>
+
+                        <!-- Numpad and Call Buttons (separate grids for independence) -->
+                        <StackPanel Grid.Row="2" 
+                                    HorizontalAlignment="Center"
+                                    VerticalAlignment="Top">
+
+                            <!-- CallerID selector (visible when user has assigned CallerIDs) -->
+                            <StackPanel Name="CallerIdPanel"
+                                        Visibility="Collapsed"
+                                        HorizontalAlignment="Center"
+                                        Margin="0,0,0,10">
+                                <TextBlock Text="Caller ID"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           FontSize="11"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,0,0,4"/>
+                                <ComboBox Name="CallerIdComboBox"
+                                          Style="{DynamicResource ModernComboBoxStyle}"
+                                          HorizontalAlignment="Center"
+                                          Width="260"
+                                          Height="34"
+                                          FontSize="14"
+                                          FontWeight="Normal"
+                                          ToolTip="Select outbound Caller ID"/>
+                            </StackPanel>
+                            
+                            <!-- Numpad buttons grid (independent) -->
+                            <Grid HorizontalAlignment="Center"
+                                  VerticalAlignment="Top">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Button Grid.Row="0" Grid.Column="0" Content="1" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="0" Grid.Column="1" Content="2" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="0" Grid.Column="2" Content="3" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="1" Grid.Column="0" Content="4" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="1" Grid.Column="1" Content="5" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="1" Grid.Column="2" Content="6" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="2" Grid.Column="0" Content="7" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="2" Grid.Column="1" Content="8" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="2" Grid.Column="2" Content="9" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="3" Grid.Column="0" Content="*" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="3" Grid.Column="1" Content="0" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                                <Button Grid.Row="3" Grid.Column="2" Content="#" Style="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2,8,2"/>
+                            </Grid>
+                            
+                            <!-- Call buttons grid (aligned with numpad column 1, but independent) -->
+                            <Grid HorizontalAlignment="Center"
+                                  VerticalAlignment="Top"
+                                  Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <!-- Single call button (shown when only one connection active) -->
+                                <Button Grid.Column="1" Name="CallButton"
+                                       Style="{DynamicResource NumpadCallButtonStyle}" 
+                                       Click="CallButton_Click"
+                                       HorizontalAlignment="Center"
+                                       Margin="8,0,8,0"
+                                       IsEnabled="False">
+                                    <ic:SymbolIcon Symbol="Call" Width="24" Height="24" IconVariant="Regular" Foreground="White"/>
+                                </Button>
+                                
+                                <!-- Split call button (shown when two connections active) -->
+                                <Grid Grid.Column="1" Name="SplitCallButtonPanel"
+                                      Visibility="Collapsed"
+                                      HorizontalAlignment="Center"
+                                      Margin="8,0,8,0"
+                                      Height="56" Width="130">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    
+                                    <!-- Left half: Primary connection -->
+                                    <Button Grid.Column="0" Name="SplitCallPrimaryButton"
+                                            Click="SplitCallPrimary_Click"
+                                            ToolTip="Call via primary connection"
+                                            Cursor="Hand">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="border"
+                                                                    Background="{DynamicResource AccentGreenBrush}"
+                                                                    CornerRadius="28,0,0,28"
+                                                                    SnapsToDevicePixels="True">
+                                                                <StackPanel Orientation="Vertical" 
+                                                                            HorizontalAlignment="Center" 
+                                                                            VerticalAlignment="Center">
+                                                                    <ic:SymbolIcon Symbol="Call" Width="20" Height="20" 
+                                                                                   IconVariant="Regular" Foreground="White"
+                                                                                   HorizontalAlignment="Center"/>
+                                                                    <TextBlock Name="SplitCallPrimaryLabel" Text="PBX" FontSize="9" FontWeight="SemiBold" 
+                                                                              Foreground="#CCFFFFFF" Margin="0,2,0,0"
+                                                                              HorizontalAlignment="Center"/>
+                                                                </StackPanel>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="border" Property="Background" Value="#1FB158"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsPressed" Value="True">
+                                                                    <Setter TargetName="border" Property="Background" Value="#178835"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsEnabled" Value="False">
+                                                                    <Setter TargetName="border" Property="Background" Value="#556455"/>
+                                                                    <Setter Property="Cursor" Value="Arrow"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
+                                    
+                                    <!-- Divider -->
+                                    <Border Grid.Column="1" Width="1.5" Background="#33FFFFFF" 
+                                            VerticalAlignment="Stretch"/>
+                                    
+                                    <!-- Right half: Secondary connection -->
+                                    <Button Grid.Column="2" Name="SplitCallSecondaryButton"
+                                            Click="SplitCallSecondary_Click"
+                                            ToolTip="Call via additional connection (SIP)"
+                                            Cursor="Hand">
+                                        <Button.Style>
+                                            <Style TargetType="Button">
+                                                <Setter Property="Template">
+                                                    <Setter.Value>
+                                                        <ControlTemplate TargetType="Button">
+                                                            <Border x:Name="border"
+                                                                    Background="{DynamicResource AccentGreenBrush}"
+                                                                    CornerRadius="0,28,28,0"
+                                                                    SnapsToDevicePixels="True">
+                                                                <StackPanel Orientation="Vertical" 
+                                                                            HorizontalAlignment="Center" 
+                                                                            VerticalAlignment="Center">
+                                                                    <ic:SymbolIcon Symbol="Call" Width="20" Height="20" 
+                                                                                   IconVariant="Regular" Foreground="White"
+                                                                                   HorizontalAlignment="Center"/>
+                                                                    <TextBlock Name="SplitCallSecondaryLabel" Text="SIP" FontSize="9" FontWeight="SemiBold" 
+                                                                              Foreground="#CCFFFFFF" Margin="0,2,0,0"
+                                                                              HorizontalAlignment="Center"/>
+                                                                </StackPanel>
+                                                            </Border>
+                                                            <ControlTemplate.Triggers>
+                                                                <Trigger Property="IsMouseOver" Value="True">
+                                                                    <Setter TargetName="border" Property="Background" Value="#1FB158"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsPressed" Value="True">
+                                                                    <Setter TargetName="border" Property="Background" Value="#178835"/>
+                                                                </Trigger>
+                                                                <Trigger Property="IsEnabled" Value="False">
+                                                                    <Setter TargetName="border" Property="Background" Value="#556455"/>
+                                                                    <Setter Property="Cursor" Value="Arrow"/>
+                                                                </Trigger>
+                                                            </ControlTemplate.Triggers>
+                                                        </ControlTemplate>
+                                                    </Setter.Value>
+                                                </Setter>
+                                            </Style>
+                                        </Button.Style>
+                                    </Button>
+                                </Grid>
+                            </Grid>
+                        </StackPanel>
                     </Grid>
 
                     <!-- History View -->
@@ -440,10 +696,22 @@
                                                                IconVariant="Regular"/> 
 
                                                 <StackPanel Grid.Column="1" VerticalAlignment="Center">
-                                                    <TextBlock Text="{Binding PhoneNumber}"
-                                                              FontSize="16"
-                                                              FontWeight="SemiBold"
-                                                              Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding PhoneNumberDisplay}"
+                                                                   FontSize="16"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                        <Border Background="{Binding TransportBrush}"
+                                                                CornerRadius="4"
+                                                                Padding="6,2"
+                                                                Margin="8,0,0,0"
+                                                                VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding TransportLabel}"
+                                                                       FontSize="10"
+                                                                       Foreground="White"
+                                                                       FontWeight="SemiBold"/>
+                                                        </Border>
+                                                    </StackPanel>
                                                     <TextBlock Text="{Binding CallTimeText}"
                                                               FontSize="12"
                                                               Foreground="{DynamicResource TextSecondaryBrush}"
@@ -509,10 +777,11 @@
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
                 SnapsToDevicePixels="True"
-                IsHitTestVisible="False">
+                IsHitTestVisible="False"
+                Visibility="Collapsed">
             <Border.Style>
                 <Style TargetType="Border">
-                    <Setter Property="CornerRadius" Value="16"/>
+                    <Setter Property="CornerRadius" Value="8"/>
                     <Style.Triggers>
                         <DataTrigger Binding="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=WindowState}" Value="Maximized">
                             <Setter Property="CornerRadius" Value="0"/>

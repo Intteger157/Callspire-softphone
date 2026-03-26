@@ -10,7 +10,7 @@
         SnapsToDevicePixels="True"
         UseLayoutRounding="True">
     <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8" GlassFrameThickness="0"/>
+        <WindowChrome CaptionHeight="0" ResizeBorderThickness="8,8,8,8" GlassFrameThickness="0"/>
     </WindowChrome.WindowChrome>
     
     <Window.Resources>
@@ -65,9 +65,10 @@
     <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
         <Border x:Name="WindowSurface"
                 Background="{DynamicResource BackgroundDarkBrush}"
-                CornerRadius="16"
-                ClipToBounds="True"
-                SnapsToDevicePixels="True">
+                CornerRadius="8"
+                ClipToBounds="False"
+                SnapsToDevicePixels="True"
+                Margin="0">
             <Grid>
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
@@ -79,8 +80,9 @@
                 <Border x:Name="TitleBarBorder"
                         Grid.Row="0"
                         Background="{DynamicResource BackgroundMediumBrush}" 
-                        CornerRadius="16,16,0,0"
-                        ClipToBounds="True">
+                        CornerRadius="8,8,0,0"
+                        ClipToBounds="False"
+                        Margin="0">
                     <Grid MouseDown="TitleBar_MouseDown">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -200,7 +202,7 @@
                 <!-- Buttons -->
                 <Border Grid.Row="2"
                         Background="{DynamicResource BackgroundMediumBrush}"
-                        CornerRadius="0,0,16,16"
+                        CornerRadius="0,0,8,8"
                         Padding="20,16">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -295,7 +297,8 @@
                 Background="Transparent"
                 BorderBrush="{DynamicResource BorderBrush}"
                 BorderThickness="1"
-                CornerRadius="16"
-                IsHitTestVisible="False"/>
+                CornerRadius="8"
+                IsHitTestVisible="False"
+                Visibility="Collapsed"/>
     </Grid>
 </Window>

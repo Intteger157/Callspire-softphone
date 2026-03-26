@@ -4,6 +4,8 @@ VisualStudioVersion = 17.5.2.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Callspire", "Callspire.csproj", "{01243FDF-0E4A-33DB-4ECD-BE54C50186E5}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Callspire.UpdateServer", "update-server\Callspire.UpdateServer\Callspire.UpdateServer.csproj", "{8F3E1A2B-9C0D-4E5F-A6B7-1234567890AB}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -14,6 +16,10 @@ Global
 		{01243FDF-0E4A-33DB-4ECD-BE54C50186E5}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{01243FDF-0E4A-33DB-4ECD-BE54C50186E5}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{01243FDF-0E4A-33DB-4ECD-BE54C50186E5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8F3E1A2B-9C0D-4E5F-A6B7-1234567890AB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8F3E1A2B-9C0D-4E5F-A6B7-1234567890AB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8F3E1A2B-9C0D-4E5F-A6B7-1234567890AB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8F3E1A2B-9C0D-4E5F-A6B7-1234567890AB}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

@@ -12,6 +12,30 @@ namespace Softphone
     /// </summary>
     public static class EchoCancellationHelper
     {
+        // Values from mmdeviceapi.h (ERole enum).
+        // eConsole = 0, eMultimedia = 1, eCommunications = 2.
+        private enum ERole
+        {
+            eConsole = 0,
+            eMultimedia = 1,
+            eCommunications = 2
+        }
+
+        // Undocumented COM interface used by Windows to set default endpoint per role.
+        // Needed when app selects devices by index (which may not match system Communications role).
+        [ComImport, Guid("294935CE-F637-4E7C-A41B-AB255460B862")]
+        private class PolicyConfigClientVista
+        {
+        }
+
+        [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("568b9108-44bf-40b4-9006-86afe5b5a620")]
+        private interface IPolicyConfigVista
+        {
+            // HRESULT SetDefaultEndpoint(PCWSTR id, ERole role)
+            [PreserveSig]
+            int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ERole role);
+        }
+
 
         /// <summary>
         /// Включает режим Communications для аудио устройств через Windows WASAPI
@@ -66,6 +90,30 @@ namespace Softphone
             catch (Exception ex)
             {
                 MainWindow.Log($"[EchoCancellationHelper] Error enabling echo cancellation: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Best-effort: set the specified endpoint as default for Role.Communications.
+        /// This helps enable WASAPI AEC/NS/AGC on devices selected by app (e.g., by index).
+        /// </summary>
+        public static bool TrySetDeviceAsDefaultForCommunications(MMDevice device, string label = "")
+        {
+            if (device == null) return false;
+
+            try
+            {
+                var policy = Activator.CreateInstance(typeof(PolicyConfigClientVista)) as IPolicyConfigVista;
+                if (policy == null) return false;
+
+                int hr = policy.SetDefaultEndpoint(device.ID, ERole.eCommunications);
+                MainWindow.Log($"[EchoCancellationHelper] SetDefaultEndpoint(eCommunications) {(string.IsNullOrWhiteSpace(label) ? "" : label)}{device.FriendlyName}. deviceId={device.ID}, hr=0x{hr:X}");
+                return hr == 0;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[EchoCancellationHelper] Error SetDefaultEndpoint(eCommunications) for {device.FriendlyName}: {ex.Message}");
+                return false;
             }
         }
 

@@ -26,8 +26,9 @@
         <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
             <Border x:Name="WindowSurface"
                     Background="{DynamicResource DialogBackgroundBrush}" 
-                    CornerRadius="6" 
-                    ClipToBounds="True">
+                    CornerRadius="8" 
+                    ClipToBounds="False"
+                    Margin="0">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -39,8 +40,9 @@
                     <Border x:Name="TitleBarBorder"
                             Grid.Row="0"
                             Background="{DynamicResource DialogChromeBrush}" 
-                            CornerRadius="6,6,0,0"
-                            ClipToBounds="True">
+                            CornerRadius="8,8,0,0"
+                            ClipToBounds="False"
+                            Margin="0">
                         <Grid MouseDown="TitleBar_MouseDown">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -60,8 +62,7 @@
                                     Name="CloseButton"
                                     Content="✕"
                                     Click="CloseButton_Click"
-                                    Style="{DynamicResource TitleBarCloseButtonStyle}"
-                                    Height="36"/>
+                                    Style="{DynamicResource TitleBarCloseButtonStyle}"/>
                         </Grid>
                     </Border>
 
@@ -104,7 +105,7 @@
                     <!-- Buttons -->
                     <Border Grid.Row="2" 
                             Background="{DynamicResource DialogChromeBrush}" 
-                            CornerRadius="0,0,6,6" 
+                            CornerRadius="0,0,8,8" 
                             ClipToBounds="True">
                         <Grid Margin="16,12">
                             <Button Name="OkButton"
@@ -155,8 +156,9 @@
                     Background="Transparent"
                     BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="1"
-                    CornerRadius="6"
-                    IsHitTestVisible="False"/>
+                    CornerRadius="8"
+                    IsHitTestVisible="False"
+                    Visibility="Collapsed"/>
         </Grid>
     </Grid>
 </Window>

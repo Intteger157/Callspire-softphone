@@ -23,7 +23,7 @@
 		<!-- Application Version -->
 		<!-- Измените ТОЛЬКО это значение перед каждым релизом -->
 		<!-- Остальные версии (AssemblyVersion, FileVersion, InformationalVersion) вычисляются автоматически -->
-		<AppVersion>1.1.3</AppVersion>
+		<AppVersion>1.1.8</AppVersion>
 		
 		<!-- Автоматически вычисляемые версии на основе AppVersion -->
 		<Version>$(AppVersion)</Version>
@@ -31,6 +31,11 @@
 		<FileVersion>$(AppVersion).0</FileVersion>
 		<InformationalVersion>$(AppVersion)</InformationalVersion>
 
+	</PropertyGroup>
+
+	<!-- update-server/ — отдельный ASP.NET-проект в том же репо; не компилировать его в WPF -->
+	<PropertyGroup>
+		<DefaultItemExcludes>$(DefaultItemExcludes);update-server\**\*</DefaultItemExcludes>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -72,6 +77,16 @@
 		<Content Include="tools\**\*">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Native AEC: must sit next to Callspire.exe (P/Invoke). PublishSingleFile does not bundle it. -->
+		<Content Include="native-aec\build\Release\webrtc_apm.dll" Condition="Exists('native-aec\build\Release\webrtc_apm.dll')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+			<Link>webrtc_apm.dll</Link>
 		</Content>
 	</ItemGroup>
 

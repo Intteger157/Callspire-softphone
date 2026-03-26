@@ -10,12 +10,21 @@ namespace Softphone
     {
         /// <summary>
         /// Вычисляет длительность звонка на основе времени начала и текущего времени
+        /// Для SIP звонков запись начинается после 200 OK (когда устанавливается answerTime),
+        /// поэтому используем answerTime для вычисления Duration, если он установлен
+        /// Для WebRTC звонков запись начинается при makeCall_started, поэтому используем startTime
         /// </summary>
         public static TimeSpan? CalculateCallDuration(DateTime startTime, DateTime? answerTime, bool wasAnswered, bool isIncomingCall)
         {
             if (!wasAnswered) return null;
             
-            var effectiveStartTime = isIncomingCall ? (answerTime ?? startTime) : startTime;
+            // Для WebRTC звонков запись начинается при makeCall_started (до call_accepted),
+            // поэтому используем startTime (время начала звонка), а не answerTime
+            // Для SIP звонков запись начинается после 200 OK (когда устанавливается answerTime),
+            // поэтому используем answerTime (время начала записи), если он установлен
+            // Если answerTime установлен, значит это SIP звонок - используем answerTime
+            // Если answerTime не установлен, значит это WebRTC звонок - используем startTime
+            var effectiveStartTime = answerTime.HasValue ? answerTime.Value : startTime;
             return DateTime.Now - effectiveStartTime;
         }
 

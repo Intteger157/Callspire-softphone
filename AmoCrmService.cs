@@ -98,7 +98,8 @@ namespace Softphone
     /// - GET /api/v4/contacts?query={phone} - поиск контактов по телефону
     /// - GET /api/v4/contacts/{id} - получение контакта по ID
     /// - GET /api/v4/leads?filter[contacts][0]={contact_id}&limit=50&order[updated_at]=desc&with=contacts - поиск лидов по контакту
-    /// - POST /api/v4/leads/{id}/notes - добавление примечаний (call_in/call_out для звонков с link на MP3)
+        /// - POST /api/v4/leads/{id}/notes - добавление примечаний (call_in/call_out для звонков с link на MP3)
+        /// - POST /api/v4/calls - добавление звонков с call_result (например "No Answer"); привязка по номеру телефона
     /// - GET /api/v4/account?with=drive_url - получение URL файлового сервиса и current_user_id
     /// - POST {drive_url}/v1.0/sessions - создание сессии для загрузки файла
     /// - GET {drive_url}/v1.0/files/{file_uuid} - получение download.href для загруженного файла
@@ -1648,8 +1649,11 @@ namespace Softphone
                 DateTime callTimeForUpdate = callTime ?? DateTime.UtcNow;
 
                 // Проверяем, является ли это недозвоном ДО вызова UpdateLeadAsync
-                // Недозвон = звонок не был принят (wasAnswered=false) И нет записи И durationSeconds=0
-                bool isMissedCall = !wasAnswered && !hasFile && durationSeconds == 0;
+                // Недозвон = звонок не был принят (wasAnswered=false) И нет записи
+                // КРИТИЧНО: Если был connect (wasAnswered=true) - значит был ответ (абонент или IVR), это НЕ недозвон,
+                // даже если нет записи (например, из-за проблем с RTP пакетами)
+                // ВАЖНО: Не проверяем durationSeconds==0, так как звонок может быть отклонен после гудков (486 Busy Here)
+                bool isMissedCall = !wasAnswered && !hasFile;
                 
                 if (isMissedCall)
                 {
@@ -1988,21 +1992,25 @@ namespace Softphone
                 MainWindow.Log($"[AmoCrmService] Обновление лида: ID = {leadId} (lockKey={lockKey})");
 
                 // Определяем недозвон: звонок не был принят (failed до подключения)
-                // КРИТИЧНО: Если был connect (wasAnswered=true или есть файл записи), значит произошло подключение - 
-                // либо абонент ответил, либо IVR/робот ответил. В этом случае запись должна загружаться.
-                // Недозвон = звонок был failed ДО подключения (нет записи, wasAnswered=false, durationSeconds=0)
+                // КРИТИЧНО: Если был connect (wasAnswered=true), значит произошло подключение - 
+                // либо абонент ответил, либо IVR/робот ответил. В этом случае это НЕ недозвон, даже если нет записи.
+                // Недозвон = звонок не был принят (wasAnswered=false) И нет записи
+                // ВАЖНО: Не проверяем durationSeconds==0, так как звонок может быть отклонен после гудков (486 Busy Here)
+                // В этом случае длительность > 0, но звонок все равно не был принят - это недозвон
                 bool hasRecording = !string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath);
                 
-                // Недозвон определяется как: звонок не был принят (wasAnswered=false) И нет записи И durationSeconds=0
-                // Если был connect (wasAnswered=true) - значит был ответ (абонент или IVR), это не недозвон
+                // Недозвон определяется как: звонок не был принят (wasAnswered=false) И нет записи
+                // КРИТИЧНО: Если был connect (wasAnswered=true) - значит был ответ (абонент или IVR), это НЕ недозвон,
+                // даже если нет записи (например, из-за проблем с RTP пакетами)
                 // Если есть запись - значит был connect, запись должна загружаться
-                bool isMissedCall = !wasAnswered && !hasRecording && durationSeconds == 0;
+                // Не проверяем durationSeconds, так как звонок может быть отклонен после гудков (486 Busy Here)
+                bool isMissedCall = !wasAnswered && !hasRecording;
 
-                // 1) Недозвон: НЕ загружаем запись, создаём только текстовую карточку "Не дозвонился"
+                // 1) Недозвон: добавляем звонок через POST /api/v4/calls с call_result (текст под карточкой 00:00).
                 if (isMissedCall)
                 {
-                    MainWindow.Log("[AmoCrmService] Missed call detected (no recording, wasAnswered=false, duration=0) — creating common note 'Не дозвонился' without recording");
-                    await ManuallyUploadMissedCallToLeadAsync(leadId, phoneNumber, isIncoming);
+                    MainWindow.Log("[AmoCrmService] Missed call detected — adding via /api/v4/calls with call_result='No Answer'");
+                    await AddCallViaCallsApiAsync(phoneNumber, isIncoming, 0, "No Answer", 6, callTime); // 6 = нет связи
                     return null;
                 }
                 
@@ -2082,12 +2090,14 @@ namespace Softphone
                 MainWindow.Log($"[AmoCrmService] Обновление контакта: ID = {contactId} (lockKey={lockKey})");
 
                 bool hasRecording = !string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath);
-                bool isMissedCall = !wasAnswered && !hasRecording && durationSeconds == 0;
+                // Недозвон = звонок не был принят (wasAnswered=false) И нет записи
+                // ВАЖНО: Не проверяем durationSeconds==0, так как звонок может быть отклонен после гудков (486 Busy Here)
+                bool isMissedCall = !wasAnswered && !hasRecording;
 
                 if (isMissedCall)
                 {
-                    MainWindow.Log("[AmoCrmService] Missed call detected — creating common note 'Не дозвонился' on contact");
-                    await AddNoteToContactAsync(contactId, "Не дозвонился");
+                    MainWindow.Log("[AmoCrmService] Missed call detected — adding via /api/v4/calls with call_result='No Answer'");
+                    await AddCallViaCallsApiAsync(phoneNumber, isIncoming, 0, "No Answer", 6, callTime); // 6 = нет связи
                     return null;
                 }
 
@@ -2244,6 +2254,71 @@ namespace Softphone
         }
 
         /// <summary>
+        /// Добавляет звонок через POST /api/v4/calls (как CallGear).
+        /// Позволяет передать call_result (текст под карточкой, например "No Answer") и call_status.
+        /// Привязка к сделке/контакту выполняется по алгоритму Kommo по номеру телефона (entity_id указать нельзя).
+        /// Документация: https://developers.kommo.com/reference/add-calls
+        /// </summary>
+        /// <param name="callStatus">6 = нет связи, 7 = линия занята (остальные: 1–5 см. документацию)</param>
+        private async Task AddCallViaCallsApiAsync(string phoneNumber, bool isIncoming, int durationSeconds, string? callResult = null, int? callStatus = null, DateTime? callTime = null)
+        {
+            try
+            {
+                await EnsureValidTokenAsync();
+                await RateLimitAsync();
+
+                string direction = isIncoming ? "inbound" : "outbound";
+                string uniqSource = $"{direction}_{NormalizePhoneNumber(phoneNumber)}_{(callTime ?? DateTime.UtcNow):yyyyMMddHHmmss}";
+                string uniq;
+                using (var sha = SHA256.Create())
+                {
+                    byte[] hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(uniqSource));
+                    uniq = BitConverter.ToString(hashBytes, 0, 8).Replace("-", "").ToLowerInvariant();
+                }
+
+                var callPayload = new JObject
+                {
+                    ["direction"] = direction,
+                    ["duration"] = durationSeconds,
+                    ["source"] = "Callspire",
+                    ["phone"] = phoneNumber,
+                    ["uniq"] = uniq
+                };
+                if (!string.IsNullOrEmpty(callResult))
+                    callPayload["call_result"] = callResult;
+                if (callStatus.HasValue)
+                    callPayload["call_status"] = callStatus.Value;
+                if (_currentUserId.HasValue)
+                {
+                    callPayload["responsible_user_id"] = _currentUserId.Value;
+                    callPayload["created_by"] = _currentUserId.Value;
+                }
+                if (callTime.HasValue)
+                    callPayload["created_at"] = (int)(callTime.Value.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+
+                var body = new JArray { callPayload };
+                var content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
+                string apiUrl = $"{GetApiBaseUrl()}/calls";
+                MainWindow.Log($"[AmoCrmService] 📝 POST /api/v4/calls (call_result={callResult ?? "null"}, call_status={callStatus})");
+                var response = await _httpClient.PostAsync(apiUrl, content);
+                string responseContent = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    MainWindow.Log($"[AmoCrmService] ❌ Ошибка добавления звонка через /calls: {response.StatusCode} - {responseContent}");
+                }
+                else
+                {
+                    MainWindow.Log($"[AmoCrmService] ✅ Звонок добавлен через /api/v4/calls (uniq={uniq})");
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[AmoCrmService] Error adding call via /calls: {ex.Message}");
+            }
+        }
+
+        /// <summary>
         /// Добавляет примечание типа call_in или call_out к лиду.
         /// Использует params.link для кнопок "Прослушать" и "Скачать" в AmoCRM.
         /// uniq генерируется через SHA256 от стабильных полей для идемпотентности.
@@ -2295,6 +2370,8 @@ namespace Softphone
                     {
                         callParams["link"] = audioFileLink;
                     }
+
+                    // Комментарий (comment) НЕ поддерживается API Kommo для call_in/call_out — возвращает 400 FieldNotExpected
 
                     var noteObject = new JObject
                     {
@@ -2562,7 +2639,7 @@ namespace Softphone
 
         /// <summary>
         /// Публичный метод для ручного создания карточки недозвона (без записи).
-        /// Создаёт простое текстовое примечание "Не дозвонился" (как в старой логике).
+        /// Создаёт карточку звонка call_in/call_out с duration=0, чтобы AmoCRM фиксировала как проделанную работу.
         /// </summary>
         public async Task<bool> ManuallyUploadMissedCallToLeadAsync(long leadId, string phoneNumber, bool isIncoming)
         {
@@ -2574,13 +2651,11 @@ namespace Softphone
                     return false;
                 }
 
-                MainWindow.Log($"[AmoCrmService] Manual upload: creating missed call COMMON note for lead {leadId}, phone={phoneNumber}");
+                MainWindow.Log($"[AmoCrmService] Manual upload: creating missed call card (call_in/call_out, duration=0) for lead {leadId}, phone={phoneNumber}");
 
-                // Используем обычное текстовое примечание, чтобы в Kommo выглядело как "Не дозвонился"
-                string noteText = "Не дозвонился";
-                await AddNoteToLeadAsync(leadId, noteText);
+                await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, 0, false, null, null);
 
-                MainWindow.Log($"[AmoCrmService] ✅ Successfully created missed call common note for lead {leadId}");
+                MainWindow.Log($"[AmoCrmService] ✅ Successfully created missed call card for lead {leadId}");
 
                 return true;
             }

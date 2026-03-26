@@ -59,5 +59,11 @@ artifacts/
 # AmoCRM Widget - отдельный репозиторий
 amocrm-widget/
 
+# Update server runtime data (installers + update.json)
+update-server/**/data/
+
+# Update server publish output (contains appsettings snapshots etc)
+update-server/**/publish/
+
 # Windows reserved names
 nul

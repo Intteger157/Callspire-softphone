@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Newtonsoft.Json;
 
 namespace Softphone
@@ -14,6 +15,16 @@ namespace Softphone
         public string? SipPassword { get; set; }
 
         public string? SipPasswordEncrypted { get; set; } // Зашифрованный пароль SIP (PBX)
+        
+        // Connection display names (for UI)
+        public string? MainConnectionName { get; set; } // Пользовательское название основного подключения
+        public string? SecondaryConnectionName { get; set; } // Пользовательское название второго подключения
+        
+        // Second SIP connection settings (SIP only, independent from main connection)
+        public string? SipServer2 { get; set; }
+        public string? SipUsername2 { get; set; }
+        public string? SipPasswordEncrypted2 { get; set; } // Зашифрованный пароль для второго SIP подключения
+        public string? RtpServer2 { get; set; } // RTP сервер для второго подключения (если отличается от SIP сервера, например для Beeline: 62.105.133.230)
         
         // Audio device settings
         public string? MicrophoneDeviceGuid { get; set; }
@@ -46,6 +57,22 @@ namespace Softphone
         /// </summary>
         public bool EnableWebRtcDebug { get; set; } = true;
         
+        /// <summary>
+        /// Пользовательский TURN‑сервер для WebRTC (например: "turn:turn.example.com:3478?transport=udp").
+        /// Если не задан, используются встроенные STUN/TURN сервера по умолчанию.
+        /// </summary>
+        public string? WebRtcTurnUri { get; set; }
+        
+        /// <summary>
+        /// Имя пользователя для аутентификации на TURN‑сервере (опционально).
+        /// </summary>
+        public string? WebRtcTurnUsername { get; set; }
+        
+        /// <summary>
+        /// Пароль для аутентификации на TURN‑сервере (опционально).
+        /// </summary>
+        public string? WebRtcTurnPassword { get; set; }
+        
         // Call recording settings
         public bool EnableCallRecording { get; set; } = false; // Включить запись звонков
         
@@ -71,6 +98,17 @@ namespace Softphone
         public string? AmoCrmOAuthAccessTokenEncrypted { get; set; } // Зашифрованный OAuth Access Token
         public string? AmoCrmOAuthRefreshTokenEncrypted { get; set; } // Зашифрованный OAuth Refresh Token
         public DateTime? AmoCrmOAuthTokenExpiresAt { get; set; } // Время истечения OAuth токена
+
+        // MikoPBX CDR integration
+        public bool EnableMikoPbxCdr { get; set; } = false;
+        public string? MikoPbxCdrServiceUrl { get; set; } // URL прокси-сервиса CDR (например "https://pbx.example.com:8443")
+        public string? MikoPbxCdrTokenEncrypted { get; set; } // JWT-токен (зашифрован DPAPI)
+        public string? MikoPbxExtension { get; set; } // Внутренний номер (например "204")
+
+        // MikoPBX Originate / CallerID selection
+        public string? SelectedOutboundCallerId { get; set; } // Last selected CallerID from dropdown
+        [JsonProperty(NullValueHandling = NullValueHandling.Ignore)]
+        public List<string>? CachedOutboundCallerIds { get; set; } // Cached list from proxy for offline
     }
 }
 

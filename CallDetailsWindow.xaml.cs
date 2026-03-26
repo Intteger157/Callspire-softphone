@@ -19,7 +19,9 @@ namespace Softphone
     public partial class CallDetailsWindow : Window
     {
         private CallHistoryItem _callItem;
-        private bool _isWebMFile = false; // Флаг для WebM файлов (для логирования)
+        private bool _isWebMFile = false;
+        private int _pbxRecordingDuration = 0;
+        private bool _outboundCallerIdLoadStarted = false;
         private List<string> _allLogs = new List<string>();
         private List<string> _amoCrmLogs = new List<string>();
         private List<string> _webRtcLogs = new List<string>();
@@ -57,6 +59,9 @@ namespace Softphone
                 $"FileExists={(string.IsNullOrEmpty(callItem.RecordingFilePath) ? "N/A" : File.Exists(callItem.RecordingFilePath).ToString())}");
             
             LoadCallDetails();
+
+            // Догружаем Outbound CallerID из PBX CDR, если он еще не успел появиться на момент открытия окна.
+            _ = TryLoadOutboundCallerIdFromPbxAsync();
             
             // Если AmoCRM статус ещё не финальный — запускаем таймер,
             // чтобы обновить поля когда фоновая обработка завершится.
@@ -68,10 +73,78 @@ namespace Softphone
             this.Closed += (s, e) => StopAmoCrmRefreshTimer();
         }
 
+        private async Task TryLoadOutboundCallerIdFromPbxAsync()
+        {
+            if (_outboundCallerIdLoadStarted) return;
+            if (_callItem.IsIncoming) return;
+            if (!string.IsNullOrEmpty(_callItem.OutboundCallerId)) return;
+
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            var cdrService = mainWindow?.GetMikoPbxCdrService();
+            if (cdrService == null) return;
+
+            _outboundCallerIdLoadStarted = true;
+            try
+            {
+                string? callerId = null;
+                for (int attempt = 1; attempt <= 4; attempt++)
+                {
+                    int delayMs = attempt == 1 ? 3000 : attempt == 2 ? 5000 : attempt == 3 ? 10000 : 15000;
+                    await Task.Delay(delayMs).ConfigureAwait(false);
+
+                    callerId = await cdrService.GetCallCallerIdAsync(_callItem.PhoneNumber, _callItem.CallTime).ConfigureAwait(false);
+                    if (!string.IsNullOrEmpty(callerId))
+                        break;
+                }
+
+                if (!string.IsNullOrEmpty(callerId))
+                {
+                    _callItem.OutboundCallerId = callerId;
+                    try
+                    {
+                        Dispatcher.Invoke(() =>
+                        {
+                            OutboundCallerIdLabel.Visibility = Visibility.Visible;
+                            OutboundCallerIdTextBlock.Visibility = Visibility.Visible;
+                            OutboundCallerIdTextBlock.Text = callerId;
+                        });
+                    }
+                    catch
+                    {
+                        // Окно могли закрыть; в этом случае достаточно хотя бы обновить историю.
+                    }
+
+                    var histService = new CallHistoryService();
+                    histService.UpdateOutboundCallerId(_callItem.PhoneNumber, _callItem.CallTime, callerId);
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[CallDetailsWindow] PBX CallerID load failed: {ex.Message}");
+            }
+            finally
+            {
+                _outboundCallerIdLoadStarted = false;
+            }
+        }
+
+        private string GetTransportText(CallTransport transport)
+        {
+            return transport == CallTransport.WebRtc ? "WebRTC" : "SIP";
+        }
+
+        private Brush GetTransportBrush(CallTransport transport)
+        {
+            return transport == CallTransport.WebRtc
+                ? new SolidColorBrush(Color.FromRgb(37, 99, 235))   // синий для WebRTC
+                : new SolidColorBrush(Color.FromRgb(16, 185, 129)); // зелёный для SIP
+        }
+
         private void LoadCallDetails()
         {
-            // Проверяем, включена ли запись звонков в настройках
+            // Проверяем настройки приложения (запись, AmoCRM и т.д.)
             bool isCallRecordingEnabled = false;
+            bool isAmoCrmEnabled = false;
             try
             {
                 string settingsFilePath = AppDataHelper.GetSettingsFilePath();
@@ -80,13 +153,35 @@ namespace Softphone
                     string json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
                     isCallRecordingEnabled = settings?.EnableCallRecording ?? false;
+                    isAmoCrmEnabled = settings?.EnableAmoCrmIntegration ?? false;
                 }
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[CallDetailsWindow] Error reading call recording setting: {ex.Message}");
             }
-            
+
+            // Если интеграция с AmoCRM отключена — скрываем связанные поля.
+            if (!isAmoCrmEnabled)
+            {
+                RecordAddedLabel.Visibility = Visibility.Collapsed;
+                AmoCrmLeadTextBlock.Visibility = Visibility.Collapsed;
+                OpenAmoCrmLeadButton.Visibility = Visibility.Collapsed;
+                OpenAmoCrmContactButton.Visibility = Visibility.Collapsed;
+
+                AmoCrmContactNameLabel.Visibility = Visibility.Collapsed;
+                AmoCrmContactNameTextBlock.Visibility = Visibility.Collapsed;
+
+                AmoCrmUploadStatusLabel.Visibility = Visibility.Collapsed;
+                AmoCrmUploadStatusTextBlock.Visibility = Visibility.Collapsed;
+
+                // Также скрываем элементы для загрузки записи/недозвона,
+                // так как без AmoCRM они не имеют смысла.
+                UploadRecordingButton.Visibility = Visibility.Collapsed;
+                UploadMissedCallButton.Visibility = Visibility.Collapsed;
+                UploadMissedCallTextBlock.Visibility = Visibility.Collapsed;
+            }
+
             // Скрываем раздел "Call Recording", если запись отключена в настройках
             if (!isCallRecordingEnabled)
             {
@@ -96,8 +191,21 @@ namespace Softphone
             
             // Call Information
             PhoneNumberTextBlock.Text = _callItem.PhoneNumber;
+
+            // Outbound CallerID — show only if available (populated via PBX CDR API, not from PAI)
+            if (!string.IsNullOrEmpty(_callItem.OutboundCallerId))
+            {
+                OutboundCallerIdLabel.Visibility = Visibility.Visible;
+                OutboundCallerIdTextBlock.Visibility = Visibility.Visible;
+                OutboundCallerIdTextBlock.Text = _callItem.OutboundCallerId;
+            }
+
             CallTimeTextBlock.Text = _callItem.CallTime.ToString("yyyy-MM-dd HH:mm:ss");
             DirectionTextBlock.Text = _callItem.IsIncoming ? "Incoming" : "Outgoing";
+
+            // Транспортный бейдж (SIP/WebRTC)
+            TransportBadgeTextBlock.Text = GetTransportText(_callItem.Transport);
+            TransportBadgeBorder.Background = GetTransportBrush(_callItem.Transport);
             StatusTextBlock.Text = GetStatusText(_callItem.Status);
             StatusTextBlock.Foreground = GetStatusColor(_callItem.Status);
             
@@ -120,45 +228,52 @@ namespace Softphone
             EndedByTextBlock.Text = GetEndedByText(_callItem.EndedBy);
             EndedByTextBlock.Foreground = GetEndedByColor(_callItem.EndedBy);
 
-            // Record added to (lead ID или Contact)
-            if (_callItem.AmoCrmLeadId.HasValue)
+            // Блок AmoCRM заполняем только если интеграция включена.
+            if (isAmoCrmEnabled)
             {
-                // Запись загружена в лид
-                AmoCrmLeadTextBlock.Text = $"Lead #{_callItem.AmoCrmLeadId.Value}";
-                OpenAmoCrmLeadButton.Visibility = Visibility.Visible;
-                OpenAmoCrmContactButton.Visibility = Visibility.Collapsed;
-            }
-            else if (_callItem.AmoCrmUploadStatus == AmoCrmUploadStatus.Uploaded)
-            {
-                // Запись загружена в контакт (по алгоритму CallGear: нет открытых лидов)
-                AmoCrmLeadTextBlock.Text = "Contact";
-                OpenAmoCrmLeadButton.Visibility = Visibility.Collapsed;
-                OpenAmoCrmContactButton.Visibility = Visibility.Visible;
-            }
-            else
-            {
-                // Запись не загружена
-                AmoCrmLeadTextBlock.Text = "Not added to any lead";
-                OpenAmoCrmLeadButton.Visibility = Visibility.Collapsed;
-                // Показываем кнопку контакта, если контакт найден в AmoCRM
-                OpenAmoCrmContactButton.Visibility = Visibility.Collapsed; // Будет показана после загрузки contact ID
-            }
-            
-            // Загружаем contact ID для кнопки "Open Contact"
-            _ = LoadAmoCrmContactIdAsync();
+                // Record added to (lead ID или Contact)
+                if (_callItem.AmoCrmLeadId.HasValue)
+                {
+                    // Запись загружена в лид
+                    AmoCrmLeadTextBlock.Text = $"Lead #{_callItem.AmoCrmLeadId.Value}";
+                    AmoCrmLeadTextBlock.Visibility = Visibility.Visible;
+                    OpenAmoCrmLeadButton.Visibility = Visibility.Visible;
+                    OpenAmoCrmContactButton.Visibility = Visibility.Collapsed;
+                }
+                else if (_callItem.AmoCrmUploadStatus == AmoCrmUploadStatus.Uploaded)
+                {
+                    // Запись загружена в контакт (по алгоритму CallGear: нет открытых лидов)
+                    AmoCrmLeadTextBlock.Text = "Contact";
+                    AmoCrmLeadTextBlock.Visibility = Visibility.Visible;
+                    OpenAmoCrmLeadButton.Visibility = Visibility.Collapsed;
+                    OpenAmoCrmContactButton.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    // Запись не загружена
+                    AmoCrmLeadTextBlock.Text = "Not added to any lead";
+                    AmoCrmLeadTextBlock.Visibility = Visibility.Visible;
+                    OpenAmoCrmLeadButton.Visibility = Visibility.Collapsed;
+                    // Показываем кнопку контакта, если контакт найден в AmoCRM
+                    OpenAmoCrmContactButton.Visibility = Visibility.Collapsed; // Будет показана после загрузки contact ID
+                }
 
-            // AmoCRM Contact Name - загружаем асинхронно
-            AmoCrmContactNameTextBlock.Text = "Loading...";
-            _ = LoadAmoCrmContactNameAsync();
-            
-            // Загружаем contact ID для кнопки "Open Contact" (если запись прикреплена к контакту или нет лида)
-            if (!_callItem.AmoCrmLeadId.HasValue)
-            {
+                // Загружаем contact ID для кнопки "Open Contact"
                 _ = LoadAmoCrmContactIdAsync();
-            }
 
-            // AmoCRM Upload Status
-            UpdateAmoCrmUploadStatusDisplay();
+                // AmoCRM Contact Name - загружаем асинхронно
+                AmoCrmContactNameTextBlock.Text = "Loading...";
+                _ = LoadAmoCrmContactNameAsync();
+
+                // Загружаем contact ID для кнопки "Open Contact" (если запись прикреплена к контакту или нет лида)
+                if (!_callItem.AmoCrmLeadId.HasValue)
+                {
+                    _ = LoadAmoCrmContactIdAsync();
+                }
+
+                // AmoCRM Upload Status
+                UpdateAmoCrmUploadStatusDisplay();
+            }
 
             // Timing Information
             if (_callItem.RingbackStartTime.HasValue && _callItem.RingbackEndTime.HasValue)
@@ -590,35 +705,110 @@ namespace Softphone
 
         private async void UploadRecordingButton_Click(object sender, RoutedEventArgs e)
         {
+            Window? msgOwner = (IsLoaded && IsVisible) ? this : null;
             try
             {
-                // Используем файл записи, связанный с этим звонком
+                _pbxRecordingDuration = 0;
                 string? recordingFile = _callItem.RecordingFilePath;
-                
-                if (string.IsNullOrEmpty(recordingFile))
+                bool downloadedFromServer = false;
+
+                var mainWindow = Application.Current.MainWindow as MainWindow;
+                var cdrService = mainWindow?.GetMikoPbxCdrService();
+
+                // Если настроен MikoPBX CDR — сначала берём запись с АТС (MP3), даже если локально уже есть WAV/WebM.
+                // Иначе в Amo уходит клиентская запись, а не серверная.
+                if (cdrService != null)
                 {
-                    CustomMessageBox.Show(
-                        "No recording file found for this call.\n\nCannot upload recording.",
-                        "No Recording File",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning,
-                        this);
-                    return;
+                    UploadRecordingButton.IsEnabled = false;
+                    UploadRecordingButton.Content = "Fetching from PBX...";
+                    try
+                    {
+                        var records = await cdrService.GetCdrAsync(
+                            _callItem.CallTime.AddMinutes(-5),
+                            _callItem.CallTime.AddMinutes(5),
+                            dst: _callItem.PhoneNumber,
+                            limit: 15);
+
+                        CdrRecord? best = null;
+                        double bestDiff = double.MaxValue;
+                        foreach (var r in records)
+                        {
+                            if (!string.IsNullOrEmpty(r.Recording) && !string.IsNullOrEmpty(r.LinkedId) &&
+                                DateTime.TryParse(r.Start, out var recTime))
+                            {
+                                double diff = Math.Abs((recTime - _callItem.CallTime).TotalSeconds);
+                                if (diff < bestDiff) { bestDiff = diff; best = r; }
+                            }
+                        }
+
+                        if (best != null)
+                        {
+                            _pbxRecordingDuration = best.Duration;
+                            string destFolder = Path.Combine(
+                                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                                "Callspire", "Recordings", "PBX");
+
+                            string? downloaded = await cdrService.DownloadRecordingAsync(best.LinkedId, destFolder);
+                            if (!string.IsNullOrEmpty(downloaded) && File.Exists(downloaded))
+                            {
+                                recordingFile = downloaded;
+                                downloadedFromServer = true;
+                                _callItem.RecordingFilePath = downloaded;
+                                RecordingFilePathTextBlock.Text = Path.GetFileName(downloaded);
+                                PlayRecordingButton.IsEnabled = true;
+                                OpenFolderButton.IsEnabled = true;
+
+                                var histService = new CallHistoryService();
+                                histService.UpdateRecordingFilePath(_callItem.PhoneNumber, _callItem.CallTime, downloaded);
+
+                                MainWindow.Log($"[CallDetailsWindow] Using PBX recording for Amo upload: {downloaded}");
+                            }
+                            else
+                            {
+                                _pbxRecordingDuration = 0;
+                                MainWindow.Log("[CallDetailsWindow] PBX recording download failed; falling back to local file if present");
+                            }
+                        }
+                        else
+                        {
+                            MainWindow.Log("[CallDetailsWindow] No CDR row with server recording for this call; falling back to local file if present");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Важно: PBX может быть недоступен/медленный. Тогда используем локальную запись, чтобы кнопка не “умирала”.
+                        _pbxRecordingDuration = 0;
+                        MainWindow.Log($"[CallDetailsWindow] PBX CDR fetch failed: {ex.Message}. Falling back to local recording.");
+                    }
                 }
-                
-                if (!File.Exists(recordingFile))
+
+                if (string.IsNullOrEmpty(recordingFile) || !File.Exists(recordingFile))
                 {
-                    CustomMessageBox.Show(
-                        $"Recording file not found:\n{Path.GetFileName(recordingFile)}\n\nThe file may still be processing.",
-                        "File Not Found",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Warning,
-                        this);
+                    if (cdrService == null)
+                    {
+                        CustomMessageBox.Show(
+                            "No recording file found.\n\nEnable MikoPBX gateway (Callspire proxy) to fetch the server recording, or ensure a local recording exists.",
+                            "No Recording",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning,
+                            msgOwner);
+                    }
+                    else
+                    {
+                        CustomMessageBox.Show(
+                            "No recording available.\n\nCould not download from PBX and no local recording file was found.",
+                            "No Recording",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning,
+                            msgOwner);
+                    }
+
+                    UploadRecordingButton.IsEnabled = true;
+                    UploadRecordingButton.Content = "Upload Recording";
                     return;
                 }
 
                 // Get AmoCrmService from MainWindow
-                var mainWindow = Application.Current.MainWindow as MainWindow;
                 if (mainWindow == null)
                 {
                     CustomMessageBox.Show(
@@ -626,7 +816,9 @@ namespace Softphone
                         "Error",
                         MessageBoxButton.OK,
                         MessageBoxImage.Error,
-                        this);
+                        msgOwner);
+                    UploadRecordingButton.IsEnabled = true;
+                    UploadRecordingButton.Content = "Upload Recording";
                     return;
                 }
 
@@ -638,7 +830,9 @@ namespace Softphone
                         "AmoCRM Not Available",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning,
-                        this);
+                        msgOwner);
+                    UploadRecordingButton.IsEnabled = true;
+                    UploadRecordingButton.Content = "Upload Recording";
                     return;
                 }
 
@@ -655,7 +849,7 @@ namespace Softphone
                         "No Leads Found",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning,
-                        this);
+                        msgOwner);
                     UploadRecordingButton.IsEnabled = true;
                     UploadRecordingButton.Content = "Upload Recording";
                     return;
@@ -681,10 +875,9 @@ namespace Softphone
                     MainWindow.Log($"[CallDetailsWindow] Error loading subdomain: {ex.Message}");
                 }
 
-                var selectionWindow = new LeadSelectionWindow(leads, subdomain)
-                {
-                    Owner = this
-                };
+                var selectionWindow = new LeadSelectionWindow(leads, subdomain);
+                if (IsLoaded && IsVisible)
+                    selectionWindow.Owner = this;
                 
                 bool? selectionResult = selectionWindow.ShowDialog();
                 if (selectionResult == true && selectionWindow.SelectedLeadId.HasValue)
@@ -715,7 +908,7 @@ namespace Softphone
                         "No Lead Selected",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning,
-                        this);
+                        msgOwner);
                     UploadRecordingButton.IsEnabled = true;
                     UploadRecordingButton.Content = "Upload Recording";
                     return;
@@ -724,19 +917,16 @@ namespace Softphone
                 // Получаем информацию о звонке для создания примечания
                 bool isIncoming = _callItem.IsIncoming;
 
-                // Используем длительность из истории звонков, а если её нет (0 секунд),
-                // оцениваем по размеру WAV-файла (PCM 16bit, 44.1 kHz, mono).
                 int durationSeconds;
                 if (_callItem.Duration.HasValue && _callItem.Duration.Value.TotalSeconds > 0.5)
                 {
                     durationSeconds = (int)Math.Round(_callItem.Duration.Value.TotalSeconds);
                 }
-                else
+                else if (!downloadedFromServer)
                 {
                     try
                     {
                         var fi = new FileInfo(recordingFile);
-                        // bytesPerSecond = sampleRate (44100) * channels (1) * bytesPerSample (2)
                         double bytesPerSecond = 44100.0 * 1 * 2;
                         durationSeconds = (int)Math.Max(1, Math.Round(fi.Length / bytesPerSecond));
                         MainWindow.Log($"[CallDetailsWindow] Estimated call duration from file size: {durationSeconds} s (length={fi.Length} bytes)");
@@ -746,6 +936,10 @@ namespace Softphone
                         MainWindow.Log($"[CallDetailsWindow] Error estimating duration from file: {ex.Message}");
                         durationSeconds = 0;
                     }
+                }
+                else
+                {
+                    durationSeconds = _pbxRecordingDuration;
                 }
 
                 bool wasAnswered = _callItem.WasAnswered;
@@ -766,7 +960,7 @@ namespace Softphone
                         "Upload Successful",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information,
-                        this);
+                        msgOwner);
                     
                     // Update UI - show that file was uploaded
                     PlayRecordingButton.IsEnabled = File.Exists(recordingFile);
@@ -793,7 +987,7 @@ namespace Softphone
                         "Upload Failed",
                         MessageBoxButton.OK,
                         MessageBoxImage.Error,
-                        this);
+                        msgOwner);
                     
                     // Update upload status
                     _callItem.AmoCrmUploadStatus = AmoCrmUploadStatus.Failed;
@@ -814,7 +1008,7 @@ namespace Softphone
                     "Error",
                     MessageBoxButton.OK,
                     MessageBoxImage.Error,
-                    this);
+                    msgOwner);
                 UploadRecordingButton.IsEnabled = true;
                 UploadRecordingButton.Content = "Upload Recording";
             }

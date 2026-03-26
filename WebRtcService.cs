@@ -861,6 +861,8 @@ namespace Softphone
         private int _reinitInFlight = 0; // prevents duplicate initUA loops (e.g., Save&Connect + timer)
         private DateTime _suppressAutoReconnectUntilUtc = DateTime.MinValue; // grace window after initUA
         private DateTime _lastInitUaSentUtc = DateTime.MinValue;
+        private bool _initialConnectionSafetyNetScheduled = false; // prevents multiple safety-net timers for initial connection
+        private bool _wsConnectedAfterInitUa = false; // tracks if ws_connected arrived after last initUA
 
         private sealed class UaConfigSnapshot
         {
@@ -1159,6 +1161,13 @@ namespace Softphone
                 MainWindow.Log($"[WebRtcService] AutoReconnect: attempting initUA (attempt={_reconnectAttempt}, state={state}, wsUri={(string.IsNullOrEmpty(cfg.WsUri) ? "empty" : "set")}, sipUri={cfg.SipUri})");
                 await ReinitializeUAAsync(cfg.WsUri, cfg.SipUri, cfg.Username, cfg.Password);
 
+                // Re-capture attempt snapshot AFTER ReinitializeUAAsync because it resets _reconnectAttempt to 0.
+                int postInitAttempt;
+                lock (_lock)
+                {
+                    postInitAttempt = _reconnectAttempt;
+                }
+
                 // If no events arrive (e.g., WS down or JS stuck), schedule a follow-up attempt only if
                 // we are still not registered after a short grace period.
                 _ = Task.Run(async () =>
@@ -1168,7 +1177,7 @@ namespace Softphone
                         await Task.Delay(TimeSpan.FromSeconds(6));
                         lock (_lock)
                         {
-                            if (!_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected && _reconnectAttempt == attemptSnapshot)
+                            if (!_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected && _reconnectAttempt == postInitAttempt)
                             {
                                 ScheduleReconnect("post_initUA_check", immediate: false);
                             }
@@ -1280,6 +1289,8 @@ namespace Softphone
                     _activeSessionId = null;
                     _ringingSessionId = null;
                     _state = WebRtcCallState.Idle;
+                    _initialConnectionSafetyNetScheduled = false; // Reset flag on state reset
+                    _wsConnectedAfterInitUa = false; // Reset flag on state reset
                 }
             }
 
@@ -1467,12 +1478,18 @@ namespace Softphone
                 {
                     switch (type)
                     {
+                        case "ws_connected":
+                        case "ua_connected":
+                            _wsConnectedAfterInitUa = true; // Mark that WebSocket connected after initUA
+                            MainWindow.Log($"[WebRtcService] OnEngineEvent: WebSocket connected ({type})");
+                            break;
                         case "registered":
                         case "ua_registered":
                             _registered = true;
                             _lastRegisteredUtc = DateTime.UtcNow;
                             _reconnectAttempt = 0;
                             _nextReconnectUtc = DateTime.MinValue;
+                            _initialConnectionSafetyNetScheduled = false; // Reset flag on successful registration
                             CancelScheduledReconnectLocked("registered");
                             MainWindow.Log($"[WebRtcService] OnEngineEvent: UA registered ({type}), setting _registered=true, _lastRegisteredUtc={_lastRegisteredUtc:HH:mm:ss.fff}, IsReadyForCalls={IsReadyForCalls}");
                             break;
@@ -2598,13 +2615,53 @@ namespace Softphone
                     // During this window we must not schedule auto-reconnect attempts, otherwise we create loops.
                     _lastInitUaSentUtc = DateTime.UtcNow;
                     _suppressAutoReconnectUntilUtc = _lastInitUaSentUtc + TimeSpan.FromSeconds(4);
+                    _wsConnectedAfterInitUa = false; // Reset flag - we expect ws_connected after initUA
 
                     // Cancel any scheduled reconnect timers from previous failures.
                     CancelScheduledReconnectLocked("manual_reinit");
                     _reconnectAttempt = 0;
                 }
 
+                // Capture reconnect attempt BEFORE sending initUA to detect if this is initial connection
+                int reconnectAttemptBeforeInit;
+                bool shouldScheduleInitialSafetyNet = false;
+                lock (_lock)
+                {
+                    reconnectAttemptBeforeInit = _reconnectAttempt;
+                    // Only schedule safety-net for initial connection AND if not already scheduled
+                    if (reconnectAttemptBeforeInit == 0 && !_initialConnectionSafetyNetScheduled)
+                    {
+                        _initialConnectionSafetyNetScheduled = true;
+                        shouldScheduleInitialSafetyNet = true;
+                    }
+                }
+
                 MainWindow.Log($"[WebRtcService] ReinitializeUAAsync: Reinitializing UA with new credentials (user={username}, sipUri={sipUri}, debug={DebugEnabled})");
+
+                // Загружаем TURN‑параметры из настроек (если заданы)
+                string? turnServer = null;
+                string? turnUsername = null;
+                string? turnPassword = null;
+                try
+                {
+                    var settingsPath = AppDataHelper.GetSettingsFilePath();
+                    if (System.IO.File.Exists(settingsPath))
+                    {
+                        var json = System.IO.File.ReadAllText(settingsPath);
+                        var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                        if (settings != null)
+                        {
+                            turnServer = settings.WebRtcTurnUri;
+                            turnUsername = settings.WebRtcTurnUsername;
+                            turnPassword = settings.WebRtcTurnPassword;
+                        }
+                    }
+                }
+                catch
+                {
+                    // best‑effort: отсутствие TURN‑настроек не критично
+                }
+
                 await _engine.SendAsync(new
                 {
                     cmd = "initUA",
@@ -2612,9 +2669,54 @@ namespace Softphone
                     sipUri = sipUri,
                     user = username,
                     pass = password,
-                    enableDebug = DebugEnabled
+                    enableDebug = DebugEnabled,
+                    turnServer,
+                    turnUsername,
+                    turnPassword
                 });
                 MainWindow.Log("[WebRtcService] ReinitializeUAAsync: initUA command sent");
+
+                // Check if ws_connected arrives after grace window (5 seconds = grace window 4s + 1s buffer)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(5));
+                        lock (_lock)
+                        {
+                            // If ws_connected didn't arrive after grace window, schedule reconnect
+                            if (!_wsConnectedAfterInitUa && !_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected)
+                            {
+                                MainWindow.Log("[WebRtcService] ReinitializeUAAsync: ws_connected did not arrive after grace window, scheduling reconnect");
+                                ScheduleReconnect("no_ws_connected_after_initua", immediate: false);
+                            }
+                        }
+                    }
+                    catch { }
+                });
+
+                // Safety-net: Only for INITIAL connection (not auto-reconnect), and only once.
+                // Auto-reconnect already has its own safety-net in TryReconnectAsync.
+                if (shouldScheduleInitialSafetyNet)
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(TimeSpan.FromSeconds(6));
+                            lock (_lock)
+                            {
+                                // Only trigger if still not registered AND reconnect attempt is still 0 (no auto-reconnect happened)
+                                if (!_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected && _reconnectAttempt == 0)
+                                {
+                                    MainWindow.Log("[WebRtcService] ReinitializeUAAsync: Initial connection safety-net triggered - no registration after 6s, scheduling reconnect");
+                                    ScheduleReconnect("initial_connection_safety_net", immediate: false);
+                                }
+                            }
+                        }
+                        catch { }
+                    });
+                }
             }
             catch (Exception ex)
             {

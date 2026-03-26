@@ -189,25 +189,23 @@ namespace Softphone
                 // Не применяем к CustomMessageBox - оно использует WPF скругления
                 if (window is CustomMessageBox) return;
                 
-                // Convention-based: these names exist on windows we adjusted (MainWindow/SettingsWindow).
+                // Теперь используем скругления, поэтому не отключаем их
+                // Оставляем ClipToBounds для правильной отрисовки скруглений
                 if (window.FindName("WindowSurface") is Border surface)
                 {
-                    surface.CornerRadius = new CornerRadius(0);
-                    surface.ClipToBounds = false;
+                    surface.ClipToBounds = true;
                 }
                 if (window.FindName("WindowStroke") is Border stroke)
                 {
-                    stroke.Visibility = Visibility.Collapsed;
+                    // WindowStroke остается видимым для скругленных углов
                 }
                 if (window.FindName("TitleBarBorder") is Border titleBar)
                 {
-                    titleBar.CornerRadius = new CornerRadius(0);
-                    titleBar.ClipToBounds = false;
+                    titleBar.ClipToBounds = true;
                 }
                 if (window.FindName("SidebarBorder") is Border sidebar)
                 {
-                    sidebar.CornerRadius = new CornerRadius(0);
-                    sidebar.ClipToBounds = false;
+                    sidebar.ClipToBounds = true;
                 }
             }
             catch { }

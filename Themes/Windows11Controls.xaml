@@ -65,6 +65,13 @@
                                           ClickMode="Press"
                                           Background="Transparent"
                                           BorderThickness="0">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="ToggleButton">
+                                        <Border Background="{TemplateBinding Background}" SnapsToDevicePixels="True">
+                                            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition/>
