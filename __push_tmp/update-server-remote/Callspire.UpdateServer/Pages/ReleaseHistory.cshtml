@@ -1,0 +1,121 @@
+@page
+@model Callspire.UpdateServer.Pages.ReleaseHistoryModel
+@{
+    ViewData["Title"] = "Release history";
+}
+
+<h1 class="page-title">Release history</h1>
+<p class="lead page-lead">
+    <a href="/Dashboard" class="nav-external" style="color:var(--accent);font-weight:600;text-decoration:none;">Back to Dashboard</a>
+</p>
+
+<section class="card">
+    <h2>Archived releases</h2>
+    @if (Model.History.Count == 0)
+    {
+        <p class="empty-hint">No archived releases yet. After each publish, a snapshot is saved here.</p>
+    }
+    else
+    {
+        <div class="history-list">
+            @foreach (var r in Model.History)
+            {
+                <div class="history-item">
+                    <div class="history-main">
+                        <strong>@r.Version</strong>
+                        <span class="history-date">@r.PublishedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC</span>
+                        <span class="history-flag">Mandatory: @(r.Mandatory ? "Yes" : "No")</span>
+                    </div>
+                    <div class="history-links">
+                        <a href="/releases/@r.Id/installer">Installer</a>
+                        <a href="/releases/@r.Id/manifest">Manifest</a>
+                        <button type="button" class="history-edit btn-ghost" data-release-id="@r.Id">Edit notes</button>
+                    </div>
+                    <div class="history-notes" data-release-id="@r.Id">
+                        <div class="history-notes-preview">@((string.IsNullOrWhiteSpace(r.Notes)) ? "No release notes." : r.Notes)</div>
+                        <div class="history-notes-editor" hidden>
+                            <label style="margin-top:0.75rem;">Release notes</label>
+                            <textarea class="history-notes-text" rows="6">@r.Notes</textarea>
+                            <div class="btn-row" style="margin-top:0.8rem;">
+                                <button type="button" class="btn-primary history-save" data-release-id="@r.Id">Save</button>
+                                <button type="button" class="btn-ghost history-cancel" data-release-id="@r.Id">Cancel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+</section>
+
+<script>
+(function () {
+    function qs(sel, root) { return (root || document).querySelector(sel); }
+    function qsa(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
+
+    function getNotesBlock(id) {
+        return qs('.history-notes[data-release-id="' + id + '"]');
+    }
+
+    qsa('.history-edit').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-release-id');
+            var block = getNotesBlock(id);
+            if (!block) return;
+            var editor = qs('.history-notes-editor', block);
+            if (!editor) return;
+            editor.hidden = false;
+        });
+    });
+
+    qsa('.history-cancel').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-release-id');
+            var block = getNotesBlock(id);
+            if (!block) return;
+            var editor = qs('.history-notes-editor', block);
+            if (editor) editor.hidden = true;
+        });
+    });
+
+    qsa('.history-save').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var id = btn.getAttribute('data-release-id');
+            var block = getNotesBlock(id);
+            if (!block) return;
+            var textarea = qs('.history-notes-text', block);
+            if (!textarea) return;
+
+            var oldText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Saving…';
+
+            var fd = new FormData();
+            fd.append('notes', textarea.value || '');
+
+            fetch('/api/releases/' + encodeURIComponent(id) + '/notes', {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin'
+            })
+                .then(function (r) {
+                    if (r.ok) {
+                        window.location.reload();
+                        return;
+                    }
+                    return r.text().then(function (t) {
+                        alert(t || ('HTTP ' + r.status));
+                    });
+                })
+                .catch(function () {
+                    alert('Save failed');
+                })
+                .finally(function () {
+                    btn.disabled = false;
+                    btn.textContent = oldText;
+                });
+        });
+    });
+})();
+</script>
+
