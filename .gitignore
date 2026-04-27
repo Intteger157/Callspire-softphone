@@ -59,6 +59,9 @@ artifacts/
 # AmoCRM Widget - отдельный репозиторий
 amocrm-widget/
 
+# Callspire PBX Gateway — отдельный репозиторий (github.com/.../Callspire-PBX-Gateway)
+callspire-pbx-gateway/
+
 # Update server runtime data (installers + update.json)
 update-server/**/data/
 
@@ -67,3 +70,10 @@ update-server/**/publish/
 
 # Windows reserved names
 nul
+
+# Android
+**/.gradle/
+**/local.properties
+**/build/
+*.apk
+*.aab
