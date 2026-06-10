@@ -28,10 +28,10 @@ namespace Softphone
             UpdateInfo updateInfo,
             string currentVersion)
         {
-            InitializeComponent();
-            
-            // Убеждаемся, что ресурсы загружены (на случай, если окно создается до полной инициализации Application)
+            // Убеждаемся, что resources темы загружены ДО InitializeComponent()
+            // (DynamicResource/Resource lookup может произойти во время загрузки XAML).
             EnsureResourcesLoaded();
+            InitializeComponent();
             
             NativeWindowAppearanceManager.Attach(this);
             _updateInfo = updateInfo;
@@ -56,74 +56,59 @@ namespace Softphone
         {
             try
             {
-                // Проверяем, есть ли уже ресурсы в Application
-                if (Application.Current?.Resources != null)
+                // Сначала пытаемся найти ключи через иерархию ресурсов (window -> application -> merged dictionaries).
+                if (this.TryFindResource("TextSecondaryBrush") is not null)
                 {
-                    var appResources = Application.Current.Resources;
-                    if (appResources.Contains("TextSecondaryBrush"))
-                    {
-                        // Ресурсы уже загружены в Application, окно их унаследует
-                        return;
-                    }
+                    return;
+                }
+                if (Application.Current?.TryFindResource("TextSecondaryBrush") is not null)
+                {
+                    return;
                 }
                 
-                // Если ресурсов нет, загружаем их локально в окно
-                var resources = this.Resources;
-                if (resources == null)
-                {
-                    resources = new ResourceDictionary();
-                    this.Resources = resources;
-                }
+                // Если ресурсы не найдены, загружаем их локально в окно.
+                var resources = this.Resources ?? new ResourceDictionary();
+                this.Resources = resources;
                 
                 // Проверяем, есть ли уже MergedDictionaries и загруженные темы
                 // MergedDictionaries всегда инициализируется автоматически в ResourceDictionary
                 var mergedDictionaries = resources.MergedDictionaries;
-                if (mergedDictionaries == null || mergedDictionaries.Count == 0)
+
+                // На практике Count может быть > 0, но при этом нужного ключа может не быть
+                // (например, только win11-override словарь без базовых brushes).
+                if (mergedDictionaries == null)
                 {
-                    // Загружаем темы
-                    try
-                    {
-                        var fallbackTheme = new ResourceDictionary { Source = new Uri("Themes/FallbackTheme.xaml", UriKind.Relative) };
-                        // Если mergedDictionaries null, значит resources был только что создан, и MergedDictionaries будет инициализирован автоматически
-                        if (mergedDictionaries == null)
-                        {
-                            // MergedDictionaries будет автоматически создан при первом обращении
-                            resources.MergedDictionaries!.Add(fallbackTheme);
-                            mergedDictionaries = resources.MergedDictionaries; // Теперь он точно не null
-                        }
-                        else
-                        {
-                            mergedDictionaries.Add(fallbackTheme);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        MainWindow.Log($"[UpdateAvailableWindow] Failed to load FallbackTheme: {ex.Message}");
-                    }
-                    
-                    try
-                    {
-                        var darkTheme = new ResourceDictionary { Source = new Uri("Themes/DarkTheme.xaml", UriKind.Relative) };
-                        // mergedDictionaries теперь точно не null после предыдущего блока
-                        if (mergedDictionaries != null)
-                        {
-                            mergedDictionaries.Add(darkTheme);
-                        }
-                        else
-                        {
-                            // Fallback на случай, если mergedDictionaries все еще null
-                            resources.MergedDictionaries!.Add(darkTheme);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        MainWindow.Log($"[UpdateAvailableWindow] Failed to load DarkTheme: {ex.Message}");
-                    }
+                    // Best-effort: не будет работать только если ResourceDictionary поврежден/не доступен.
+                    return;
                 }
+
+                // Загружаем минимум базовые ресурсы, чтобы исключение "Resource ... not found" не появлялось.
+                EnsureMergedDictionary(mergedDictionaries, "Themes/FallbackTheme.xaml", logOnFail: true);
+                EnsureMergedDictionary(mergedDictionaries, "Themes/DarkTheme.xaml", logOnFail: false);
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[UpdateAvailableWindow] Error ensuring resources loaded: {ex.Message}");
+            }
+        }
+
+        private void EnsureMergedDictionary(
+            System.Collections.Generic.IList<ResourceDictionary> merged,
+            string xamlRelativeSource,
+            bool logOnFail)
+        {
+            try
+            {
+                bool alreadyLoaded = merged.Any(d =>
+                    (d.Source?.ToString() ?? "").EndsWith(xamlRelativeSource, StringComparison.OrdinalIgnoreCase));
+                if (alreadyLoaded) return;
+
+                merged.Add(new ResourceDictionary { Source = new Uri(xamlRelativeSource, UriKind.Relative) });
+            }
+            catch (Exception ex)
+            {
+                if (logOnFail)
+                    MainWindow.Log($"[UpdateAvailableWindow] Failed to load {xamlRelativeSource}: {ex.Message}");
             }
         }
         

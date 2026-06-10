@@ -27,7 +27,14 @@ namespace Softphone
     {
         private SipService? _sipService;
         private SipService? _sipService2; // Второе SIP подключение (только SIP, независимо от основного)
+        private readonly SemaphoreSlim _secondConnectionInitSemaphore = new SemaphoreSlim(1, 1);
+        private System.Threading.Timer? _secondarySipMaintenanceTimer;
+        private static readonly TimeSpan _secondarySipMaintenanceInterval = TimeSpan.FromMinutes(30);
         private CallHistoryService _callHistoryService;
+        private CallStatisticsReport? _lastStatisticsReport;
+        private List<CallHistoryItem>? _historyViewFilteredCalls;
+        private string? _historyFilterCaption;
+        private System.Windows.Threading.DispatcherTimer? _statisticsRefreshDebounceTimer;
         private LogWindow? _logWindow;
         private System.Collections.Generic.List<string> _logHistory = new System.Collections.Generic.List<string>();
 
@@ -41,19 +48,50 @@ namespace Softphone
         // Singleton WebView2 для WebRTC (живет весь runtime приложения)
         private Microsoft.Web.WebView2.Wpf.WebView2? _webRtcEngine;
 
+        /// <summary>
+        /// Общий WebRtcEngineHost для обоих слотов (main/secondary). Создаётся при первом
+        /// слоте, который требует WebRTC; вторые вызовы переиспользуют тот же экземпляр.
+        /// </summary>
+        private WebRtcEngineHost? _sharedWebRtcHost;
+
         // AmoCRM сервис для интеграции
         private static AmoCrmService? _amoCrmService;
+        private string? _amoCrmConnectionSource;
+        private readonly SemaphoreSlim _amoCrmInitSemaphore = new SemaphoreSlim(1, 1);
+        private readonly object _kommoWarningLock = new object();
+        private bool _kommoIntegrationWarningShown;
+        private bool _kommoIntegrationWarningShowing;
+        private CancellationTokenSource? _kommoDeferredRetryCts;
 
-        // MikoPBX CDR сервис
+        // Callspire PBX Gateway client (JWT API)
         private MikoPbxCdrService? _mikoPbxCdrService;
+        private KommoGatewayStatus? _cachedKommoGatewayStatus;
 
         // CallerID selection (PBX Originate)
         private List<string> _allowedCallerIds = new List<string>();
         private List<CallerIdItem> _callerIdItems = new List<CallerIdItem>();
-        private string? _pendingOriginateId;
-        private string? _pendingOriginateCallerId;
-        private string? _pendingOriginateDestination;
-        private CallWindow? _pendingOriginateCallWindow;
+        private readonly SemaphoreSlim _callerIdLoadSemaphore = new SemaphoreSlim(1, 1);
+        private System.Threading.Timer? _callerIdListRetryTimer;
+        private static readonly TimeSpan _callerIdRetryFirst = TimeSpan.FromSeconds(15);
+        private static readonly TimeSpan _callerIdRetryInterval = TimeSpan.FromMinutes(1);
+        // Browser click-to-call: prevent delayed/duplicate auto-calls when WebRTC isn't ready yet.
+        private readonly object _pendingBrowserCallLock = new object();
+        private CancellationTokenSource? _pendingBrowserCallCts;
+        private int _pendingBrowserCallSeq = 0;
+        private DateTime _pendingBrowserCallCreatedUtc = DateTime.MinValue;
+        private const int PendingBrowserCallTtlSeconds = 90;
+
+        // Protocol click-to-call dedupe (some browsers/extensions may deliver the same protocol URL twice).
+        private readonly object _protocolDedupeLock = new object();
+        private string? _lastProtocolCallKey;
+        private DateTime _lastProtocolCallUtc = DateTime.MinValue;
+        private static readonly TimeSpan _protocolCallDedupeWindow = TimeSpan.FromSeconds(15);
+
+        // Prevent surprise/ghost re-dials: only allow call initiation right after user input,
+        // unless explicitly marked as programmatic (protocol/click-to-call).
+        private long _lastUserInputUtcTicks = DateTime.MinValue.Ticks;
+        private volatile bool _allowNextProgrammaticCall = false;
+        private static readonly TimeSpan _callRequiresRecentUserInputWindow = TimeSpan.FromMilliseconds(250);
         
         // Дедупликация вызовов ProcessCallInAmoCrm для предотвращения множественных записей одного звонка
         // ИЗОЛЯЦИЯ: Используем sessionId как основной идентификатор для изоляции потоков обработки
@@ -71,6 +109,9 @@ namespace Softphone
         private DateTime _lastSuspendUtc = DateTime.MinValue;
         private bool _webViewProcessFailedHandlerRegistered = false;
 
+        // Prevent re-entrancy while shutting down windows.
+        private bool _isShuttingDown = false;
+
         // (Maximize/restore disabled; keep window logic simple)
 
         // Titlebar drag handling (stable drag for borderless window; restore from maximized only on real drag)
@@ -83,12 +124,12 @@ namespace Softphone
         { 
             get 
             {
-                // Если WebRTC включен, проверяем статус WebRTC вместо SIP
+                // Если основное подключение использует WebRTC, проверяем статус WebRTC.Main вместо SIP
                 if (ShouldUseWebRtc())
                 {
                     try
                     {
-                        var webRtcService = WebRtcService.Instance;
+                        var webRtcService = WebRtcService.Main;
                         bool isReady = webRtcService != null && webRtcService.IsReadyForCalls;
                         
                         // ДИАГНОСТИКА: логируем только при изменении состояния (чтобы не спамить)
@@ -162,8 +203,20 @@ namespace Softphone
         public MainWindow()
         {
             InitializeComponent();
+            SingleInstanceManager.RegisterMainWindow(this);
             _instance = this; // Сохраняем ссылку на экземпляр
             _callHistoryService = new CallHistoryService();
+
+            // Track most recent user input to avoid unexpected automatic call triggers.
+            try
+            {
+                System.Threading.Interlocked.Exchange(ref _lastUserInputUtcTicks, DateTime.UtcNow.Ticks);
+                System.Windows.Input.InputManager.Current.PreProcessInput += (_, __) =>
+                {
+                    System.Threading.Interlocked.Exchange(ref _lastUserInputUtcTicks, DateTime.UtcNow.Ticks);
+                };
+            }
+            catch { }
             
             // Устанавливаем фон окна сразу после инициализации, чтобы избежать белой полосы сверху
             try
@@ -190,6 +243,8 @@ namespace Softphone
             
             ShowView(DialerView);
 
+            InitializeStatisticsFilters();
+
             // Centralized Win10/Wpf vs Win11/DWM native appearance.
             // Примечание: для стандартных анимаций минимизации используем SingleBorderWindow на обеих версиях Windows.
             // NativeWindowAppearanceManager настроит AllowsTransparency соответственно версии ОС.
@@ -206,7 +261,7 @@ namespace Softphone
             // Инициализируем AmoCRM сервис при старте, если интеграция включена
             _ = InitializeAmoCrmServiceOnStartup();
 
-            // Инициализируем MikoPBX CDR сервис при старте
+            // Инициализируем клиент PBX Gateway при старте
             _ = Task.Run(() =>
             {
                 try
@@ -219,7 +274,7 @@ namespace Softphone
                         if (s != null) InitializeMikoPbxCdrService(s);
                     }
                 }
-                catch (Exception ex) { Log($"[MikoPBX CDR] Startup init error: {ex.Message}"); }
+                catch (Exception ex) { Log($"[PBX Gateway] Startup init error: {ex.Message}"); }
             });
             // Воркеры очереди AmoCRM: обрабатывают звонки параллельно (до 3 одновременно), ждёт файл записи до 5 минут (колл-центр)
             for (int i = 0; i < MaxConcurrentAmoCrmWorkers; i++)
@@ -282,6 +337,14 @@ namespace Softphone
                 {
                     InitiateCallFromBrowser(pendingCall.Value.phoneNumber, pendingCall.Value.leadId);
                 }
+
+                // Same for the provisioning URL, which may have arrived before
+                // MainWindow existed (fresh install from a browser click).
+                var pendingProv = app?.GetPendingProvision();
+                if (pendingProv.HasValue)
+                {
+                    _ = HandleProvisionTokenAsync(pendingProv.Value.tokenId, pendingProv.Value.proxy);
+                }
             }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             
             // Предварительно инициализируем WebView2 Environment только если WebRTC реально включен.
@@ -314,6 +377,8 @@ namespace Softphone
         /// </summary>
         private void MainWindow_Closing(object? sender, CancelEventArgs e)
         {
+            if (_isShuttingDown) return;
+
             // КРИТИЧНО: Проверяем наличие активных звонков перед закрытием
             var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
             bool hasActiveWebRtcCall = CallHandlingHelpers.IsWebRtcCallActive();
@@ -346,6 +411,97 @@ namespace Softphone
             
             // Если нет активных звонков, разрешаем закрытие
             Log("[MainWindow] Closing: No active calls, proceeding with shutdown");
+
+            // Close any non-modal child windows (Settings, Logs, etc.) so they can't outlive MainWindow.
+            _isShuttingDown = true;
+            try { CloseChildWindowsBestEffort(); } catch { }
+        }
+
+        private void CloseChildWindowsBestEffort()
+        {
+            try
+            {
+                // Copy first to avoid collection modification during Close().
+                var windows = Application.Current?.Windows?.Cast<Window>().ToList();
+                if (windows == null) return;
+
+                foreach (var w in windows)
+                {
+                    if (w == this) continue;
+                    if (w is SettingsWindow || w is LogWindow)
+                    {
+                        try { w.Close(); } catch { }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Best-effort teardown to avoid "ghost calls" that keep ringing on PBX/carrier
+        /// after the desktop app window/process is closed.
+        /// </summary>
+        public void ShutdownTelephonyBestEffort()
+        {
+            if (_isShuttingDown) return;
+            _isShuttingDown = true;
+
+            try { Log("[MainWindow] ShutdownTelephonyBestEffort: stopping telephony services..."); } catch { }
+
+            // WebRTC call (async): fire-and-forget with a short wait budget.
+            try
+            {
+                var t = WebRtcService.Main?.HangupAsync();
+                if (t != null && !t.IsCompleted)
+                {
+                    // Don't block shutdown for long.
+                    try { t.Wait(TimeSpan.FromSeconds(2)); } catch { }
+                }
+            }
+            catch { }
+
+            // SIP calls: finalize recordings, Hangup + Dispose.
+            try
+            {
+                var t1 = _sipService?.FinalizeCallRecordingIfActiveAsync(15000);
+                var t2 = _sipService2?.FinalizeCallRecordingIfActiveAsync(15000);
+                if (t1 != null) try { t1.Wait(TimeSpan.FromSeconds(15)); } catch { }
+                if (t2 != null) try { t2.Wait(TimeSpan.FromSeconds(15)); } catch { }
+            }
+            catch { }
+            try
+            {
+                _sipService?.Hangup();
+            }
+            catch { }
+            try
+            {
+                _sipService2?.Hangup();
+            }
+            catch { }
+
+            try
+            {
+                _sipService?.Dispose();
+                _sipService = null;
+            }
+            catch { }
+
+            try
+            {
+                _sipService2?.Dispose();
+                _sipService2 = null;
+            }
+            catch { }
+
+            // Stop maintenance timers / watchdogs.
+            try { StopSecondarySipMaintenanceTimer(); } catch { }
+            try { WebRtcService.Main?.StopWatchdog(); } catch { }
+            try { WebRtcService.Main?.StopAutoReconnect(); } catch { }
+            try { WebRtcService.Main?.DetachEngine(resetState: true); } catch { }
+
+            // Unregister lifecycle handlers.
+            try { UnregisterPowerAndNetworkHandlers(); } catch { }
         }
 
         private void RegisterPowerAndNetworkHandlers()
@@ -377,8 +533,8 @@ namespace Softphone
                     Log("[MainWindow] PowerModeChanged: Suspend");
 
                     // Stop noisy background loops while sleeping.
-                    try { WebRtcService.Instance.StopWatchdog(); } catch { }
-                    try { WebRtcService.Instance.StopAutoReconnect(); } catch { }
+                    try { WebRtcService.Main.StopWatchdog(); } catch { }
+                    try { WebRtcService.Main.StopAutoReconnect(); } catch { }
                 }
                 else if (e.Mode == PowerModes.Resume)
                 {
@@ -410,7 +566,7 @@ namespace Softphone
                 {
                     _ = Task.Run(async () =>
                     {
-                        try { await WebRtcService.Instance.ResetEngineAsync(); } catch { }
+                        try { await WebRtcService.Main.ResetEngineAsync(); } catch { }
                     });
                 }
                 else
@@ -479,9 +635,9 @@ namespace Softphone
                 Log($"[MainWindow] WebRTC recovery: starting (reason={reason})");
 
                 // Prevent background timers from touching disposed WebView2 while we recreate.
-                try { WebRtcService.Instance.StopWatchdog(); } catch { }
-                try { WebRtcService.Instance.StopAutoReconnect(); } catch { }
-                try { WebRtcService.Instance.DetachEngine(resetState: true); } catch { }
+                try { WebRtcService.Main.StopWatchdog(); } catch { }
+                try { WebRtcService.Main.StopAutoReconnect(); } catch { }
+                try { WebRtcService.Main.DetachEngine(resetState: true); } catch { }
 
                 // Dispose old engine (if any) and recreate via existing initialization path.
                 await Dispatcher.InvokeAsync(() =>
@@ -501,6 +657,7 @@ namespace Softphone
 
                             try { _webRtcEngine.Dispose(); } catch { }
                             _webRtcEngine = null;
+                            _sharedWebRtcHost = null;
                             _webViewProcessFailedHandlerRegistered = false;
                         }
                     }
@@ -552,11 +709,32 @@ namespace Softphone
                     // Показываем окно уведомления о новой версии
                     Dispatcher.Invoke(() =>
                     {
+                        // If already open, bring to front (do not block MainWindow).
+                        var existing = Application.Current?.Windows.OfType<UpdateAvailableWindow>().FirstOrDefault();
+                        if (existing != null)
+                        {
+                            try
+                            {
+                                if (existing.WindowState == WindowState.Minimized)
+                                    existing.WindowState = WindowState.Normal;
+                                existing.Activate();
+                                existing.Focus();
+                            }
+                            catch { }
+                            return;
+                        }
+
                         var updateWindow = new UpdateAvailableWindow(updateInfo, currentVersion)
                         {
                             Owner = this
                         };
-                        updateWindow.ShowDialog();
+                        updateWindow.Show();
+                        try
+                        {
+                            updateWindow.Activate();
+                            updateWindow.Focus();
+                        }
+                        catch { }
                     });
                 }
                 else
@@ -576,6 +754,17 @@ namespace Softphone
         
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            // One-time first-load migration: если MainConnectionTransport не выставлен,
+            // но legacy UseWebRtcAudio=true — проставляем MainConnectionTransport="WebRtc" и сохраняем.
+            try
+            {
+                MigrateLegacyTransportSettingIfNeeded();
+            }
+            catch (Exception migEx)
+            {
+                Log($"[MainWindow] MainWindow_Loaded: Migration check failed: {migEx.Message}");
+            }
+
             // Инициализируем подключения после загрузки окна
             Log("[MainWindow] MainWindow_Loaded: Scheduling connection initialization...");
             Dispatcher.BeginInvoke(new System.Action(async () =>
@@ -608,165 +797,208 @@ namespace Softphone
         /// <summary>
         /// Инициализирует WebRTC сервис
         /// </summary>
-        private async Task InitializeWebRtcServiceAsync()
+        private Task InitializeWebRtcServiceAsync()
+        {
+            return InitializeWebRtcServiceAsync("main");
+        }
+
+        /// <summary>
+        /// Инициализирует WebRTC слот (main / secondary). Общий WebView2-хост создаётся
+        /// один раз — при первом вызове; последующие слоты только подключаются к нему.
+        /// </summary>
+        private async Task InitializeWebRtcServiceAsync(string slot)
         {
             try
             {
-                Log("[MainWindow] InitializeWebRtcServiceAsync: Starting...");
-                
-                // Проверяем, нужен ли WebRTC
+                bool isSecondary = string.Equals(slot, "secondary", StringComparison.OrdinalIgnoreCase);
+                Log($"[MainWindow] InitializeWebRtcServiceAsync(slot={slot}): Starting...");
+
+                if (!isSecondary && CallHandlingHelpers.IsWebRtcCallActive())
+                {
+                    Log("[MainWindow] InitializeWebRtcServiceAsync skipped: WebRTC call is active");
+                    return;
+                }
+
+                // Проверяем, нужен ли WebRTC для этого слота
                 string settingsFilePath = AppDataHelper.GetSettingsFilePath();
                 if (!File.Exists(settingsFilePath))
                 {
                     Log("[MainWindow] Settings file not found, skipping WebRTC service initialization");
                     return;
                 }
-                
+
                 Log("[MainWindow] InitializeWebRtcServiceAsync: Settings file found, reading...");
                 string json = File.ReadAllText(settingsFilePath);
                 var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                
+
                 if (settings == null)
                 {
                     Log("[MainWindow] InitializeWebRtcServiceAsync: Settings is null, skipping");
                     return;
                 }
-                
-                string? sipPassword = SipPasswordProvider.GetPassword(settings);
+
                 // Best-effort migrate stored secrets to DPAPI (safer at-rest).
                 try
                 {
                     SipPasswordProvider.MigrateEncryptedToDpapiIfNeeded(settingsFilePath, settings);
+                    TurnPasswordProvider.MigrateEncryptedToDpapiIfNeeded(settingsFilePath, settings);
                 }
                 catch { }
-                Log($"[MainWindow] InitializeWebRtcServiceAsync: Settings loaded - UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri={(string.IsNullOrEmpty(settings.WebRtcWsUri) ? "empty" : "set")}, SipUsername={(string.IsNullOrEmpty(settings.SipUsername) ? "empty" : "set")}, SipPasswordEncrypted={(string.IsNullOrEmpty(settings.SipPasswordEncrypted) ? "empty" : "set")}");
-                
-                if (!settings.UseWebRtcAudio || 
-                    string.IsNullOrEmpty(settings.WebRtcWsUri) ||
-                    string.IsNullOrEmpty(settings.SipUsername) || 
+
+                string? sipPassword = isSecondary
+                    ? SipPasswordProvider.GetSecondaryWebRtcPassword(settings)
+                    : SipPasswordProvider.GetMainWebRtcPassword(settings);
+                string? wsUri = isSecondary ? settings.WebRtcWsUri2 : settings.WebRtcWsUri;
+                string? username = isSecondary
+                    ? AppSettings.EffectiveSecondaryWebRtcUsername(settings)
+                    : AppSettings.EffectiveMainWebRtcUsername(settings);
+                bool transportEnabled = isSecondary
+                    ? AppSettings.SecondaryLineUsesWebRtc(settings)
+                    : ShouldUseWebRtcForConnection(false);
+                Log($"[MainWindow] InitializeWebRtcServiceAsync(slot={slot}): transportEnabled={transportEnabled}, wsUri={(string.IsNullOrEmpty(wsUri) ? "empty" : "set")}, user={(string.IsNullOrEmpty(username) ? "empty" : "set")}, pass={(string.IsNullOrEmpty(sipPassword) ? "empty" : "set")}");
+
+                if (!transportEnabled ||
+                    string.IsNullOrEmpty(wsUri) ||
+                    string.IsNullOrEmpty(username) ||
                     string.IsNullOrEmpty(sipPassword))
                 {
-                    Log("[MainWindow] WebRTC not enabled or not configured, skipping service initialization");
+                    Log($"[MainWindow] WebRTC not enabled/configured for slot '{slot}', skipping service initialization");
                     return;
                 }
-                
-                Log("[MainWindow] Initializing WebRTC service...");
-                
-                // Настраиваем уровень логирования WebRTC в соответствии с настройками
-                WebRtcService.Instance.DebugEnabled = settings.EnableWebRtcDebug;
-                
-                // Обновляем статус на "Initializing..."
-                Dispatcher.Invoke(() =>
-                {
-                    if (MainStatusTextBlock != null)
-                    {
-                        MainStatusTextBlock.Text = "Initializing WebRTC...";
-                        if (MainStatusIndicator != null)
-                            MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
-                    }
-                });
-                
-                // Создаем скрытый WebView2 (1x1px)
-                // ВАЖНО: Используем Visibility.Visible вместо Visibility.Hidden
-                // Это гарантирует создание HWND и правильную инициализацию
-                _webRtcEngine = new Microsoft.Web.WebView2.Wpf.WebView2
-                {
-                    Visibility = Visibility.Visible, // Visible для создания HWND (не Hidden!)
-                    Width = 1,
-                    Height = 1,
-                    HorizontalAlignment = HorizontalAlignment.Left,
-                    VerticalAlignment = VerticalAlignment.Top,
-                    IsHitTestVisible = false
-                };
-                
-                // Добавляем в визуальное дерево через специальный контейнер WebRtcHostGrid
-                if (WebRtcHostGrid == null)
-                {
-                    Log("[MainWindow] ERROR: WebRtcHostGrid not found in XAML");
-                    return;
-                }
-                
-                Log("[MainWindow] Adding WebView2 to WebRtcHostGrid...");
-                WebRtcHostGrid.Children.Clear();
-                WebRtcHostGrid.Children.Add(_webRtcEngine);
-                Log("[MainWindow] WebRTC engine WebView2 added to WebRtcHostGrid");
-                
-                // Ждем, чтобы WebView2 был полностью загружен в визуальном дереве
-                Log("[MainWindow] Waiting for WebView2 to be loaded in visual tree...");
-                await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
-                
-                // Дополнительная проверка: ждем, пока WebView2.IsLoaded станет true
-                var loadCheckStart = DateTime.Now;
-                while (!_webRtcEngine.IsLoaded && (DateTime.Now - loadCheckStart).TotalSeconds < 5)
-                {
-                    await Task.Delay(100);
-                    await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
-                }
-                
-                Log($"[MainWindow] WebView2 load check: IsLoaded={_webRtcEngine.IsLoaded}, Parent={_webRtcEngine.Parent?.GetType().Name ?? "null"}, Visibility={_webRtcEngine.Visibility}");
-                
-                // Получаем Environment с отдельной папкой профиля
-                // Это убирает конфликты профиля, прав доступа и блокировок папки
-                var userData = Path.Combine(
-                    AppDataHelper.GetAppDataPath(),
-                    "WebView2");
-                Directory.CreateDirectory(userData);
-                Log($"[MainWindow] WebView2 UserDataFolder: {userData}");
-                
-                var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
-                    browserExecutableFolder: null,
-                    userDataFolder: userData);
-                Log("[MainWindow] WebView2 Environment created successfully");
-                
-                // Создаем host и прикрепляем к сервису
-                Log("[MainWindow] Creating WebRtcEngineHost...");
-                var host = new WebRtcEngineHost(_webRtcEngine);
-                Log("[MainWindow] WebRtcEngineHost created, calling InitAsync...");
-                await host.InitAsync(env, "https://softphone.local/index.html");
-                Log($"[MainWindow] WebRtcEngineHost.InitAsync completed: IsInitialized={host.IsInitialized}");
 
-                // WebView2 can crash/hang after sleep/resume; listen for ProcessFailed and recover.
-                try
+                Log($"[MainWindow] Initializing WebRTC service for slot '{slot}'...");
+
+                // Настраиваем уровень логирования WebRTC в соответствии с настройками
+                WebRtcService.GetSlot(slot).DebugEnabled = settings.EnableWebRtcDebug;
+                
+                // Обновляем статус на "Initializing..." (только для основного слота)
+                if (!isSecondary)
                 {
-                    if (!_webViewProcessFailedHandlerRegistered && _webRtcEngine.CoreWebView2 != null)
+                    Dispatcher.Invoke(() =>
                     {
-                        _webRtcEngine.CoreWebView2.ProcessFailed += WebRtcEngine_ProcessFailed;
-                        _webViewProcessFailedHandlerRegistered = true;
-                    }
+                        if (MainStatusTextBlock != null)
+                        {
+                            MainStatusTextBlock.Text = "Initializing WebRTC...";
+                            if (MainStatusIndicator != null)
+                                MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                        }
+                    });
                 }
-                catch { }
-                
-                WebRtcService.Instance.AttachEngine(host);
-                WebRtcService.Instance.Event += OnWebRtcEvent;
-                WebRtcService.Instance.StartWatchdog();
-                
-                Log($"[MainWindow] WebRTC service initialized: IsReadyForCalls={WebRtcService.Instance.IsReadyForCalls}");
-                
-                // Обновляем статус на "Initializing JsSIP..."
-                Dispatcher.Invoke(() =>
+
+                // Общий WebView2 + WebRtcEngineHost создаются один раз и шарятся между слотами.
+                // index.html содержит два iframe (slot-main / slot-secondary), команды роутятся через slot.
+                WebRtcEngineHost? sharedHost = _sharedWebRtcHost;
+                if (_webRtcEngine == null || sharedHost == null)
                 {
-                    if (MainStatusTextBlock != null)
+                    // Создаем скрытый WebView2 (1x1px). Visibility.Visible для создания HWND.
+                    _webRtcEngine = new Microsoft.Web.WebView2.Wpf.WebView2
                     {
-                        MainStatusTextBlock.Text = "Initializing JsSIP...";
-                        if (MainStatusIndicator != null)
-                            MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                        Visibility = Visibility.Visible,
+                        Width = 1,
+                        Height = 1,
+                        HorizontalAlignment = HorizontalAlignment.Left,
+                        VerticalAlignment = VerticalAlignment.Top,
+                        IsHitTestVisible = false
+                    };
+
+                    if (WebRtcHostGrid == null)
+                    {
+                        Log("[MainWindow] ERROR: WebRtcHostGrid not found in XAML");
+                        return;
                     }
-                });
-                
-                // Инициализируем UA (фаза 2)
-                // ВАЖНО: Используем ReinitializeUAAsync вместо прямого SendAsync, чтобы события обрабатывались через WebRtcService
-                var config = GetWebRtcConfig();
+
+                    Log("[MainWindow] Adding WebView2 to WebRtcHostGrid...");
+                    WebRtcHostGrid.Children.Clear();
+                    WebRtcHostGrid.Children.Add(_webRtcEngine);
+                    Log("[MainWindow] WebRTC engine WebView2 added to WebRtcHostGrid");
+
+                    Log("[MainWindow] Waiting for WebView2 to be loaded in visual tree...");
+                    await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+
+                    var loadCheckStart = DateTime.Now;
+                    while (!_webRtcEngine.IsLoaded && (DateTime.Now - loadCheckStart).TotalSeconds < 5)
+                    {
+                        await Task.Delay(100);
+                        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Loaded);
+                    }
+
+                    Log($"[MainWindow] WebView2 load check: IsLoaded={_webRtcEngine.IsLoaded}, Parent={_webRtcEngine.Parent?.GetType().Name ?? "null"}, Visibility={_webRtcEngine.Visibility}");
+
+                    var userData = Path.Combine(
+                        AppDataHelper.GetAppDataPath(),
+                        "WebView2");
+                    Directory.CreateDirectory(userData);
+                    Log($"[MainWindow] WebView2 UserDataFolder: {userData}");
+
+                    var envOptions = new Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
+                    {
+                        AdditionalBrowserArguments =
+                            "--force-webrtc-ip-handling-policy=default_public_interface_only " +
+                            "--webrtc-ip-handling-policy=default_public_interface_only"
+                    };
+
+                    var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(
+                        browserExecutableFolder: null,
+                        userDataFolder: userData,
+                        options: envOptions);
+                    Log("[MainWindow] WebView2 Environment created successfully");
+
+                    Log("[MainWindow] Creating WebRtcEngineHost...");
+                    sharedHost = new WebRtcEngineHost(_webRtcEngine);
+                    Log("[MainWindow] WebRtcEngineHost created, calling InitAsync...");
+                    await sharedHost.InitAsync(env, "https://softphone.local/index.html");
+                    Log($"[MainWindow] WebRtcEngineHost.InitAsync completed: IsInitialized={sharedHost.IsInitialized}");
+
+                    try
+                    {
+                        if (!_webViewProcessFailedHandlerRegistered && _webRtcEngine.CoreWebView2 != null)
+                        {
+                            _webRtcEngine.CoreWebView2.ProcessFailed += WebRtcEngine_ProcessFailed;
+                            _webViewProcessFailedHandlerRegistered = true;
+                        }
+                    }
+                    catch { }
+
+                    _sharedWebRtcHost = sharedHost;
+                }
+                else
+                {
+                    Log($"[MainWindow] Reusing existing shared WebRtcEngineHost for slot '{slot}'");
+                }
+
+                var slotService = WebRtcService.GetSlot(slot);
+                slotService.AttachEngine(sharedHost);
+                slotService.Event -= OnWebRtcEvent; // idempotent
+                slotService.Event += OnWebRtcEvent;
+                slotService.StartWatchdog();
+
+                Log($"[MainWindow] WebRTC service '{slot}' initialized: IsReadyForCalls={slotService.IsReadyForCalls}");
+
+                if (!isSecondary)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (MainStatusTextBlock != null)
+                        {
+                            MainStatusTextBlock.Text = "Initializing JsSIP...";
+                            if (MainStatusIndicator != null)
+                                MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                        }
+                    });
+                }
+
+                // Инициализируем UA для слота через ReinitializeUAAsync
+                var config = GetWebRtcConfigForConnection(isSecondary);
                 if (config != null)
                 {
-                    await WebRtcService.Instance.ReinitializeUAAsync(
+                    await slotService.ReinitializeUAAsync(
                         config.WsUri,
                         config.SipUri,
-                        settings.SipUsername ?? "",
+                        username ?? "",
                         sipPassword ?? ""
                     );
-                    Log("[MainWindow] initUA command sent via ReinitializeUAAsync");
-                    
-                    // Обновляем статус после отправки команды инициализации
+                    Log($"[MainWindow] initUA command sent via ReinitializeUAAsync (slot={slot})");
+
                     Dispatcher.Invoke(() =>
                     {
                         UpdateConnectionStatus();
@@ -813,9 +1045,11 @@ namespace Softphone
             try
             {
                 // Never block background threads waiting for UI thread (can deadlock after sleep/resume).
+                // Use Normal priority: Background deferred originate auto-answer / state updates behind rendering,
+                // which added perceptible lag before AnswerAsync ran.
                 if (!Dispatcher.CheckAccess())
                 {
-                    Dispatcher.BeginInvoke(new Action(() => HandleWebRtcEventOnUi(dto)), System.Windows.Threading.DispatcherPriority.Background);
+                    Dispatcher.BeginInvoke(new Action(() => HandleWebRtcEventOnUi(dto)), System.Windows.Threading.DispatcherPriority.Normal);
                     return;
                 }
 
@@ -831,11 +1065,25 @@ namespace Softphone
         {
             try
             {
+                // Connection-status events for the secondary slot must update the secondary
+                // status block instead of the main one. Call/session events fall through and
+                // are slot-aware via dto.SessionId / dto.Slot in their own handlers below.
+                bool isSecondarySlot = string.Equals(dto.Slot, "secondary", StringComparison.OrdinalIgnoreCase);
+
                 switch (dto.Type)
                 {
                         case "ua_started":
-                            Log("[MainWindow] WebRTC UA started, connecting...");
-                            if (MainStatusTextBlock != null)
+                            Log($"[MainWindow] WebRTC UA started (slot={dto.Slot}), connecting...");
+                            if (isSecondarySlot)
+                            {
+                                if (SecondaryStatusTextBlock != null)
+                                {
+                                    SecondaryStatusTextBlock.Text = "Connecting...";
+                                    if (SecondaryStatusIndicator != null)
+                                        SecondaryStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                                }
+                            }
+                            else if (MainStatusTextBlock != null)
                             {
                                 MainStatusTextBlock.Text = "Connecting to WebRTC...";
                                 if (MainStatusIndicator != null)
@@ -844,7 +1092,19 @@ namespace Softphone
                             break;
                         case "ws_connected":
                         case "ua_connected":
-                            Log("[MainWindow] ✓ WebRTC WebSocket connected");
+                            Log($"[MainWindow] ✓ WebRTC WebSocket connected (slot={dto.Slot})");
+                            if (isSecondarySlot)
+                            {
+                                if (SecondaryStatusTextBlock != null)
+                                {
+                                    SecondaryStatusTextBlock.Text = "Connecting...";
+                                    if (SecondaryStatusIndicator != null)
+                                        SecondaryStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                                }
+                                Dispatcher.BeginInvoke(new Action(UpdateSecondaryConnectionStatus),
+                                    System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                                break;
+                            }
                             if (MainStatusTextBlock != null)
                             {
                                 MainStatusTextBlock.Text = "Connected to WebRTC...";
@@ -859,13 +1119,20 @@ namespace Softphone
                             break;
                         case "registered":
                         case "ua_registered":
-                            Log("[MainWindow] ✓ WebRTC UA registered");
-                            
+                            Log($"[MainWindow] ✓ WebRTC UA registered (slot={dto.Slot})");
+
+                            if (isSecondarySlot)
+                            {
+                                UpdateSecondaryConnectionStatus();
+                                UpdateCallButtonMode();
+                                break;
+                            }
+
                             // ВАЖНО: WebRtcService уже обновил _registered в OnEngineEvent
                             // Проверяем состояние перед обновлением
-                            bool isReady = WebRtcService.Instance?.IsReadyForCalls ?? false;
+                            bool isReady = WebRtcService.Main?.IsReadyForCalls ?? false;
                             bool isConnectedCheck = IsConnected;
-                            Log($"[MainWindow] ua_registered event: IsReadyForCalls={isReady}, IsConnected={isConnectedCheck}, _engine={WebRtcService.Instance != null}");
+                            Log($"[MainWindow] ua_registered event: IsReadyForCalls={isReady}, IsConnected={isConnectedCheck}, _engine={WebRtcService.Main != null}");
                             
                             // Обновляем статус напрямую (мы уже в Dispatcher.Invoke)
                             // UpdateConnectionStatus() проверит IsConnected и обновит статус
@@ -874,7 +1141,7 @@ namespace Softphone
                             
                             // Проверяем результат обновления
                             string finalStatus = MainStatusTextBlock?.Text ?? "";
-                            bool finalIsReady = WebRtcService.Instance?.IsReadyForCalls ?? false;
+                            bool finalIsReady = WebRtcService.Main?.IsReadyForCalls ?? false;
                             bool finalIsConnected = IsConnected;
                             Log($"[MainWindow] After status update: MainStatusTextBlock.Text='{finalStatus}', IsReadyForCalls={finalIsReady}, IsConnected={finalIsConnected}");
                             
@@ -911,14 +1178,47 @@ namespace Softphone
                             break;
                         case "reg_failed":
                         case "ua_registration_failed":
-                            Log($"[MainWindow] ✗ WebRTC UA registration failed: {dto.Message}");
+                            Log($"[MainWindow] ✗ WebRTC UA registration failed (slot={dto.Slot}): {dto.Message}");
+                            {
+                                string msg = string.IsNullOrWhiteSpace(dto.Message)
+                                    ? "Registration failed"
+                                    : dto.Message.Trim();
+                                if (msg.Length > 96)
+                                    msg = msg.Substring(0, 93) + "...";
+
+                                if (isSecondarySlot)
+                                {
+                                    if (SecondaryStatusTextBlock != null)
+                                    {
+                                        SecondaryStatusTextBlock.Text = msg;
+                                        if (SecondaryStatusIndicator != null)
+                                            SecondaryStatusIndicator.Background = (Brush)FindResource("AccentRedBrush");
+                                    }
+                                    UpdateConnectionStatus();
+                                    break;
+                                }
+
+                                if (MainStatusTextBlock != null)
+                                {
+                                    MainStatusTextBlock.Text = msg;
+                                    if (MainStatusIndicator != null)
+                                        MainStatusIndicator.Background = (Brush)FindResource("AccentRedBrush");
+                                }
+                            }
                             UpdateConnectionStatus();
                             UpdateWebRtcIndicator();
+                            OnConnectionStatusChanged?.Invoke(MainStatusTextBlock?.Text ?? "");
                             break;
                         case "unregistered":
                         case "ua_unregistered":
                         case "ws_disconnected":
                         case "ua_disconnected":
+                            if (isSecondarySlot)
+                            {
+                                UpdateConnectionStatus();
+                                UpdateWebRtcIndicator();
+                                break;
+                            }
                             UpdateConnectionStatus();
                             UpdateWebRtcIndicator();
                             break;
@@ -936,6 +1236,19 @@ namespace Softphone
                             if (_sipService != null)
                             {
                                 _sipService.SetIgnoreSipCooldown(3);
+                            }
+
+                            // PBX Originate: auto-answer on new_session (before batched "incoming" events).
+                            if (!isSecondarySlot
+                                && dto.Data is System.Text.Json.JsonElement nsData
+                                && nsData.ValueKind == System.Text.Json.JsonValueKind.Object
+                                && nsData.TryGetProperty("direction", out var nsDir)
+                                && string.Equals(nsDir.GetString(), "incoming", StringComparison.OrdinalIgnoreCase)
+                                && nsData.TryGetProperty("callerNumber", out var nsCaller))
+                            {
+                                dto.CallerNumber = nsCaller.GetString();
+                                if (TryHandleOriginateInboundInvite(dto))
+                                    break;
                             }
                             break;
                         case "call_accepted":
@@ -964,9 +1277,149 @@ namespace Softphone
             }
         }
         
+        /// <summary>Digits-only comparison so "+1 702-900-0000" matches "+17029000000" from SIP.</summary>
+        private static string NormalizePhoneDigits(string? s)
+        {
+            if (string.IsNullOrEmpty(s)) return "";
+            return new string(s.Where(char.IsDigit).ToArray());
+        }
+
+        /// <summary>
+        /// Compact destination for SIP/AMI/WebRTC: strip spaces and punctuation; add leading +
+        /// for E.164 (&gt;= 11 digits or user typed +). Short internal extensions (no +, ≤6 digits) unchanged.
+        /// </summary>
+        private static string NormalizePhoneForDial(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return "";
+            var trimmed = raw.Trim();
+            var digits = NormalizePhoneDigits(trimmed);
+            if (digits.Length == 0) return trimmed;
+            if (trimmed.StartsWith("+", StringComparison.Ordinal) || digits.Length >= 11)
+                return "+" + digits;
+            return digits;
+        }
+
+        private static bool PhoneNumbersLooselyMatch(string? a, string? b)
+        {
+            if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b)) return false;
+            var da = NormalizePhoneDigits(a);
+            var db = NormalizePhoneDigits(b);
+            if (da.Length >= 7 && db.Length >= 7 && da == db) return true;
+            return string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>
         /// Обрабатывает входящий WebRTC звонок (UI координатор)
         /// </summary>
+        private bool IsOwnOutboundCallerId(string? number)
+        {
+            if (string.IsNullOrEmpty(number) || _allowedCallerIds.Count == 0)
+                return false;
+            return _allowedCallerIds.Any(id => PhoneNumbersLooselyMatch(number, id));
+        }
+
+        private void ClearPendingOriginateState(bool resetAcceptedSession = false)
+        {
+            OriginateCoordinator.Clear(resetAcceptedSession);
+            _ = WebRtcService.Main.NotifyOriginatePendingAsync(false);
+        }
+
+        /// <summary>
+        /// PBX Originate rings the softphone with an inbound INVITE (From = selected trunk CallerID).
+        /// Attach it to the outbound CallWindow instead of opening a fake incoming call UI.
+        /// </summary>
+        private bool TryHandleOriginateInboundInvite(WebRtcEventDto dto)
+        {
+            if (string.IsNullOrEmpty(dto.SessionId) || string.IsNullOrEmpty(dto.CallerNumber))
+                return false;
+
+            bool callerIsOwnTrunk = IsOwnOutboundCallerId(dto.CallerNumber)
+                || (!string.IsNullOrEmpty(OriginateCoordinator.PendingCallerId)
+                    && PhoneNumbersLooselyMatch(dto.CallerNumber, OriginateCoordinator.PendingCallerId));
+
+            CallWindow? outgoing = OriginateCoordinator.GetOutgoingCallWindow();
+
+            bool hasOriginateContext = OriginateCoordinator.IsPending
+                || (outgoing != null && outgoing.OpenedAsOutgoingCall);
+
+            if (!hasOriginateContext && !callerIsOwnTrunk)
+                return false;
+
+            var acceptedSessionId = OriginateCoordinator.AcceptedSessionId;
+            if (!string.IsNullOrEmpty(acceptedSessionId))
+            {
+                if (acceptedSessionId == dto.SessionId)
+                    return true;
+
+                Log($"[Call][Originate] Declining duplicate/stale originate INVITE (session={dto.SessionId}, accepted={acceptedSessionId}, caller={dto.CallerNumber})");
+                _ = WebRtcService.GetSlot(dto.Slot ?? "main").HangupAsync(dto.SessionId);
+                return true;
+            }
+
+            bool isOriginateCallback = false;
+            if (hasOriginateContext)
+            {
+                string? originateId = null;
+                if (dto.Data is System.Text.Json.JsonElement dataEl
+                    && dataEl.ValueKind == System.Text.Json.JsonValueKind.Object
+                    && dataEl.TryGetProperty("originateId", out var oidProp)
+                    && oidProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    originateId = oidProp.GetString();
+                }
+
+                if (!string.IsNullOrEmpty(originateId) && !string.IsNullOrEmpty(OriginateCoordinator.PendingId) && originateId == OriginateCoordinator.PendingId)
+                {
+                    Log($"[Call][Originate] Matched by X-Callspire-Originate header: {originateId}");
+                    isOriginateCallback = true;
+                }
+                else if (!string.IsNullOrEmpty(OriginateCoordinator.PendingCallerId)
+                         && PhoneNumbersLooselyMatch(dto.CallerNumber, OriginateCoordinator.PendingCallerId))
+                {
+                    Log($"[Call][Originate] Matched by CallerID number: incoming={dto.CallerNumber}, expected={OriginateCoordinator.PendingCallerId}");
+                    isOriginateCallback = true;
+                }
+                else if (!string.IsNullOrEmpty(OriginateCoordinator.PendingDestination)
+                         && PhoneNumbersLooselyMatch(dto.CallerNumber, OriginateCoordinator.PendingDestination))
+                {
+                    Log($"[Call][Originate] Matched by destination number: incoming={dto.CallerNumber}, expected={OriginateCoordinator.PendingDestination}");
+                    isOriginateCallback = true;
+                }
+                else if (OriginateCoordinator.GetPendingCallWindow() != null)
+                {
+                    Log($"[Call][Originate] Fallback: inbound INVITE while pending outgoing CallWindow (caller={dto.CallerNumber}, session={dto.SessionId})");
+                    isOriginateCallback = true;
+                }
+                else if (outgoing != null && outgoing.OpenedAsOutgoingCall && callerIsOwnTrunk)
+                {
+                    Log($"[Call][Originate] Fallback2: own-trunk INVITE while outbound CallWindow open (caller={dto.CallerNumber})");
+                    isOriginateCallback = true;
+                }
+                else if (callerIsOwnTrunk)
+                {
+                    Log($"[Call][Originate] Fallback4: own-trunk INVITE during pending originate (caller={dto.CallerNumber}, session={dto.SessionId})");
+                    isOriginateCallback = true;
+                }
+            }
+            else if (callerIsOwnTrunk && outgoing != null && outgoing.OpenedAsOutgoingCall)
+            {
+                Log($"[Call][Originate] Fallback3: own-trunk INVITE matched open outbound window (caller={dto.CallerNumber})");
+                isOriginateCallback = true;
+            }
+
+            if (!isOriginateCallback)
+                return false;
+
+            Log($"[Call][Originate] Auto-answering PBX callback for originate to {OriginateCoordinator.PendingDestination ?? outgoing?.CallRemoteNumber}");
+            var attachWindow = OriginateCoordinator.GetPendingCallWindow() ?? outgoing;
+            OriginateCoordinator.AcceptSession(dto.SessionId);
+            _ = WebRtcService.GetSlot(dto.Slot ?? "main").NotifyOriginateAcceptedAsync(dto.SessionId);
+
+            _ = WebRtcService.GetSlot(dto.Slot ?? "main").AnswerAsync(dto.SessionId);
+            attachWindow?.SetOriginateWebRtcSessionId(dto.SessionId);
+            return true;
+        }
+
         private void HandleIncomingWebRtcCall(WebRtcEventDto dto)
         {
             try
@@ -977,67 +1430,51 @@ namespace Softphone
                     return;
                 }
 
-                // Check for PBX Originate correlation: if this INVITE matches a pending originate,
-                // auto-answer it and treat it as an outgoing call (no ringing UI).
-                // Strategy 1: Match by X-Callspire-Originate custom SIP header
-                // Strategy 2: Match by CallerID number (the trunk number we selected)
-                // Strategy 3: Match by destination number (MikoPBX sets pt1c_cid=destination in From URI)
-                bool isOriginateCallback = false;
+                if (TryHandleOriginateInboundInvite(dto))
+                    return;
 
-                if (!string.IsNullOrEmpty(_pendingOriginateId))
+                // PBX Originate: пока ждём callback — никакого входящего UI, только auto-answer на нужную сессию.
+                if (OriginateCoordinator.IsPending)
                 {
-                    string? originateId = null;
-                    if (dto.Data is System.Text.Json.JsonElement dataEl
-                        && dataEl.ValueKind == System.Text.Json.JsonValueKind.Object
-                        && dataEl.TryGetProperty("originateId", out var oidProp)
-                        && oidProp.ValueKind == System.Text.Json.JsonValueKind.String)
-                    {
-                        originateId = oidProp.GetString();
-                    }
-
-                    if (!string.IsNullOrEmpty(originateId) && originateId == _pendingOriginateId)
-                    {
-                        Log($"[Call][Originate] Matched by X-Callspire-Originate header: {originateId}");
-                        isOriginateCallback = true;
-                    }
-                    else if (!string.IsNullOrEmpty(_pendingOriginateCallerId)
-                             && !string.IsNullOrEmpty(dto.CallerNumber)
-                             && (dto.CallerNumber == _pendingOriginateCallerId
-                                 || dto.CallerNumber.TrimStart('+') == _pendingOriginateCallerId.TrimStart('+')))
-                    {
-                        Log($"[Call][Originate] Matched by CallerID number: incoming={dto.CallerNumber}, expected={_pendingOriginateCallerId}");
-                        isOriginateCallback = true;
-                    }
-                    else if (!string.IsNullOrEmpty(_pendingOriginateDestination)
-                             && !string.IsNullOrEmpty(dto.CallerNumber)
-                             && (dto.CallerNumber == _pendingOriginateDestination
-                                 || dto.CallerNumber.TrimStart('+') == _pendingOriginateDestination.TrimStart('+')))
-                    {
-                        Log($"[Call][Originate] Matched by destination number: incoming={dto.CallerNumber}, expected={_pendingOriginateDestination}");
-                        isOriginateCallback = true;
-                    }
-                }
-
-                if (isOriginateCallback)
-                {
-                    Log($"[Call][Originate] Auto-answering PBX callback for originate to {_pendingOriginateDestination}");
-                    _pendingOriginateId = null;
-                    _pendingOriginateCallerId = null;
-                    _pendingOriginateDestination = null;
-
-                    _ = WebRtcService.Instance?.AnswerAsync(dto.SessionId);
-
-                    if (_pendingOriginateCallWindow != null)
-                    {
-                        _pendingOriginateCallWindow.SetOriginateWebRtcSessionId(dto.SessionId);
-                        _pendingOriginateCallWindow = null;
-                    }
+                    Log($"[Call][Originate] Suppressing incoming UI while awaiting PBX callback (session={dto.SessionId}, caller={dto.CallerNumber})");
+                    _ = WebRtcService.GetSlot(dto.Slot ?? "main").HangupAsync(dto.SessionId);
                     return;
                 }
 
-                Log($"[Call][WebRTC] Handling incoming call (sessionId: {dto.SessionId}, caller: {dto.CallerNumber})");
-                
-                var config = GetWebRtcConfig();
+                // Own-trunk INVITE during outbound originate must never become a separate incoming call UI.
+                if (IsOwnOutboundCallerId(dto.CallerNumber)
+                    && (OriginateCoordinator.GetOutgoingCallWindow() != null
+                        || !string.IsNullOrEmpty(OriginateCoordinator.AcceptedSessionId)))
+                {
+                    Log($"[Call][Originate] Rejecting own-trunk INVITE during originate (session={dto.SessionId}, caller={dto.CallerNumber})");
+                    _ = WebRtcService.GetSlot(dto.Slot ?? "main").HangupAsync(dto.SessionId);
+                    return;
+                }
+
+                Log($"[Call][WebRTC] Handling incoming call (sessionId: {dto.SessionId}, caller: {dto.CallerNumber}, slot: {dto.Slot})");
+
+                // Одно окно активного звонка (как у SIP HandleIncomingCall): защита от гонки UI после BeginInvoke и от второго входящего.
+                var duplicateWindowGuard = OriginateCoordinator.GetOutgoingCallWindow()
+                    ?? CallHandlingHelpers.FindExistingCallWindow();
+                if (duplicateWindowGuard != null && !duplicateWindowGuard.IsClosing())
+                {
+                    if (IsOwnOutboundCallerId(dto.CallerNumber) && duplicateWindowGuard.OpenedAsOutgoingCall)
+                    {
+                        Log($"[MainWindow] HandleIncomingWebRtcCall: own-trunk INVITE with outbound window open — attaching (session={dto.SessionId})");
+                        OriginateCoordinator.AcceptSession(dto.SessionId);
+                        _ = WebRtcService.GetSlot(dto.Slot ?? "main").NotifyOriginateAcceptedAsync(dto.SessionId);
+                        _ = WebRtcService.GetSlot(dto.Slot ?? "main").AnswerAsync(dto.SessionId);
+                        duplicateWindowGuard.SetOriginateWebRtcSessionId(dto.SessionId);
+                        return;
+                    }
+
+                    Log($"[MainWindow] HandleIncomingWebRtcCall: активное CallWindow уже есть — второе входящее игнорируем (session={dto.SessionId}, caller={dto.CallerNumber}, slot={dto.Slot})");
+                    _ = WebRtcService.GetSlot(dto.Slot ?? "main").HangupAsync(dto.SessionId);
+                    return;
+                }
+
+                bool incomingIsSecondary = string.Equals(dto.Slot, "secondary", StringComparison.OrdinalIgnoreCase);
+                var config = GetWebRtcConfigForConnection(incomingIsSecondary);
                 if (config != null)
                 {
                     // Сохраняем время начала входящего звонка для истории
@@ -1051,12 +1488,13 @@ namespace Softphone
                         Status = CallStatus.Calling,
                         IsIncoming = true,
                         Transport = CallTransport.WebRtc,
-                        WebRtcSessionId = dto.SessionId
+                        WebRtcSessionId = dto.SessionId,
+                        ConnectionSlot = incomingIsSecondary ? CallConnectionSlot.Secondary : CallConnectionSlot.Main
                     };
                     _callHistoryService.AddCall(incomingCallItem);
                     LoadCallHistory();
                     
-                    var callWindow = new CallWindow(config, dto.CallerNumber, isIncomingCall: true, webRtcSessionId: dto.SessionId)
+                    var callWindow = new CallWindow(config, dto.CallerNumber, isIncomingCall: true, webRtcSessionId: dto.SessionId, webRtcService: WebRtcService.GetSlot(dto.Slot ?? "main"))
                     {
                         Owner = this
                     };
@@ -1065,7 +1503,7 @@ namespace Softphone
                     callWindow.OnIncomingCallStatusChanged += (phoneNumber, callTime, status, duration) =>
                     {
                         _callHistoryService.UpdateCallStatus(phoneNumber, callTime, status, duration);
-                        LoadCallHistory();
+                        RefreshVisibleDashboards();
                     };
                     
                     callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
@@ -1073,7 +1511,7 @@ namespace Softphone
                         string? outboundCallerId = callWindow.GetOutboundCallerId();
                         _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
                         
-                        Dispatcher.Invoke(() => LoadCallHistory());
+                        Dispatcher.Invoke(RefreshVisibleDashboards);
 
                         if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
                             TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
@@ -1129,7 +1567,13 @@ namespace Softphone
                 Log("[MainWindow] Pre-initializing WebView2 Environment...");
                 
                 // Создаем Environment асинхронно в фоне
-                var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, userData);
+                var envOptions = new Microsoft.Web.WebView2.Core.CoreWebView2EnvironmentOptions
+                {
+                    AdditionalBrowserArguments =
+                        "--force-webrtc-ip-handling-policy=default_public_interface_only " +
+                        "--webrtc-ip-handling-policy=default_public_interface_only"
+                };
+                var env = await Microsoft.Web.WebView2.Core.CoreWebView2Environment.CreateAsync(null, userData, envOptions);
                 Log("[MainWindow] WebView2 Environment pre-initialized successfully");
             }
             catch (Exception ex)
@@ -1186,14 +1630,16 @@ namespace Softphone
                     string json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
                     string? sipPassword = SipPasswordProvider.GetPassword(settings);
+                    string? mainRtcPass = SipPasswordProvider.GetMainWebRtcPassword(settings);
+                    string? mainRtcUser = AppSettings.EffectiveMainWebRtcUsername(settings);
                     
                     if (useWebRtc)
                     {
-                        // Для WebRTC проверяем WebRTC настройки
+                        // Для WebRTC проверяем WebRTC настройки (отдельные учётные данные или legacy SIP)
                         hasConnectionSettings = settings != null && 
                             !string.IsNullOrEmpty(settings.WebRtcWsUri) && 
-                            !string.IsNullOrEmpty(settings.SipUsername) && 
-                            !string.IsNullOrEmpty(sipPassword);
+                            !string.IsNullOrEmpty(mainRtcUser) && 
+                            !string.IsNullOrEmpty(mainRtcPass);
                     }
                     else
                     {
@@ -1247,7 +1693,7 @@ namespace Softphone
                         bool webRtcReady = false;
                         try
                         {
-                            var webRtcService = WebRtcService.Instance;
+                            var webRtcService = WebRtcService.Main;
                             webRtcReady = webRtcService != null && webRtcService.IsReadyForCalls;
                         }
                         catch
@@ -1302,12 +1748,10 @@ namespace Softphone
                     return;
                 }
                 
-                // Если WebRTC не включен, используем обычную логику SIP
-                // Если есть настройки, пытаемся подключиться
-                await TryConnectFromSettings();
-                
-                // Даем время на попытку подключения (1 секунда вместо 3)
-                await System.Threading.Tasks.Task.Delay(1000);
+                // SIP: не вызываем TryConnectFromSettings() здесь — это делает MainWindow_Loaded
+                // (DispatcherPriority.ApplicationIdle). Иначе два параллельных ConnectWithSettings ломают
+                // транспорт, долго грузят UI-поток и дают «зависание» при старте.
+                await System.Threading.Tasks.Task.Delay(2500);
                 
                 // Проверяем, подключены ли мы
                 if (!IsConnected)
@@ -1340,51 +1784,93 @@ namespace Softphone
         
         private void OpenSettingsWindow()
         {
-            // Сохраняем текущий активный вид перед открытием настроек
-            Grid currentActiveView = DialerView.Visibility == Visibility.Visible ? DialerView : HistoryView;
-            
-            var settingsWindow = new SettingsWindow
-            {
-                Owner = this
-            };
-            settingsWindow.ShowDialog();
-            
-            // После закрытия настроек активируем главное окно и восстанавливаем фокус
-            // Используем BeginInvoke с ApplicationIdle для гарантированной активации после закрытия диалога
-            Dispatcher.BeginInvoke(new Action(() =>
+            // Если окно настроек уже открыто — просто поднимаем его.
+            var existing = Application.Current?.Windows.OfType<SettingsWindow>().FirstOrDefault();
+            if (existing != null)
             {
                 try
                 {
-                    // Если окно свернуто, восстанавливаем его
-                    if (WindowState == WindowState.Minimized)
-                    {
-                        WindowState = WindowState.Normal;
-                    }
-                    
-                    // Активируем окно
-                    Activate();
-                    Focus();
-                    BringIntoView();
-                    
-                    // Убеждаемся, что окно видимо и активно
-                    if (!IsActive)
-                    {
-                        // Пробуем еще раз через небольшую задержку
-                        Dispatcher.BeginInvoke(new Action(() =>
-                        {
-                            Activate();
-                            Focus();
-                        }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-                    }
+                    if (existing.WindowState == WindowState.Minimized)
+                        existing.WindowState = WindowState.Normal;
+                    existing.Activate();
+                    existing.Focus();
+                    existing.SyncKommoGatewayModuleFromMain();
                 }
-                catch
+                catch { }
+                return;
+            }
+
+            var settingsWindow = new SettingsWindow();
+
+            // Немодально: главное окно остается доступным.
+            CenterNonOwnedWindowOverThis(settingsWindow);
+            settingsWindow.Show();
+            try
+            {
+                settingsWindow.Activate();
+                settingsWindow.Focus();
+            }
+            catch { }
+        }
+
+        private void CenterNonOwnedWindowOverThis(Window child)
+        {
+            try
+            {
+                if (child == null) return;
+
+                child.WindowStartupLocation = WindowStartupLocation.Manual;
+
+                // Center over current window bounds (works without Owner, so MainWindow can overlap it).
+                double width = double.IsNaN(child.Width) || child.Width <= 0 ? 800 : child.Width;
+                double height = double.IsNaN(child.Height) || child.Height <= 0 ? 600 : child.Height;
+
+                // Use RestoreBounds when maximized (Left/Top may be stale).
+                var hostBounds = this.WindowState == WindowState.Maximized ? this.RestoreBounds : new Rect(this.Left, this.Top, this.ActualWidth, this.ActualHeight);
+                if (hostBounds.Width <= 0 || hostBounds.Height <= 0)
+                    hostBounds = this.RestoreBounds;
+
+                double left = hostBounds.Left + (hostBounds.Width - width) / 2;
+                double top = hostBounds.Top + (hostBounds.Height - height) / 2;
+
+                // Clamp to the *current monitor* work area, not primary screen.
+                var work = GetWorkAreaForWindow(this);
+                if (work.Width > 0 && work.Height > 0)
                 {
-                    // Игнорируем ошибки активации
+                    left = Math.Max(work.Left, Math.Min(left, work.Right - width));
+                    top = Math.Max(work.Top, Math.Min(top, work.Bottom - height));
                 }
-            }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            
-            // Восстанавливаем выделение активной кнопки
-            UpdateButtonSelection(currentActiveView);
+
+                child.Left = left;
+                child.Top = top;
+            }
+            catch { }
+        }
+
+        private static Rect GetWorkAreaForWindow(Window w)
+        {
+            try
+            {
+                var hwnd = new WindowInteropHelper(w).Handle;
+                if (hwnd == IntPtr.Zero) return SystemParameters.WorkArea;
+
+                const int MONITOR_DEFAULTTONEAREST = 0x00000002;
+                IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                if (monitor == IntPtr.Zero) return SystemParameters.WorkArea;
+
+                var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
+                if (!GetMonitorInfo(monitor, ref mi)) return SystemParameters.WorkArea;
+
+                return new Rect(
+                    mi.rcWork.left,
+                    mi.rcWork.top,
+                    mi.rcWork.right - mi.rcWork.left,
+                    mi.rcWork.bottom - mi.rcWork.top);
+            }
+            catch
+            {
+                return SystemParameters.WorkArea;
+            }
         }
 
         private async System.Threading.Tasks.Task TryConnectFromSettings()
@@ -1399,9 +1885,11 @@ namespace Softphone
                     if (settings != null)
                     {
                         SipPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsFilePath, settings);
+                        TurnPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsFilePath, settings);
                         
-                        // Инициализируем AmoCRM сервис, если интеграция включена
-                        InitializeAmoCrmService(settings);
+                        // Kommo via PBX Gateway is initialized in InitializeMikoPbxCdrService.
+                        if (!IsPbxGatewayCdrConfigured(settings))
+                            InitializeAmoCrmService(settings);
                     }
                     string? sipPassword = SipPasswordProvider.GetPassword(settings);
 
@@ -1444,29 +1932,23 @@ namespace Softphone
                     return;
                 }
 
-                int port = 5060;
-                if (!string.IsNullOrEmpty(settings.SipServer) && settings.SipServer.Contains(":"))
-                {
-                    var parts = settings.SipServer.Split(':');
-                    if (parts.Length == 2 && int.TryParse(parts[1], out int parsedPort))
-                    {
-                        port = parsedPort;
-                    }
-                }
+                SipEndpointHelper.ParseStoredSipServer(settings.SipServer, out string sipHost, out int port);
 
                 _sipService?.Dispose();
 
                 _sipService = new SipService(
                     settings.SipUsername ?? "", 
                     SipPasswordProvider.GetPassword(settings) ?? "", 
-                    settings.SipServer?.Split(':')[0] ?? settings.SipServer ?? "", 
+                    sipHost, 
                     port,
                     settings.MicrophoneDeviceNumber, 
                     settings.SpeakerDeviceNumber,
                     settings.AudioCodec ?? "PCMU",
                     settings.AudioSampleRate > 0 ? settings.AudioSampleRate : 16000,
                     settings.AudioBitrate > 0 ? settings.AudioBitrate : 64000,
-                    isSecondaryConnection: false);
+                    isSecondaryConnection: false,
+                    useTls: settings.SipUseTls,
+                    useSrtp: settings.SipUseSrtp);
                 _sipService.EnableAec = settings.EnableEchoCancellation;
                 
                 // Если включен WebRTC, пропускаем инициализацию аудио в SIPSorcery
@@ -1476,47 +1958,54 @@ namespace Softphone
                 }
                 _sipService.OnStatusChanged += (status) =>
                 {
-                    Dispatcher.Invoke(() =>
+                    Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        // Преобразуем технические сообщения в понятные для пользователя
-                        string? userFriendlyStatus = FormatStatusMessage(status);
-                        
-                        // Обновляем статус только если FormatStatusMessage вернул не null
-                        // (null означает, что это техническое сообщение, которое не нужно показывать)
-                        if (userFriendlyStatus != null)
+                        try
                         {
-                            // Для SIP режима обновляем текст статуса
-                            // ВАЖНО: НЕ перезаписываем статус для WebRTC режима, чтобы не конфликтовать с UpdateConnectionStatus()
-                            if (!ShouldUseWebRtc())
+                            // Преобразуем технические сообщения в понятные для пользователя
+                            string? userFriendlyStatus = FormatStatusMessage(status);
+
+                            // Обновляем статус только если FormatStatusMessage вернул не null
+                            // (null означает, что это техническое сообщение, которое не нужно показывать)
+                            if (userFriendlyStatus != null)
                             {
-                                if (MainStatusTextBlock != null)
+                                // Для SIP режима обновляем текст статуса
+                                // ВАЖНО: НЕ перезаписываем статус для WebRTC режима, чтобы не конфликтовать с UpdateConnectionStatus()
+                                if (!ShouldUseWebRtc())
                                 {
-                                    MainStatusTextBlock.Text = userFriendlyStatus;
-                                    if (MainStatusIndicator != null)
+                                    if (MainStatusTextBlock != null)
                                     {
-                                        bool isConnected = _sipService?.IsRegistered ?? false;
-                                        MainStatusIndicator.Background = isConnected 
-                                            ? (Brush)FindResource("AccentGreenBrush")
-                                            : (Brush)FindResource("TextSecondaryBrush");
+                                        MainStatusTextBlock.Text = userFriendlyStatus;
+                                        if (MainStatusIndicator != null)
+                                        {
+                                            bool isConnected = _sipService?.IsRegistered ?? false;
+                                            MainStatusIndicator.Background = isConnected
+                                                ? (Brush)FindResource("AccentGreenBrush")
+                                                : (Brush)FindResource("TextSecondaryBrush");
+                                        }
                                     }
                                 }
+                                // Для WebRTC режима НЕ обновляем статус здесь - это делает UpdateConnectionStatus()
+                                // Это предотвращает перезапись WebRTC статуса SIP сообщениями
                             }
-                            // Для WebRTC режима НЕ обновляем статус здесь - это делает UpdateConnectionStatus()
-                            // Это предотвращает перезапись WebRTC статуса SIP сообщениями
-                        }
 
-                        // Обновляем статус подключения (текст и цвет)
-                        // ВАЖНО: Для WebRTC режима UpdateConnectionStatus() имеет приоритет над SIP статусами
-                        // UpdateConnectionStatus() проверит ShouldUseWebRtc() и обновит статус соответственно
-                        UpdateConnectionStatus();
-                        UpdateWebRtcIndicator();
-                        UpdateUserAccountInfo();
-                        
-                        OnConnectionStatusChanged?.Invoke(status);
-                        
-                        // Добавляем в историю логов (полное техническое сообщение)
-                        AddToLog(status);
-                    });
+                            // Обновляем статус подключения (текст и цвет)
+                            // ВАЖНО: Для WebRTC режима UpdateConnectionStatus() имеет приоритет над SIP статусами
+                            // UpdateConnectionStatus() проверит ShouldUseWebRtc() и обновит статус соответственно
+                            UpdateConnectionStatus();
+                            UpdateWebRtcIndicator();
+                            UpdateUserAccountInfo();
+
+                            OnConnectionStatusChanged?.Invoke(status);
+
+                            // Добавляем в историю логов (полное техническое сообщение)
+                            AddToLog(status);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[MainWindow] OnStatusChanged UI: {ex.Message}");
+                        }
+                    }), System.Windows.Threading.DispatcherPriority.Normal);
                 };
                 
                 // Обновляем информацию о пользователе после создания SipService
@@ -1599,6 +2088,7 @@ namespace Softphone
         {
             DialerView.Visibility = Visibility.Collapsed;
             HistoryView.Visibility = Visibility.Collapsed;
+            StatisticsView.Visibility = Visibility.Collapsed;
 
             view.Visibility = Visibility.Visible;
             
@@ -1614,6 +2104,9 @@ namespace Softphone
             
             HistoryButton.Background = System.Windows.Media.Brushes.Transparent;
             HistoryButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+
+            StatisticsButton.Background = System.Windows.Media.Brushes.Transparent;
+            StatisticsButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
             
             // Выделяем активную кнопку
             if (activeView == DialerView)
@@ -1626,6 +2119,11 @@ namespace Softphone
                 HistoryButton.Background = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
                 HistoryButton.Foreground = System.Windows.Media.Brushes.White;
             }
+            else if (activeView == StatisticsView)
+            {
+                StatisticsButton.Background = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
+                StatisticsButton.Foreground = System.Windows.Media.Brushes.White;
+            }
         }
 
         private void DialerButton_Click(object sender, RoutedEventArgs e)
@@ -1635,8 +2133,461 @@ namespace Softphone
 
         private async void HistoryButton_Click(object sender, RoutedEventArgs e)
         {
+            _historyViewFilteredCalls = null;
+            _historyFilterCaption = null;
             ShowView(HistoryView);
             await LoadCallHistoryAsync();
+        }
+
+        private async void StatisticsButton_Click(object sender, RoutedEventArgs e)
+        {
+            ShowView(StatisticsView);
+            await LoadCallStatisticsAsync();
+        }
+
+        private void InitializeStatisticsFilters()
+        {
+            if (StatisticsPeriodComboBox == null)
+                return;
+
+            StatisticsPeriodComboBox.Items.Clear();
+            StatisticsPeriodComboBox.Items.Add(new ComboBoxItem { Content = "Last 7 days", Tag = CallStatisticsPeriod.Last7Days });
+            StatisticsPeriodComboBox.Items.Add(new ComboBoxItem { Content = "Today", Tag = CallStatisticsPeriod.Today });
+            StatisticsPeriodComboBox.Items.Add(new ComboBoxItem { Content = "Yesterday", Tag = CallStatisticsPeriod.Yesterday });
+            StatisticsPeriodComboBox.Items.Add(new ComboBoxItem { Content = "Last 3 days", Tag = CallStatisticsPeriod.Last3Days });
+            StatisticsPeriodComboBox.Items.Add(new ComboBoxItem { Content = "Custom range", Tag = CallStatisticsPeriod.Custom });
+            StatisticsPeriodComboBox.SelectedIndex = 0;
+
+            if (StatisticsConnectionComboBox != null)
+            {
+                StatisticsConnectionComboBox.Items.Clear();
+                StatisticsConnectionComboBox.Items.Add(new ComboBoxItem { Content = "All connections", Tag = CallStatisticsScope.All });
+                StatisticsConnectionComboBox.Items.Add(new ComboBoxItem { Content = "Main", Tag = CallStatisticsScope.Main });
+                StatisticsConnectionComboBox.Items.Add(new ComboBoxItem { Content = "Secondary", Tag = CallStatisticsScope.Secondary });
+                StatisticsConnectionComboBox.SelectedIndex = 0;
+            }
+
+            if (StatisticsDirectionComboBox != null)
+            {
+                StatisticsDirectionComboBox.Items.Clear();
+                StatisticsDirectionComboBox.Items.Add(new ComboBoxItem { Content = "All directions", Tag = CallStatisticsDirection.All });
+                StatisticsDirectionComboBox.Items.Add(new ComboBoxItem { Content = "Incoming", Tag = CallStatisticsDirection.Incoming });
+                StatisticsDirectionComboBox.Items.Add(new ComboBoxItem { Content = "Outgoing", Tag = CallStatisticsDirection.Outgoing });
+                StatisticsDirectionComboBox.SelectedIndex = 0;
+            }
+
+            var retentionStart = DateTime.Now.Date.AddDays(-(CallStatisticsService.RetentionDays - 1));
+            if (StatisticsCustomFromDatePicker != null)
+            {
+                StatisticsCustomFromDatePicker.DisplayDateStart = retentionStart;
+                StatisticsCustomFromDatePicker.DisplayDateEnd = DateTime.Now.Date;
+                StatisticsCustomFromDatePicker.SelectedDate = retentionStart;
+            }
+            if (StatisticsCustomToDatePicker != null)
+            {
+                StatisticsCustomToDatePicker.DisplayDateStart = retentionStart;
+                StatisticsCustomToDatePicker.DisplayDateEnd = DateTime.Now.Date;
+                StatisticsCustomToDatePicker.SelectedDate = DateTime.Now.Date;
+            }
+
+            RefreshStatisticsConnectionComboLabels();
+        }
+
+        private void RefreshStatisticsConnectionComboLabels()
+        {
+            if (StatisticsConnectionComboBox == null) return;
+            var names = GetStatisticsConnectionNames();
+            if (StatisticsConnectionComboBox.Items.Count >= 3)
+            {
+                ((ComboBoxItem)StatisticsConnectionComboBox.Items[1]).Content = names.MainName;
+                ((ComboBoxItem)StatisticsConnectionComboBox.Items[2]).Content = names.SecondaryName;
+            }
+        }
+
+        private async void StatisticsFilter_Changed(object sender, SelectionChangedEventArgs e)
+        {
+            if (StatisticsPeriodComboBox?.SelectedItem is ComboBoxItem periodItem &&
+                periodItem.Tag is CallStatisticsPeriod period)
+            {
+                if (StatisticsCustomRangePanel != null)
+                    StatisticsCustomRangePanel.Visibility = period == CallStatisticsPeriod.Custom
+                        ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            if (StatisticsView?.Visibility == Visibility.Visible)
+                await LoadCallStatisticsAsync();
+        }
+
+        private async void StatisticsCustomDatePicker_SelectedDateChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (StatisticsView?.Visibility != Visibility.Visible)
+                return;
+            if (StatisticsPeriodComboBox?.SelectedItem is not ComboBoxItem item ||
+                item.Tag is not CallStatisticsPeriod period ||
+                period != CallStatisticsPeriod.Custom)
+                return;
+
+            await LoadCallStatisticsAsync();
+        }
+
+        private CallStatisticsFilter BuildStatisticsFilter()
+        {
+            var scope = CallStatisticsScope.All;
+            var direction = CallStatisticsDirection.All;
+
+            if (StatisticsConnectionComboBox?.SelectedItem is ComboBoxItem connItem &&
+                connItem.Tag is CallStatisticsScope selectedScope)
+                scope = selectedScope;
+
+            if (StatisticsDirectionComboBox?.SelectedItem is ComboBoxItem dirItem &&
+                dirItem.Tag is CallStatisticsDirection selectedDirection)
+                direction = selectedDirection;
+
+            return new CallStatisticsFilter
+            {
+                Period = GetSelectedStatisticsPeriod(),
+                Scope = scope,
+                Direction = direction,
+                CustomFrom = StatisticsCustomFromDatePicker?.SelectedDate,
+                CustomTo = StatisticsCustomToDatePicker?.SelectedDate
+            };
+        }
+
+        private async System.Threading.Tasks.Task LoadCallStatisticsAsync()
+        {
+            var filter = BuildStatisticsFilter();
+            var names = GetStatisticsConnectionNames();
+            bool amoEnabled = IsAmoCrmStatisticsEnabled();
+
+            var report = await System.Threading.Tasks.Task.Run(() =>
+            {
+                var history = _callHistoryService.GetHistory();
+                return CallStatisticsService.BuildReport(
+                    history,
+                    filter,
+                    names.MainName,
+                    names.SecondaryName,
+                    names.SecondaryEnabled);
+            });
+
+            _lastStatisticsReport = report;
+
+            Dispatcher.Invoke(() =>
+            {
+                RefreshStatisticsConnectionComboLabels();
+                BindStatisticsReport(report, names.SecondaryEnabled, amoEnabled);
+            });
+        }
+
+        private bool IsAmoCrmStatisticsEnabled()
+        {
+            try
+            {
+                if (!IsAmoCrmIntegrationEnabled())
+                    return false;
+
+                if (IsAmoCrmServiceInitialized())
+                    return true;
+
+                var settings = AppDataHelper.LoadSettingsOrNew();
+                if (IsLocalKommoConfigured(settings))
+                    return true;
+
+                // Gateway Kommo: subdomain and tokens live on PBX Gateway, not in local settings.
+                var source = ResolveKommoConnectionSource(settings);
+                if (source == "local")
+                    return false;
+
+                return IsPbxGatewayCdrConfigured(settings);
+            }
+            catch { return false; }
+        }
+
+        private void BindStatisticsReport(CallStatisticsReport report, bool secondaryEnabled, bool amoEnabled)
+        {
+            var s = report.Summary;
+
+            if (StatisticsPeriodHintTextBlock != null)
+                StatisticsPeriodHintTextBlock.Text =
+                    $"Showing {s.TotalCompleted} completed call(s) from {report.FromInclusive:yyyy-MM-dd} to {report.ToInclusive:yyyy-MM-dd}";
+
+            StatsKpiTotal.Text = s.TotalCompleted.ToString();
+            StatsKpiDirectionHint.Text = s.TotalCompleted > 0 ? $"In {s.Incoming} · Out {s.Outgoing}" : "No calls";
+
+            StatsKpiAnswered.Text = s.Successful.ToString();
+            StatsKpiSuccessRate.Text = s.TotalCompleted > 0 ? $"{s.SuccessRatePercent}% success rate" : "—";
+
+            StatsKpiUnanswered.Text = s.Unsuccessful.ToString();
+            StatsKpiUnansweredHint.Text = s.Unsuccessful > 0
+                ? $"Failed {s.Failed} · Cancelled {s.Cancelled}"
+                : "—";
+
+            StatsKpiTalkTime.Text = CallStatisticsService.FormatDuration(s.TotalTalkTime);
+            StatsKpiAvgTalk.Text = s.Successful > 0
+                ? $"Avg {CallStatisticsService.FormatDuration(s.AverageTalkTime)}"
+                : "—";
+
+            StatsKpiContactRate.Text = s.Outgoing > 0 ? $"{s.ContactRatePercent}%" : "—";
+            StatsKpiRingTime.Text = s.RingTimeSampleCount > 0
+                ? $"Avg ring {CallStatisticsService.FormatDuration(s.AverageRingTime)}"
+                : "Avg ring —";
+
+            StatsKpiMissed.Text = s.Missed.ToString();
+            StatsKpiFailedCancelled.Text = s.Missed > 0 ? "Incoming · not answered" : "—";
+
+            StatsDailyChartItems.ItemsSource = report.DailyBuckets;
+            StatsHourlyChartItems.ItemsSource = report.HourlyBuckets;
+            StatsPeakHourText.Text = report.PeakHour >= 0
+                ? $"Peak hour: {report.PeakHour:00}:00–{report.PeakHour:00}:59"
+                : "No activity";
+
+            StatsOutcomeAnswered.Text = $"● Answered conversations: {s.Successful}";
+            StatsOutcomeCancelled.Text = $"● Cancelled / no answer: {s.Cancelled}";
+            StatsOutcomeAgentCancel.Text = $"● Hung up before answer (you): {s.AgentCancelledBeforeAnswer}";
+            StatsOutcomeFailed.Text = $"● Technical failures: {s.Failed}";
+            StatsOutcomeMissed.Text = $"● Missed incoming: {s.Missed}";
+
+            bool showConnectionCompare = report.Filter.Scope == CallStatisticsScope.All && secondaryEnabled;
+            StatsConnectionComparePanel.Visibility = showConnectionCompare ? Visibility.Visible : Visibility.Collapsed;
+            if (showConnectionCompare)
+            {
+                StatsConnectionCompareItems.ItemsSource = report.ConnectionCompare.Select(row => new
+                {
+                    row.Name,
+                    Detail = $"{row.Summary.TotalCompleted} calls · {row.Summary.SuccessRatePercent}% answered · talk {CallStatisticsService.FormatDuration(row.Summary.TotalTalkTime)}"
+                }).ToList();
+            }
+
+            if (report.TransportStats.Count > 0)
+            {
+                StatsTransportEmptyText.Visibility = Visibility.Collapsed;
+                StatsTransportItems.ItemsSource = report.TransportStats.Select(t => new
+                {
+                    Detail = $"{t.Label}: {t.Summary.TotalCompleted} calls, {t.Summary.SuccessRatePercent}% answered, avg {CallStatisticsService.FormatDuration(t.Summary.AverageTalkTime)}"
+                }).ToList();
+            }
+            else
+            {
+                StatsTransportItems.ItemsSource = null;
+                StatsTransportEmptyText.Visibility = Visibility.Visible;
+            }
+
+            StatsCrmPanel.Visibility = amoEnabled ? Visibility.Visible : Visibility.Collapsed;
+            if (amoEnabled)
+            {
+                var crm = report.Crm;
+                StatsCrmLinked.Text = $"● Attached to AmoCRM lead: {crm.LinkedToLead} / {crm.TotalCompleted}";
+                StatsCrmSentToContact.Text = crm.SentToContact > 0
+                    ? $"● Sent to AmoCRM contact (no lead): {crm.SentToContact} / {crm.TotalCompleted}"
+                    : "● Sent to AmoCRM contact (no lead): none";
+                StatsCrmRecorded.Text = $"● Local recording saved: {crm.WithRecording} / {crm.TotalCompleted}";
+                StatsCrmUploaded.Text = crm.WithRecording > 0
+                    ? $"● Sent to AmoCRM: {crm.UploadedToAmo} / {crm.WithRecording}"
+                    : "● Sent to AmoCRM: — (no recordings)";
+                StatsCrmUploadIssues.Text = crm.RecordingNotInAmo > 0
+                    ? $"● Recording not in AmoCRM: {crm.RecordingNotInAmo} (failed {crm.UploadFailed}, cancelled {crm.UploadCancelled})"
+                    : "● Recording not in AmoCRM: none";
+            }
+
+            if (report.CallerIdStats.Count > 0)
+            {
+                StatsCallerIdEmptyText.Visibility = Visibility.Collapsed;
+                StatsCallerIdItems.ItemsSource = report.CallerIdStats.Select(c => new
+                {
+                    Detail = $"{c.CallerId}: {c.Answered}/{c.Total} answered ({c.SuccessRatePercent}%)"
+                }).ToList();
+            }
+            else
+            {
+                StatsCallerIdItems.ItemsSource = null;
+                StatsCallerIdEmptyText.Visibility = Visibility.Visible;
+            }
+
+            if (report.TopNumbers.Count > 0)
+            {
+                StatsTopNumbersEmptyText.Visibility = Visibility.Collapsed;
+                StatsTopNumbersItems.ItemsSource = report.TopNumbers.Select(n => new
+                {
+                    n.PhoneNumber,
+                    Detail = $"{n.TotalCalls} calls · {n.Answered} ans · {CallStatisticsService.FormatDuration(n.TotalTalkTime)}"
+                }).ToList();
+            }
+            else
+            {
+                StatsTopNumbersItems.ItemsSource = null;
+                StatsTopNumbersEmptyText.Visibility = Visibility.Visible;
+            }
+
+            if (StatisticsLegacyHintTextBlock != null)
+                StatisticsLegacyHintTextBlock.Visibility = report.HasLegacyUnknownConnection
+                    ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private CallStatisticsPeriod GetSelectedStatisticsPeriod()
+        {
+            if (StatisticsPeriodComboBox?.SelectedItem is ComboBoxItem item &&
+                item.Tag is CallStatisticsPeriod period)
+                return period;
+            return CallStatisticsPeriod.Last7Days;
+        }
+
+        private (string MainName, string SecondaryName, bool SecondaryEnabled) GetStatisticsConnectionNames()
+        {
+            string mainName = "Main";
+            string secondaryName = "Secondary";
+            bool secondaryEnabled = false;
+
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (File.Exists(settingsPath))
+                {
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(File.ReadAllText(settingsPath));
+                    if (settings != null)
+                    {
+                        if (!string.IsNullOrWhiteSpace(settings.MainConnectionName))
+                            mainName = settings.MainConnectionName.Trim();
+                        if (!string.IsNullOrWhiteSpace(settings.SecondaryConnectionName))
+                            secondaryName = settings.SecondaryConnectionName.Trim();
+
+                        secondaryEnabled = !string.IsNullOrWhiteSpace(settings.SipServer2) &&
+                                           !string.IsNullOrWhiteSpace(settings.SipUsername2);
+                    }
+                }
+            }
+            catch { }
+
+            return (mainName, secondaryName, secondaryEnabled);
+        }
+
+        private void StatisticsKpi_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (_lastStatisticsReport == null || sender is not FrameworkElement el)
+                return;
+
+            var drill = el.Tag?.ToString() switch
+            {
+                "Answered" => CallStatisticsDrillDown.Answered,
+                "Unanswered" => CallStatisticsDrillDown.Unanswered,
+                "Missed" => CallStatisticsDrillDown.Missed,
+                _ => CallStatisticsDrillDown.All
+            };
+
+            string caption = drill switch
+            {
+                CallStatisticsDrillDown.Answered => "Answered calls",
+                CallStatisticsDrillDown.Unanswered => "Unanswered calls",
+                CallStatisticsDrillDown.Missed => "Missed incoming calls",
+                _ => "All filtered calls"
+            };
+
+            OpenHistoryFromStatistics(drill, caption);
+        }
+
+        private void StatisticsTopNumber_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (_lastStatisticsReport == null || sender is not FrameworkElement { Tag: string phone })
+                return;
+
+            var filtered = CallStatisticsService.ApplyDrillDown(_lastStatisticsReport.MatchingCalls, CallStatisticsDrillDown.All, phone).ToList();
+            _historyViewFilteredCalls = filtered;
+            _historyFilterCaption = $"Number {phone} ({filtered.Count} calls)";
+            ShowView(HistoryView);
+            BindCallHistory(filtered);
+        }
+
+        private void OpenHistoryFromStatistics(CallStatisticsDrillDown drillDown, string caption)
+        {
+            if (_lastStatisticsReport == null) return;
+
+            var filtered = CallStatisticsService.ApplyDrillDown(_lastStatisticsReport.MatchingCalls, drillDown).ToList();
+            _historyViewFilteredCalls = filtered;
+            _historyFilterCaption = $"{caption} ({filtered.Count})";
+            ShowView(HistoryView);
+            BindCallHistory(filtered);
+        }
+
+        private void StatisticsCrmMetric_Click(object sender, MouseButtonEventArgs e)
+        {
+            if (_lastStatisticsReport == null || sender is not FrameworkElement { Tag: string tag })
+                return;
+
+            var (drill, caption) = tag switch
+            {
+                "CrmLinkedToLead" => (CallStatisticsDrillDown.CrmLinkedToLead, "Attached to AmoCRM lead"),
+                "CrmSentToContact" => (CallStatisticsDrillDown.CrmSentToContact, "Sent to AmoCRM contact (no lead)"),
+                "CrmWithRecording" => (CallStatisticsDrillDown.CrmWithRecording, "Local recording saved"),
+                "CrmUploadedToAmo" => (CallStatisticsDrillDown.CrmUploadedToAmo, "Recording sent to AmoCRM"),
+                "CrmRecordingNotInAmo" => (CallStatisticsDrillDown.CrmRecordingNotInAmo, "Recording not in AmoCRM"),
+                "CrmNoRecording" => (CallStatisticsDrillDown.CrmNoRecording, "No local recording file"),
+                "CrmNotLinked" => (CallStatisticsDrillDown.CrmNotLinked, "Not sent to AmoCRM"),
+                "CrmUploadProblems" => (CallStatisticsDrillDown.CrmUploadProblems, "AmoCRM upload problems"),
+                _ => (CallStatisticsDrillDown.All, "All filtered calls")
+            };
+
+            OpenHistoryFromStatistics(drill, caption);
+        }
+
+        private void RefreshVisibleDashboards()
+        {
+            LoadCallHistory();
+            ScheduleStatisticsRefresh();
+        }
+
+        private void ScheduleStatisticsRefresh()
+        {
+            if (StatisticsView?.Visibility != Visibility.Visible)
+                return;
+
+            if (_statisticsRefreshDebounceTimer == null)
+            {
+                _statisticsRefreshDebounceTimer = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(450)
+                };
+                _statisticsRefreshDebounceTimer.Tick += StatisticsRefreshDebounceTimer_Tick;
+            }
+
+            _statisticsRefreshDebounceTimer.Stop();
+            _statisticsRefreshDebounceTimer.Start();
+        }
+
+        private async void StatisticsRefreshDebounceTimer_Tick(object? sender, EventArgs e)
+        {
+            _statisticsRefreshDebounceTimer?.Stop();
+            await LoadCallStatisticsAsync();
+        }
+
+        private void StatisticsExportCsvButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_lastStatisticsReport == null)
+                return;
+
+            var dialog = new SaveFileDialog
+            {
+                Filter = "CSV files (*.csv)|*.csv",
+                FileName = $"call-statistics_{_lastStatisticsReport.FromInclusive:yyyy-MM-dd}_{_lastStatisticsReport.ToInclusive:yyyy-MM-dd}.csv"
+            };
+
+            if (dialog.ShowDialog(this) != true)
+                return;
+
+            try
+            {
+                var names = GetStatisticsConnectionNames();
+                CallStatisticsService.SaveReportCsv(
+                    _lastStatisticsReport,
+                    dialog.FileName,
+                    names.MainName,
+                    names.SecondaryName);
+                CustomMessageBox.Show($"Exported {_lastStatisticsReport.MatchingCalls.Count} call(s) to:\n{dialog.FileName}",
+                    "Export complete", MessageBoxButton.OK, MessageBoxImage.Information, this);
+            }
+            catch (Exception ex)
+            {
+                CustomMessageBox.Show($"Export failed: {ex.Message}", "Error",
+                    MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
         }
 
         /// <summary>
@@ -1645,9 +2596,8 @@ namespace Softphone
         /// </summary>
         private async System.Threading.Tasks.Task LoadCallHistoryAsync()
         {
-            // Забираем и сортируем историю в фоновом потоке,
-            // чтобы не блокировать UI при больших объёмах данных.
-            var history = await System.Threading.Tasks.Task.Run(() => _callHistoryService.GetHistory());
+            var history = await System.Threading.Tasks.Task.Run(() =>
+                _historyViewFilteredCalls ?? _callHistoryService.GetHistory());
 
             Dispatcher.Invoke(() => BindCallHistory(history));
         }
@@ -1657,7 +2607,7 @@ namespace Softphone
         /// </summary>
         private void LoadCallHistory()
         {
-            var history = _callHistoryService.GetHistory();
+            var history = _historyViewFilteredCalls ?? _callHistoryService.GetHistory();
             BindCallHistory(history);
         }
 
@@ -1666,6 +2616,19 @@ namespace Softphone
         /// </summary>
         private void BindCallHistory(System.Collections.Generic.List<CallHistoryItem> history)
         {
+            if (HistoryFilterHintTextBlock != null)
+            {
+                if (!string.IsNullOrWhiteSpace(_historyFilterCaption))
+                {
+                    HistoryFilterHintTextBlock.Text = $"Filtered view: {_historyFilterCaption}";
+                    HistoryFilterHintTextBlock.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    HistoryFilterHintTextBlock.Visibility = Visibility.Collapsed;
+                }
+            }
+
             if (history.Count == 0)
             {
                 HistoryItemsControl.ItemsSource = null;
@@ -1684,8 +2647,8 @@ namespace Softphone
                 TransportBrush = call.Transport == CallTransport.WebRtc
                     ? new SolidColorBrush(Color.FromRgb(37, 99, 235))   // синий для WebRTC
                     : new SolidColorBrush(Color.FromRgb(16, 185, 129)), // зелёный для SIP
-                Status = GetStatusText(call.Status),
-                StatusColor = GetStatusColor(call.Status),
+                Status = CallStatusPresentation.FormatSummary(call),
+                StatusColor = CallStatusPresentation.GetForegroundBrush(call),
                 CallTimeText = call.CallTime.ToString("yyyy-MM-dd HH:mm:ss"),
                 DurationText = call.Duration.HasValue 
                     ? $"{call.Duration.Value.Minutes:D2}:{call.Duration.Value.Seconds:D2}" 
@@ -1698,34 +2661,6 @@ namespace Softphone
             }).ToList();
 
             HistoryItemsControl.ItemsSource = displayItems;
-        }
-
-        private string GetStatusText(CallStatus status)
-        {
-            return status switch
-            {
-                CallStatus.Calling => "Calling...",
-                CallStatus.Connected => "Connected",
-                CallStatus.Ended => "Ended",
-                CallStatus.Failed => "Failed",
-                CallStatus.Cancelled => "Cancelled",
-                CallStatus.Missed => "Missed",
-                _ => "Unknown"
-            };
-        }
-
-        private Brush GetStatusColor(CallStatus status)
-        {
-            return status switch
-            {
-                CallStatus.Connected => new SolidColorBrush(Color.FromRgb(34, 197, 94)), // Green
-                CallStatus.Ended => new SolidColorBrush(Color.FromRgb(156, 163, 175)), // Gray
-                CallStatus.Failed => new SolidColorBrush(Color.FromRgb(239, 68, 68)), // Red
-                CallStatus.Cancelled => new SolidColorBrush(Color.FromRgb(239, 68, 68)), // Red
-                CallStatus.Missed => new SolidColorBrush(Color.FromRgb(239, 68, 68)), // Red
-                CallStatus.Calling => new SolidColorBrush(Color.FromRgb(59, 130, 246)), // Blue
-                _ => new SolidColorBrush(Color.FromRgb(156, 163, 175)) // Gray
-            };
         }
 
         private void ClearHistoryButton_Click(object sender, RoutedEventArgs e)
@@ -1757,7 +2692,13 @@ namespace Softphone
                         {
                             var detailsWindow = new CallDetailsWindow(callItem);
                             detailsWindow.Owner = this;
-                            detailsWindow.ShowDialog();
+                            detailsWindow.Show();
+                            try
+                            {
+                                detailsWindow.Activate();
+                                detailsWindow.Focus();
+                            }
+                            catch { }
                         }
                     }
                 }
@@ -1772,6 +2713,7 @@ namespace Softphone
                 button.IsEnabled = false;
                 try
                 {
+                    _allowNextProgrammaticCall = true;
                     // КРИТИЧНО: Проверяем наличие активного вызова перед созданием нового
                     var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
                     if (existingCallWindow != null)
@@ -1822,7 +2764,7 @@ namespace Softphone
 
                     // ВАЖНО: Сразу инициируем звонок, не переключаясь на главный экран
                     // Это соответствует ожидаемому поведению пользователя
-                    await PerformCall(phoneNumber);
+                    await PerformCall(phoneNumber, leadId: null, forceCallerIdSelection: true);
                 }
                 finally
                 {
@@ -1887,6 +2829,20 @@ namespace Softphone
             {
                 PhoneNumberTextBox.Text = "Enter the number";
                 PhoneNumberTextBox.Foreground = (SolidColorBrush)FindResource("TextSecondaryBrush");
+            }
+        }
+
+        private void ClearDialerPhoneNumber()
+        {
+            try
+            {
+                if (PhoneNumberTextBox == null) return;
+                PhoneNumberTextBox.Text = "Enter the number";
+                PhoneNumberTextBox.Foreground = (SolidColorBrush)FindResource("TextSecondaryBrush");
+            }
+            catch
+            {
+                // ignore UI cleanup failures
             }
         }
 
@@ -1987,9 +2943,11 @@ namespace Softphone
                     return;
                 }
 
-                // Migrate legacy plaintext SIP password to encrypted (best-effort)
+                // Migrate legacy plaintext secrets to encrypted (best-effort)
                 SipPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsFilePath, settings);
+                TurnPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsFilePath, settings);
                 string? sipPassword = SipPasswordProvider.GetPassword(settings);
+                string? mainRtcPassword = SipPasswordProvider.GetMainWebRtcPassword(settings);
                 
                 // КРИТИЧНО: Проверяем активные звонки перед изменением настроек
                 // Не прерываем активные звонки при изменении настроек
@@ -1997,7 +2955,7 @@ namespace Softphone
                 bool hasActiveWebRtcCall = CallHandlingHelpers.IsWebRtcCallActive();
                 bool hasActiveSipCall = _sipService != null && _sipService.IsInCall;
                 
-                if (existingCallWindow != null || hasActiveWebRtcCall || hasActiveSipCall)
+                if (existingCallWindow != null || hasActiveWebRtcCall || hasActiveSipCall || OriginateCoordinator.IsPending)
                 {
                     Log("[MainWindow] ReconnectFromSettingsAsync: Active call detected, deferring reconnection until call ends");
                     Dispatcher.Invoke(() =>
@@ -2015,18 +2973,15 @@ namespace Softphone
                 // Инициализируем AmoCRM сервис, если интеграция включена
                 InitializeAmoCrmService(settings);
                 
-                bool useWebRtc = settings.UseWebRtcAudio && 
-                                 !string.IsNullOrEmpty(settings.WebRtcWsUri) &&
-                                 !string.IsNullOrEmpty(settings.SipUsername) && 
-                                 !string.IsNullOrEmpty(sipPassword);
-                
-                if (useWebRtc)
+                bool mainUsesWebRtc = ShouldUseWebRtcForConnection(false) &&
+                                      !string.IsNullOrEmpty(settings.WebRtcWsUri) &&
+                                      !string.IsNullOrEmpty(AppSettings.EffectiveMainWebRtcUsername(settings)) &&
+                                      !string.IsNullOrEmpty(SipPasswordProvider.GetMainWebRtcPassword(settings));
+
+                if (mainUsesWebRtc)
                 {
-                    // WebRTC режим включен
-                    Log("[MainWindow] ReconnectFromSettingsAsync: WebRTC mode enabled, stopping SIP and initializing WebRTC...");
-                    
-                    // ВАЖНО: Сбрасываем статус ПЕРЕД переключением на WebRTC режим
-                    // Это предотвращает отображение старого SIP статуса "Connecting to server..."
+                    Log("[MainWindow] ReconnectFromSettingsAsync: Main connection transport=WebRtc, stopping SIP and initializing WebRTC slot...");
+
                     Dispatcher.Invoke(() =>
                     {
                         if (MainStatusTextBlock != null)
@@ -2035,108 +2990,74 @@ namespace Softphone
                             if (MainStatusIndicator != null)
                                 MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
                         }
-                        Log("[MainWindow] ReconnectFromSettingsAsync: Status reset to 'Initializing WebRTC...' for WebRTC mode");
                     });
-                    
-                    // IMPORTANT: Fully stop SIP in WebRTC mode (no transport, no registration, no incoming/outgoing SIP).
+
+                    // Stop SIP for the main slot since main uses WebRTC.
                     _sipService?.Dispose();
                     _sipService = null;
-                    
-                    // Инициализируем или переинициализируем WebRTC
-                    Log("[MainWindow] ReconnectFromSettingsAsync: Initializing/Reinitializing WebRTC UA...");
-                    
-                    // ВАЖНО: Проверяем, инициализирован ли WebRTC engine
-                    // Если engine не инициализирован, вызываем полную инициализацию
-                    // Если engine инициализирован, переинициализируем UA
-                    bool engineInitialized = WebRtcService.Instance?.IsReadyForCalls ?? false;
-                    
-                    // Дополнительная проверка: если IsReadyForCalls=false, но engine может быть инициализирован,
-                    // проверяем через рефлексию
-                    if (!engineInitialized && WebRtcService.Instance != null)
+
+                    bool engineInitialized = WebRtcService.Main.IsReadyForCalls;
+                    if (!engineInitialized)
                     {
                         try
                         {
-                            var engineField = WebRtcService.Instance.GetType().GetField("_engine", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                            if (engineField != null)
+                            var engineField = typeof(WebRtcService).GetField("_engine", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                            var engine = engineField?.GetValue(WebRtcService.Main);
+                            if (engine != null)
                             {
-                                var engine = engineField.GetValue(WebRtcService.Instance);
-                                if (engine != null)
+                                var isInitializedProp = engine.GetType().GetProperty("IsInitialized");
+                                if (isInitializedProp != null)
                                 {
-                                    var isInitializedProp = engine.GetType().GetProperty("IsInitialized");
-                                    if (isInitializedProp != null)
-                                    {
-                                        engineInitialized = (bool)(isInitializedProp.GetValue(engine) ?? false);
-                                        Log($"[MainWindow] ReconnectFromSettingsAsync: Engine IsInitialized={engineInitialized} (checked via reflection)");
-                                    }
+                                    engineInitialized = (bool)(isInitializedProp.GetValue(engine) ?? false);
                                 }
                             }
                         }
-                        catch (Exception ex)
-                        {
-                            Log($"[MainWindow] ReconnectFromSettingsAsync: Error checking engine status: {ex.Message}");
-                        }
+                        catch { }
                     }
-                    
-                    if (engineInitialized && WebRtcService.Instance != null)
+
+                    if (engineInitialized)
                     {
-                        // Engine инициализирован - переинициализируем UA
-                        var config = GetWebRtcConfig();
+                        var config = GetWebRtcConfigForConnection(false);
                         if (config != null)
                         {
-                            Log("[MainWindow] ReconnectFromSettingsAsync: Engine is initialized, reinitializing UA...");
-                            await WebRtcService.Instance.ReinitializeUAAsync(
-                                config.WsUri,
-                                config.SipUri,
-                                settings.SipUsername ?? "",
-                                sipPassword ?? ""
+                            await WebRtcService.Main.ReinitializeUAAsync(
+                                config.WsUri, config.SipUri, AppSettings.EffectiveMainWebRtcUsername(settings) ?? "", mainRtcPassword ?? ""
                             );
-                            Log("[MainWindow] ReconnectFromSettingsAsync: WebRTC UA reinitialized");
+                            Log("[MainWindow] ReconnectFromSettingsAsync: Main WebRTC UA reinitialized");
                         }
                         else
                         {
-                            Log("[MainWindow] ReconnectFromSettingsAsync: WebRtc config is null, initializing WebRTC service...");
-                            await InitializeWebRtcServiceAsync();
+                            await InitializeWebRtcServiceAsync("main");
                         }
                     }
                     else
                     {
-                        // Engine не инициализирован - выполняем полную инициализацию
-                        Log("[MainWindow] ReconnectFromSettingsAsync: Engine not initialized (IsReadyForCalls=false), performing full initialization...");
-                        await InitializeWebRtcServiceAsync();
+                        await InitializeWebRtcServiceAsync("main");
                     }
-                    
-                    // Обновляем статус подключения после инициализации WebRTC
-                    // Даем небольшую задержку для завершения инициализации
-                    await System.Threading.Tasks.Task.Delay(300);
-                    Dispatcher.Invoke(() =>
-                    {
-                        UpdateConnectionStatus();
-                        UpdateWebRtcIndicator();
-                        Log($"[MainWindow] ReconnectFromSettingsAsync: Status updated after WebRTC init - MainStatusTextBlock.Text='{MainStatusTextBlock?.Text ?? ""}', IsReadyForCalls={WebRtcService.Instance?.IsReadyForCalls ?? false}, IsConnected={IsConnected}");
-                    });
                 }
                 else
                 {
-                    // SIP режим - отключаем WebRTC и подключаем SIP
-                    Log("[MainWindow] ReconnectFromSettingsAsync: SIP mode enabled, connecting SIP...");
+                    Log("[MainWindow] ReconnectFromSettingsAsync: Main connection transport=Sip, shutting down main WebRTC (if any) and reconnecting SIP...");
 
-                    // Stop/unload WebRTC in parallel so SIP can connect quickly and UI isn't spammed by WebRTC logs.
-                    _ = ShutdownWebRtcAsync();
-                    
-                    // Переподключаем SIP сервис
+                    // Detach main WebRTC slot so it stops registering on transport switch.
+                    try { WebRtcService.Main.StopWatchdog(); } catch { }
+                    try { WebRtcService.Main.Event -= OnWebRtcEvent; } catch { }
+                    try { WebRtcService.Main.DetachEngine(resetState: true); } catch { }
+
                     await TryConnectFromSettings();
-                    
-                    // Инициализируем второе подключение параллельно
-                    await InitializeSecondConnectionAsync();
-                    
-                    // Обновляем статус подключения
-                    Dispatcher.Invoke(() =>
-                    {
-                        UpdateConnectionStatus();
-                        UpdateWebRtcIndicator();
-                        UpdateUserAccountInfo();
-                    });
                 }
+
+                // Secondary slot is initialized independently — picks SIP vs WebRTC inside.
+                await InitializeSecondConnectionAsync();
+
+                await System.Threading.Tasks.Task.Delay(300);
+                Dispatcher.Invoke(() =>
+                {
+                    UpdateConnectionStatus();
+                    UpdateWebRtcIndicator();
+                    UpdateUserAccountInfo();
+                    Log($"[MainWindow] ReconnectFromSettingsAsync: post-update status — main='{MainStatusTextBlock?.Text ?? ""}', IsConnected={IsConnected}");
+                });
             }
             catch (Exception ex)
             {
@@ -2154,12 +3075,13 @@ namespace Softphone
         {
             try
             {
-                // Stop watchdog first (prevents periodic ping/getStats).
-                try { WebRtcService.Instance.StopWatchdog(); } catch { }
-
-                // Unsubscribe events + detach engine state.
-                try { WebRtcService.Instance.Event -= OnWebRtcEvent; } catch { }
-                try { WebRtcService.Instance.DetachEngine(resetState: true); } catch { }
+                // Stop watchdog first (prevents periodic ping/getStats) on both slots.
+                foreach (var svc in WebRtcService.AllSlots)
+                {
+                    try { svc.StopWatchdog(); } catch { }
+                    try { svc.Event -= OnWebRtcEvent; } catch { }
+                    try { svc.DetachEngine(resetState: true); } catch { }
+                }
 
                 // Dispose WebView2 on UI thread.
                 await Dispatcher.InvokeAsync(() =>
@@ -2174,6 +3096,7 @@ namespace Softphone
                             }
                             _webRtcEngine.Dispose();
                             _webRtcEngine = null;
+                            _sharedWebRtcHost = null;
                             Log("[MainWindow] WebRTC WebView2 disposed (switched to SIP mode)");
                         }
                     }
@@ -2181,6 +3104,7 @@ namespace Softphone
                     {
                         Log($"[MainWindow] Error disposing WebRTC WebView2: {ex.Message}");
                         _webRtcEngine = null;
+                        _sharedWebRtcHost = null;
                     }
 
                     // Refresh indicators after unloading.
@@ -2203,6 +3127,7 @@ namespace Softphone
         /// </summary>
         public async System.Threading.Tasks.Task InitializeSecondConnectionAsync()
         {
+            await _secondConnectionInitSemaphore.WaitAsync().ConfigureAwait(false);
             try
             {
                 string settingsFilePath = AppDataHelper.GetSettingsFilePath();
@@ -2220,6 +3145,25 @@ namespace Softphone
                     return;
                 }
 
+                // Маршрутизация по выбранному транспорту второго подключения (в т.ч. legacy-вывод по WebRtcWsUri2).
+                bool secondaryIsWebRtc = AppSettings.SecondaryLineUsesWebRtc(settings);
+                if (secondaryIsWebRtc &&
+                    !string.Equals(settings.SecondaryConnectionTransport, "WebRtc", StringComparison.OrdinalIgnoreCase))
+                {
+                    Log("[MainWindow] InitializeSecondConnectionAsync: Secondary WebRTC inferred from stored WSS URI (SecondaryConnectionTransport is not 'WebRtc' on disk)");
+                }
+                if (secondaryIsWebRtc)
+                {
+                    Log("[MainWindow] InitializeSecondConnectionAsync: Secondary transport=WebRtc, disposing SIP secondary and initializing WebRTC slot");
+                    _sipService2?.Dispose();
+                    _sipService2 = null;
+                    await InitializeWebRtcServiceAsync("secondary");
+                    return;
+                }
+
+                // SIP-режим: если ранее WebRTC был активен, остановим его UA через DetachEngine.
+                try { WebRtcService.Secondary.DetachEngine(resetState: true); } catch { }
+
                 // Проверяем наличие настроек второго подключения
                 if (string.IsNullOrEmpty(settings.SipServer2) || 
                     string.IsNullOrEmpty(settings.SipUsername2) || 
@@ -2232,20 +3176,9 @@ namespace Softphone
                     return;
                 }
 
-                Log($"[MainWindow] InitializeSecondConnectionAsync: Found second connection settings - Server2='{settings.SipServer2}', Username2='{settings.SipUsername2}'");
+                Log($"[MainWindow] InitializeSecondConnectionAsync: Found second connection settings - Server2='{settings.SipServer2}', Username2='{settings.SipUsername2}', UseTls2={settings.SipUseTls2}, UseSrtp2={settings.SipUseSrtp2}");
 
-                // Парсим server:port
-                int port2 = 5060;
-                string server2 = settings.SipServer2;
-                if (server2.Contains(":"))
-                {
-                    var parts = server2.Split(':');
-                    server2 = parts[0];
-                    if (parts.Length > 1 && int.TryParse(parts[1], out int parsedPort2))
-                    {
-                        port2 = parsedPort2;
-                    }
-                }
+                SipEndpointHelper.ParseStoredSipServer(settings.SipServer2, out string server2, out int port2);
 
                 Log($"[MainWindow] InitializeSecondConnectionAsync: Parsed server2='{server2}', port2={port2}");
 
@@ -2303,22 +3236,30 @@ namespace Softphone
                     audioCodec2,
                     audioSampleRate2,
                     audioBitrate2,
-                    isSecondaryConnection: true); // ВАЖНО: помечаем как вторичное подключение
+                    isSecondaryConnection: true, // ВАЖНО: помечаем как вторичное подключение
+                    useTls: settings.SipUseTls2,
+                    useSrtp: settings.SipUseSrtp2);
                 _sipService2.EnableAec = settings.EnableEchoCancellation;
                 Log($"[MainWindow] InitializeSecondConnectionAsync: SipService2 created successfully");
 
                 // Обработка событий статуса второго подключения
                 _sipService2.OnStatusChanged += (status) =>
                 {
-                    Dispatcher.Invoke(() =>
+                    // Use BeginInvoke so SIP stack thread never blocks on the UI queue (avoids freezes when settings re-init runs).
+                    Dispatcher.BeginInvoke(new Action(() =>
                     {
-                        Log($"[MainWindow] [Connection2] {status}");
-                        OnConnectionStatusChanged?.Invoke($"[Connection2] {status}");
-                        // Обновляем все статусы (включая второе подключение)
-                        UpdateConnectionStatus();
-                        // Обновляем режим кнопки вызова при смене статуса второго подключения
-                        UpdateCallButtonMode();
-                    });
+                        try
+                        {
+                            Log($"[MainWindow] [Connection2] {status}");
+                            OnConnectionStatusChanged?.Invoke($"[Connection2] {status}");
+                            UpdateConnectionStatus();
+                            UpdateCallButtonMode();
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[MainWindow] [Connection2] OnStatusChanged UI: {ex.Message}");
+                        }
+                    }), System.Windows.Threading.DispatcherPriority.Normal);
                 };
 
                 // Обработка входящих звонков на второе подключение
@@ -2347,13 +3288,93 @@ namespace Softphone
                 Log($"[MainWindow] ERROR in InitializeSecondConnectionAsync: {ex.Message}");
                 Log($"[MainWindow] Stack trace: {ex.StackTrace}");
             }
+            finally
+            {
+                RefreshSecondarySipMaintenanceTimerFromSettings();
+                _secondConnectionInitSemaphore.Release();
+            }
+        }
+
+        private void StopSecondarySipMaintenanceTimer()
+        {
+            _secondarySipMaintenanceTimer?.Dispose();
+            _secondarySipMaintenanceTimer = null;
         }
 
         /// <summary>
-        /// Проверяет, подключено ли второе SIP подключение
+        /// If second-line SIP is configured in settings, run periodic full re-init (Beeline RTP/NAT staleness).
+        /// </summary>
+        private void RefreshSecondarySipMaintenanceTimerFromSettings()
+        {
+            try
+            {
+                string path = AppDataHelper.GetSettingsFilePath();
+                if (!File.Exists(path))
+                {
+                    StopSecondarySipMaintenanceTimer();
+                    return;
+                }
+
+                var settings = JsonConvert.DeserializeObject<AppSettings>(File.ReadAllText(path));
+                if (settings == null ||
+                    AppSettings.SecondaryLineUsesWebRtc(settings) ||
+                    string.IsNullOrEmpty(settings.SipServer2) ||
+                    string.IsNullOrEmpty(settings.SipUsername2) ||
+                    string.IsNullOrEmpty(settings.SipPasswordEncrypted2))
+                {
+                    StopSecondarySipMaintenanceTimer();
+                    return;
+                }
+
+                StopSecondarySipMaintenanceTimer();
+                _secondarySipMaintenanceTimer = new System.Threading.Timer(_ =>
+                {
+                    _ = Task.Run(async () =>
+                    {
+                        try { await TryPeriodicSecondarySipReconnectAsync().ConfigureAwait(false); }
+                        catch (Exception ex) { Log($"[Connection2] Periodic maintenance error: {ex.Message}"); }
+                    });
+                }, null, _secondarySipMaintenanceInterval, _secondarySipMaintenanceInterval);
+            }
+            catch (Exception ex)
+            {
+                Log($"[Connection2] RefreshSecondarySipMaintenanceTimerFromSettings: {ex.Message}");
+                StopSecondarySipMaintenanceTimer();
+            }
+        }
+
+        private async Task TryPeriodicSecondarySipReconnectAsync()
+        {
+            var sip2 = _sipService2;
+            if (sip2 != null)
+            {
+                if (sip2.IsInCall || sip2.IsOccupiedForStackRefresh)
+                {
+                    Log("[Connection2] Periodic reconnect skipped — call or media/ringback in progress on line 2");
+                    return;
+                }
+
+                var callWin = CallHandlingHelpers.FindExistingCallWindow();
+                if (callWin?.SipCallService != null && ReferenceEquals(callWin.SipCallService, sip2))
+                {
+                    Log("[Connection2] Periodic reconnect skipped — SIP call window open on line 2");
+                    return;
+                }
+            }
+
+            Log("[Connection2] Periodic reconnect (maintenance)");
+            await InitializeSecondConnectionAsync().ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Проверяет, подключено ли второе подключение (SIP или WebRTC в зависимости от настроек).
         /// </summary>
         public bool IsSecondConnectionConnected()
         {
+            if (ShouldUseWebRtcForConnection(secondary: true))
+            {
+                return WebRtcService.Secondary?.IsReadyForCalls ?? false;
+            }
             return _sipService2?.IsRegistered ?? false;
         }
 
@@ -2364,6 +3385,7 @@ namespace Softphone
         {
             try
             {
+                StopSecondarySipMaintenanceTimer();
                 Log("[MainWindow] DisconnectSecondConnection: Disposing second SIP service...");
                 _sipService2?.Dispose();
                 _sipService2 = null;
@@ -2516,7 +3538,8 @@ namespace Softphone
                 CallTime = incomingCallStartTime,
                 Status = CallStatus.Calling,
                 IsIncoming = true,
-                Transport = CallTransport.Sip // Входящие через SipService всегда SIP
+                Transport = CallTransport.Sip,
+                ConnectionSlot = serviceToUse == _sipService2 ? CallConnectionSlot.Secondary : CallConnectionSlot.Main
             };
             _callHistoryService.AddCall(incomingCallItem);
             LoadCallHistory();
@@ -2534,6 +3557,7 @@ namespace Softphone
 
         private async void CallButton_Click(object sender, RoutedEventArgs e)
         {
+            _allowNextProgrammaticCall = true;
             // КРИТИЧНО: Проверяем наличие активного вызова перед созданием нового
             var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
             if (existingCallWindow != null)
@@ -2556,6 +3580,7 @@ namespace Softphone
 
         private async void SplitCallPrimary_Click(object sender, RoutedEventArgs e)
         {
+            _allowNextProgrammaticCall = true;
             var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
             if (existingCallWindow != null)
             {
@@ -2577,6 +3602,7 @@ namespace Softphone
 
         private async void SplitCallSecondary_Click(object sender, RoutedEventArgs e)
         {
+            _allowNextProgrammaticCall = true;
             var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
             if (existingCallWindow != null)
             {
@@ -2633,6 +3659,62 @@ namespace Softphone
             return null;
         }
         
+        private void TryLoadConnectionDisplayNames(out string mainDisplayName, out string secondaryDisplayName)
+        {
+            mainDisplayName = "PBX";
+            secondaryDisplayName = "SIP";
+            try
+            {
+                string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+                if (!File.Exists(settingsFilePath))
+                    return;
+
+                string json = File.ReadAllText(settingsFilePath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null)
+                    return;
+
+                if (!string.IsNullOrWhiteSpace(settings.MainConnectionName))
+                    mainDisplayName = settings.MainConnectionName.Trim();
+                if (!string.IsNullOrWhiteSpace(settings.SecondaryConnectionName))
+                    secondaryDisplayName = settings.SecondaryConnectionName.Trim();
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] TryLoadConnectionDisplayNames: {ex.Message}");
+            }
+        }
+
+        private void ApplyConnectionStatusLabelText(string mainDisplayName, string secondaryDisplayName)
+        {
+            if (MainConnectionStatusLabelTextBlock != null)
+                MainConnectionStatusLabelTextBlock.Text = $"{mainDisplayName}:";
+            if (SecondaryConnectionStatusLabelTextBlock != null)
+                SecondaryConnectionStatusLabelTextBlock.Text = $"{secondaryDisplayName}:";
+        }
+
+        /// <summary>
+        /// Обновляет подписи строк статуса (имена подключений) при изменении файла настроек.
+        /// </summary>
+        private void EnsureConnectionStatusLabelsCurrent()
+        {
+            try
+            {
+                string path = AppDataHelper.GetSettingsFilePath();
+                long ticks = File.Exists(path) ? File.GetLastWriteTimeUtc(path).Ticks : -1L;
+                if (ticks == _connectionDisplayNamesSettingsTicks)
+                    return;
+
+                _connectionDisplayNamesSettingsTicks = ticks;
+                TryLoadConnectionDisplayNames(out string mainName, out string secondaryName);
+                ApplyConnectionStatusLabelText(mainName, secondaryName);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] EnsureConnectionStatusLabelsCurrent: {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// Обновляет названия подключений в сплит-кнопке вызова
         /// </summary>
@@ -2641,42 +3723,12 @@ namespace Softphone
             try
             {
                 if (SplitCallPrimaryButton == null || SplitCallSecondaryButton == null) return;
-                
-                // Загружаем названия подключений из настроек
-                string? mainConnectionName = null;
-                string? secondaryConnectionName = null;
-                try
-                {
-                    string settingsFilePath = AppDataHelper.GetSettingsFilePath();
-                    if (File.Exists(settingsFilePath))
-                    {
-                        string json = File.ReadAllText(settingsFilePath);
-                        var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                        if (settings != null)
-                        {
-                            mainConnectionName = settings.MainConnectionName;
-                            secondaryConnectionName = settings.SecondaryConnectionName;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Log($"[MainWindow] UpdateSplitCallButtonLabels: Error loading connection names: {ex.Message}");
-                }
-                
-                // Обновляем название основного подключения
-                bool useWebRtc = ShouldUseWebRtc();
-                string defaultMainName = useWebRtc ? "PBX" : "PBX";
-                string mainName = !string.IsNullOrWhiteSpace(mainConnectionName) 
-                    ? mainConnectionName 
-                    : defaultMainName;
-                
-                // Обновляем название второго подключения
-                string defaultSecondaryName = "SIP";
-                string secondaryName = !string.IsNullOrWhiteSpace(secondaryConnectionName)
-                    ? secondaryConnectionName
-                    : defaultSecondaryName;
-                
+
+                string path = AppDataHelper.GetSettingsFilePath();
+                _connectionDisplayNamesSettingsTicks = File.Exists(path) ? File.GetLastWriteTimeUtc(path).Ticks : -1L;
+
+                TryLoadConnectionDisplayNames(out string mainName, out string secondaryName);
+
                 // Обновляем через Dispatcher, чтобы кнопки были отрендерены
                 Dispatcher.BeginInvoke(new Action(() =>
                 {
@@ -2687,12 +3739,14 @@ namespace Softphone
                         {
                             primaryLabel.Text = mainName;
                         }
-                        
+
                         var secondaryLabel = FindChildByName<TextBlock>(SplitCallSecondaryButton, "SplitCallSecondaryLabel");
                         if (secondaryLabel != null)
                         {
                             secondaryLabel.Text = secondaryName;
                         }
+
+                        ApplyConnectionStatusLabelText(mainName, secondaryName);
                     }
                     catch (Exception ex)
                     {
@@ -2716,11 +3770,14 @@ namespace Softphone
             {
                 if (SplitCallButtonPanel == null || CallButton == null) return;
 
-                bool useWebRtc = ShouldUseWebRtc();
-                bool hasMainConnection = useWebRtc 
-                    ? (WebRtcService.Instance?.IsReadyForCalls ?? false) 
+                bool mainWebRtc = ShouldUseWebRtcForConnection(false);
+                bool secondaryWebRtc = ShouldUseWebRtcForConnection(true);
+                bool hasMainConnection = mainWebRtc
+                    ? (WebRtcService.Main?.IsReadyForCalls ?? false)
                     : (_sipService?.IsRegistered ?? false);
-                bool hasSecondaryConnection = _sipService2?.IsRegistered ?? false;
+                bool hasSecondaryConnection = secondaryWebRtc
+                    ? (WebRtcService.Secondary?.IsReadyForCalls ?? false)
+                    : (_sipService2?.IsRegistered ?? false);
 
                 if (hasMainConnection && hasSecondaryConnection)
                 {
@@ -2765,12 +3822,12 @@ namespace Softphone
         {
             try
             {
-                Log($"[MainWindow] HandleProtocolMessage called: {protocolUrl}");
+                Log($"[MainWindow] HandleProtocolMessage called: {LogSanitizer.RedactUrlWithToken(protocolUrl)}");
                 
                 // Парсим URL протокола
                 if (!Uri.TryCreate(protocolUrl, UriKind.Absolute, out Uri? uri))
                 {
-                    Log($"[MainWindow] Invalid protocol URL format: {protocolUrl}");
+                    Log($"[MainWindow] Invalid protocol URL format: {LogSanitizer.RedactUrlWithToken(protocolUrl)}");
                     return;
                 }
                 
@@ -2787,6 +3844,22 @@ namespace Softphone
                     if (!string.IsNullOrEmpty(token))
                     {
                         HandleCdrAuthToken(token);
+                    }
+                    return;
+                }
+
+                if (uri.Host == "provision")
+                {
+                    var provParams = ParseQueryString(uri.Query);
+                    string? tokenId = provParams.ContainsKey("token") ? provParams["token"] : null;
+                    string? proxy = provParams.ContainsKey("proxy") ? provParams["proxy"] : null;
+                    if (!string.IsNullOrEmpty(tokenId) && !string.IsNullOrEmpty(proxy))
+                    {
+                        _ = HandleProvisionTokenAsync(tokenId, proxy);
+                    }
+                    else
+                    {
+                        Log("[MainWindow] provision URL missing token or proxy");
                     }
                     return;
                 }
@@ -2814,6 +3887,26 @@ namespace Softphone
                 }
                 
                 Log($"[MainWindow] Parsed protocol: phone={phoneNumber}, leadId={leadId}");
+
+                // Dedupe identical protocol call requests arriving close together.
+                try
+                {
+                    // Normalize similarly to dial path to avoid "+7..." vs "7..." duplicates.
+                    var normalized = NormalizePhoneForDial(phoneNumber);
+                    var key = $"{normalized}|{(leadId.HasValue ? leadId.Value.ToString() : "")}";
+                    var nowUtc = DateTime.UtcNow;
+                    lock (_protocolDedupeLock)
+                    {
+                        if (_lastProtocolCallKey == key && (nowUtc - _lastProtocolCallUtc) <= _protocolCallDedupeWindow)
+                        {
+                            Log($"[MainWindow] Protocol call deduped: key='{key}', window={_protocolCallDedupeWindow.TotalSeconds:0}s");
+                            return;
+                        }
+                        _lastProtocolCallKey = key;
+                        _lastProtocolCallUtc = nowUtc;
+                    }
+                }
+                catch { }
                 
                 // Инициируем звонок
                 InitiateCallFromBrowser(phoneNumber, leadId);
@@ -2865,6 +3958,28 @@ namespace Softphone
         public async void InitiateCallFromBrowser(string phoneNumber, long? leadId = null)
         {
             Log($"[MainWindow] InitiateCallFromBrowser called: phone={phoneNumber}, leadId={leadId}");
+
+            var activeCallWindow = CallHandlingHelpers.FindExistingCallWindow();
+            if (activeCallWindow != null && !activeCallWindow.IsClosing())
+            {
+                Log($"[MainWindow] InitiateCallFromBrowser skipped: call already active ({activeCallWindow.CallRemoteNumber})");
+                WindowForegroundHelper.RequestUserAttention(this);
+                return;
+            }
+
+            // Cancel any previously queued "call when ready" request.
+            int mySeq;
+            CancellationToken myToken;
+            lock (_pendingBrowserCallLock)
+            {
+                try { _pendingBrowserCallCts?.Cancel(); } catch { }
+                try { _pendingBrowserCallCts?.Dispose(); } catch { }
+                _pendingBrowserCallCts = new CancellationTokenSource();
+                _pendingBrowserCallSeq++;
+                mySeq = _pendingBrowserCallSeq;
+                myToken = _pendingBrowserCallCts.Token;
+                _pendingBrowserCallCreatedUtc = DateTime.UtcNow;
+            }
             
             // Если используется WebRTC, ждем его готовности перед инициацией звонка
             if (ShouldUseWebRtc())
@@ -2875,7 +3990,7 @@ namespace Softphone
                 int maxWaitSeconds = 30;
                 int waitedSeconds = 0;
                 
-                while (!WebRtcService.Instance.IsReadyForCalls && waitedSeconds < maxWaitSeconds)
+                while (!WebRtcService.Main.IsReadyForCalls && waitedSeconds < maxWaitSeconds)
                 {
                     await Task.Delay(500); // Проверяем каждые 500мс
                     waitedSeconds += 1;
@@ -2886,7 +4001,7 @@ namespace Softphone
                     }
                 }
                 
-                if (!WebRtcService.Instance.IsReadyForCalls)
+                if (!WebRtcService.Main.IsReadyForCalls)
                 {
                     Log("[MainWindow] WebRTC not ready after waiting, showing error");
                     CustomMessageBox.Show(
@@ -2900,14 +4015,54 @@ namespace Softphone
                     // Продолжаем ждать в фоне и инициируем звонок когда будет готово
                     _ = Task.Run(async () =>
                     {
-                        while (!WebRtcService.Instance.IsReadyForCalls)
+                        while (!WebRtcService.Main.IsReadyForCalls)
                         {
+                            if (myToken.IsCancellationRequested)
+                            {
+                                Log($"[MainWindow] Pending browser call cancelled (seq={mySeq}).");
+                                return;
+                            }
+
+                            // Drop very old pending requests to avoid surprise re-dials later.
+                            DateTime createdUtc;
+                            lock (_pendingBrowserCallLock) { createdUtc = _pendingBrowserCallCreatedUtc; }
+                            if (createdUtc != DateTime.MinValue &&
+                                (DateTime.UtcNow - createdUtc).TotalSeconds > PendingBrowserCallTtlSeconds)
+                            {
+                                Log($"[MainWindow] Pending browser call expired (seq={mySeq}, ttl={PendingBrowserCallTtlSeconds}s).");
+                                return;
+                            }
+
                             await Task.Delay(1000);
                         }
                         
                         await Dispatcher.InvokeAsync(async () =>
                         {
+                            if (myToken.IsCancellationRequested)
+                            {
+                                Log($"[MainWindow] Pending browser call cancelled before invoke (seq={mySeq}).");
+                                return;
+                            }
+
+                            // If a call is already active, do not auto-trigger a new one.
+                            if (CallHandlingHelpers.FindExistingCallWindow() != null)
+                            {
+                                Log($"[MainWindow] Pending browser call skipped: call already active (seq={mySeq}).");
+                                return;
+                            }
+
+                            // Only run the most recent pending request.
+                            lock (_pendingBrowserCallLock)
+                            {
+                                if (mySeq != _pendingBrowserCallSeq)
+                                {
+                                    Log($"[MainWindow] Pending browser call superseded (seq={mySeq}, latest={_pendingBrowserCallSeq}).");
+                                    return;
+                                }
+                            }
+
                             Log("[MainWindow] WebRTC is now ready, initiating call from browser");
+                            _allowNextProgrammaticCall = true;
                             await PerformCall(phoneNumber, leadId);
                         });
                     });
@@ -2917,16 +4072,39 @@ namespace Softphone
                 Log("[MainWindow] WebRTC is ready, proceeding with call");
             }
             
+            _allowNextProgrammaticCall = true;
             await PerformCall(phoneNumber, leadId);
         }
         
-        private async System.Threading.Tasks.Task PerformCall(string number, long? leadId = null)
+        private async System.Threading.Tasks.Task PerformCall(string number, long? leadId = null, bool forceCallerIdSelection = false)
         {
             if (string.IsNullOrEmpty(number))
             {
                 CustomMessageBox.Show("Please enter a phone number.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
                 return;
             }
+
+            // Starting a call cancels any pending delayed browser auto-call.
+            lock (_pendingBrowserCallLock)
+            {
+                try { _pendingBrowserCallCts?.Cancel(); } catch { }
+            }
+
+            // Guard: avoid unexpected re-dials not tied to user input.
+            // If something calls PerformCall() from a background path, require a recent input event.
+            try
+            {
+                bool allowProgrammatic = _allowNextProgrammaticCall;
+                _allowNextProgrammaticCall = false; // consume
+                var lastTicks = System.Threading.Interlocked.Read(ref _lastUserInputUtcTicks);
+                var sinceInput = DateTime.UtcNow - new DateTime(lastTicks, DateTimeKind.Utc);
+                if (!allowProgrammatic && sinceInput > _callRequiresRecentUserInputWindow)
+                {
+                    Log($"[MainWindow] PerformCall blocked: no recent user input (sinceInput={sinceInput.TotalSeconds:0.0}s, window={_callRequiresRecentUserInputWindow.TotalSeconds:0.0}s, number={number}).");
+                    return;
+                }
+            }
+            catch { }
 
             // КРИТИЧНО: Проверяем наличие активного вызова перед созданием нового
             var existingCallWindow = CallHandlingHelpers.FindExistingCallWindow();
@@ -2946,47 +4124,61 @@ namespace Softphone
             }
 
             // Определяем доступные подключения и показываем окно выбора, если нужно
-            bool useWebRtc = ShouldUseWebRtc();
-            
+            bool useWebRtc = ShouldUseWebRtcForConnection(secondary: false);
+            bool useSecondaryWebRtc = ShouldUseWebRtcForConnection(secondary: true);
+
             // По факту наличия/готовности сервисов определяем активность подключений.
             // Важно: не полагаться только на “configured” из файла настроек, т.к. во время click-to-call
             // сервис может уже быть инициализирован и зарегистрирован даже при расхождении настроек на диске.
             bool hasMainConnectionConfigured = useWebRtc
-                ? (WebRtcService.Instance != null)
+                ? (WebRtcService.Main != null)
                 : (_sipService != null);
-            
-            bool hasSecondaryConnectionConfigured = _sipService2 != null;
 
-            Log($"[MainWindow] PerformCall: Connection check - Main configured={hasMainConnectionConfigured}, Secondary configured={hasSecondaryConnectionConfigured}");
-            
+            bool hasSecondaryConnectionConfigured = useSecondaryWebRtc
+                ? (WebRtcService.Secondary != null)
+                : (_sipService2 != null);
+
+            Log($"[MainWindow] PerformCall: Connection check - Main configured={hasMainConnectionConfigured} (webrtc={useWebRtc}), Secondary configured={hasSecondaryConnectionConfigured} (webrtc={useSecondaryWebRtc})");
+
             string? mainStatus = null;
             string? secondaryStatus = null;
-            
+
             if (hasMainConnectionConfigured)
             {
                 if (useWebRtc)
                 {
-                    mainStatus = WebRtcService.Instance?.IsReadyForCalls == true ? "Connected with WebRTC" : "Not connected";
+                    mainStatus = WebRtcService.Main?.IsReadyForCalls == true ? "Connected with WebRTC" : "Not connected";
                 }
                 else
                 {
                     mainStatus = _sipService?.IsRegistered == true ? "Connected" : "Not connected";
                 }
             }
-            
+
             if (hasSecondaryConnectionConfigured)
             {
-                secondaryStatus = _sipService2?.IsRegistered == true ? "Connected" : "Not connected";
+                if (useSecondaryWebRtc)
+                {
+                    secondaryStatus = WebRtcService.Secondary?.IsReadyForCalls == true ? "Connected with WebRTC" : "Not connected";
+                }
+                else
+                {
+                    secondaryStatus = _sipService2?.IsRegistered == true ? "Connected" : "Not connected";
+                }
             }
-            
+
             // Проверяем активность подключений
             bool isMainConnectionActive = hasMainConnectionConfigured
                 ? (useWebRtc
-                    ? WebRtcService.Instance?.IsReadyForCalls == true
+                    ? WebRtcService.Main?.IsReadyForCalls == true
                     : _sipService?.IsRegistered == true)
                 : false;
-            
-            bool isSecondaryConnectionActive = (_sipService2?.IsRegistered == true);
+
+            bool isSecondaryConnectionActive = hasSecondaryConnectionConfigured
+                ? (useSecondaryWebRtc
+                    ? WebRtcService.Secondary?.IsReadyForCalls == true
+                    : _sipService2?.IsRegistered == true)
+                : false;
             
             // Показываем окно выбора подключения, только если оба подключения активны
             ConnectionSelectionWindow.ConnectionType? selectedConnectionType = null;
@@ -3046,7 +4238,8 @@ namespace Softphone
                     mainConnectionName: mainConnectionName,
                     secondaryConnectionName: secondaryConnectionName,
                     mainCallerIdItems: mainCallerIdItemsForDialog,
-                    selectedMainCallerId: currentSelectedCallerId)
+                    selectedMainCallerId: currentSelectedCallerId,
+                    isSecondaryWebRtc: useSecondaryWebRtc)
                 {
                     Owner = this
                 };
@@ -3066,10 +4259,47 @@ namespace Softphone
             }
             else if (isMainConnectionActive)
             {
-                // Только основное подключение активно - используем его автоматически
-                selectedConnectionType = ConnectionSelectionWindow.ConnectionType.Main;
-                Log($"[MainWindow] PerformCall: Using main connection automatically (only main active)");
-                selectedMainCallerId = currentSelectedCallerId;
+                // Только основное подключение активно.
+                // Если Caller ID не выбран (частый сценарий при звонке из истории), просим выбрать его явно.
+                bool shouldPromptCallerId =
+                    canSelectCallerId &&
+                    (forceCallerIdSelection || (_callerIdItems.Count > 1 && string.IsNullOrWhiteSpace(currentSelectedCallerId)));
+
+                if (shouldPromptCallerId)
+                {
+                    Log("[MainWindow] PerformCall: Main connection only, prompting Caller ID selection");
+                    var callerIdSelectionWindow = new ConnectionSelectionWindow(
+                        hasMainConnection: hasMainConnectionConfigured,
+                        isMainWebRtc: useWebRtc,
+                        mainConnectionStatus: mainStatus,
+                        hasSecondaryConnection: false,
+                        secondaryConnectionStatus: null,
+                        mainConnectionName: "Main connection",
+                        secondaryConnectionName: null,
+                        mainCallerIdItems: mainCallerIdItemsForDialog,
+                        selectedMainCallerId: currentSelectedCallerId,
+                        forceShowForSingleConnection: true)
+                    {
+                        Owner = this
+                    };
+
+                    if (callerIdSelectionWindow.ShowDialog() == true && callerIdSelectionWindow.SelectedConnection.HasValue)
+                    {
+                        selectedConnectionType = callerIdSelectionWindow.SelectedConnection.Value;
+                        selectedMainCallerId = callerIdSelectionWindow.SelectedCallerId;
+                    }
+                    else
+                    {
+                        Log("[MainWindow] PerformCall: User cancelled Caller ID selection");
+                        return;
+                    }
+                }
+                else
+                {
+                    selectedConnectionType = ConnectionSelectionWindow.ConnectionType.Main;
+                    Log($"[MainWindow] PerformCall: Using main connection automatically (only main active)");
+                    selectedMainCallerId = currentSelectedCallerId;
+                }
             }
             else if (isSecondaryConnectionActive)
             {
@@ -3095,18 +4325,87 @@ namespace Softphone
             await PerformCallWithConnection(number, leadId, selectedConnectionType.Value, selectedMainCallerId);
         }
         
+        /// <summary>
+        /// Wires OnCallDetailsChanged and Closed for outbound CallWindow.
+        /// Must run before slow PBX Originate HTTP — window can close before await returns.
+        /// </summary>
+        private void TryAttachOutgoingCallCoreHandlers(
+            CallWindow callWindow,
+            string number,
+            DateTime callStartTime,
+            CallHistoryItem? currentCallHistoryItem,
+            SipService? sipServiceToUse,
+            WebRtcService? webRtcSlotService,
+            ref bool handlersAttached)
+        {
+            if (handlersAttached)
+                return;
+            handlersAttached = true;
+
+            callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
+            {
+                string? outboundCallerId = callWindow.GetOutboundCallerId();
+                _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
+
+                Dispatcher.Invoke(RefreshVisibleDashboards);
+
+                if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
+                    TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
+
+                string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
+                long? callLeadId = callWindow.GetAmoCrmLeadId();
+                Log($"[MainWindow] OnCallDetailsChanged: Retrieved leadId from CallWindow: {callLeadId?.ToString() ?? "null"}");
+                ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId, callLeadId);
+            };
+
+            callWindow.Closed += (s, e) =>
+            {
+                ClearPendingOriginateState(resetAcceptedSession: true);
+                try { webRtcSlotService?.ResumeAutoReconnect("outbound_call_ended"); } catch { }
+
+                if (sipServiceToUse != null && sipServiceToUse.IsInCall)
+                    sipServiceToUse.Hangup();
+
+                if (currentCallHistoryItem != null &&
+                    (currentCallHistoryItem.Status == CallStatus.Calling ||
+                     currentCallHistoryItem.Status == CallStatus.Connected))
+                {
+                    if (currentCallHistoryItem.WasAnswered)
+                    {
+                        TimeSpan? duration = currentCallHistoryItem.Duration;
+                        currentCallHistoryItem.Status = CallStatus.Ended;
+                        _callHistoryService.UpdateCallStatus(number, callStartTime, CallStatus.Ended, duration);
+                    }
+                    else
+                    {
+                        currentCallHistoryItem.Status = CallStatus.Cancelled;
+                        _callHistoryService.UpdateCallStatus(number, callStartTime, CallStatus.Cancelled);
+                    }
+
+                    LoadCallHistory();
+                }
+
+                ClearDialerPhoneNumber();
+                SetCallButtonsEnabled(true);
+            };
+        }
+
         private async System.Threading.Tasks.Task PerformCallWithConnection(string number, long? leadId, ConnectionSelectionWindow.ConnectionType connectionType, string? selectedOutboundCallerIdForOriginate = null)
         {
+            number = NormalizePhoneForDial(number);
+
             // Определяем, какое подключение использовать
             SipService? sipServiceToUse = null;
             
-            // Проверяем, нужно ли использовать WebRTC (только для основного подключения)
-            bool useWebRtc = connectionType == ConnectionSelectionWindow.ConnectionType.Main && ShouldUseWebRtc();
+            // Транспорт определяется per-connection: Main/Secondary могут независимо быть SIP или WebRTC.
+            bool isSecondary = connectionType == ConnectionSelectionWindow.ConnectionType.Secondary;
+            bool useWebRtc = ShouldUseWebRtcForConnection(isSecondary);
+            var webRtcSlotService = isSecondary ? WebRtcService.Secondary : WebRtcService.Main;
             
             // Проверяем состояние WebRTC и SIP сервисов
             if (useWebRtc)
             {
-                if (CallHandlingHelpers.IsWebRtcCallActive())
+                if (CallHandlingHelpers.IsWebRtcCallActive(webRtcSlotService))
                 {
                     MainWindow.Log($"[MainWindow] PerformCall: WebRTC call is active, ignoring call to {number}");
                     CustomMessageBox.Show(
@@ -3136,10 +4435,10 @@ namespace Softphone
             // Проверяем подключение в зависимости от режима
             if (useWebRtc)
             {
-                // WebRTC режим - проверяем готовность WebRTC
-                if (WebRtcService.Instance == null || !WebRtcService.Instance.IsReadyForCalls)
+                // WebRTC режим - проверяем готовность WebRTC для выбранного слота
+                if (webRtcSlotService == null || !webRtcSlotService.IsReadyForCalls)
                 {
-                    Log($"[Call] ERROR: WebRTC mode enabled but WebRTC service is not ready (IsReadyForCalls={WebRtcService.Instance?.IsReadyForCalls ?? false})");
+                    Log($"[Call] ERROR: WebRTC mode enabled for slot '{webRtcSlotService?.Slot ?? "?"}' but service is not ready (IsReadyForCalls={webRtcSlotService?.IsReadyForCalls ?? false})");
                     CustomMessageBox.Show(
                         "WebRTC service is not ready. Please wait for initialization or check settings.",
                         "WebRTC Not Ready",
@@ -3188,6 +4487,9 @@ namespace Softphone
 
             DateTime callStartTime = DateTime.Now;
             CallHistoryItem? currentCallHistoryItem = null;
+            bool outgoingCallHandlersAttached = false;
+            bool callConnected = false;
+            DateTime? callConnectedTime = null;
 
             try
             {
@@ -3197,6 +4499,7 @@ namespace Softphone
                 
                 // Открываем окно звонка
                 CallWindow callWindow;
+                bool callWindowShownEarly = false;
                 
                 if (useWebRtc)
                 {
@@ -3205,7 +4508,7 @@ namespace Softphone
                     {
                         _sipService.SetIgnoreSipCooldown(3);
                     }
-                    var webRtcConfig = GetWebRtcConfig();
+                    var webRtcConfig = GetWebRtcConfigForConnection(isSecondary);
                     if (webRtcConfig != null)
                     {
                         Log($"[Call][WebRTC] Making outgoing call to {number}");
@@ -3218,13 +4521,14 @@ namespace Softphone
                             CallTime = callStartTime,
                             Status = CallStatus.Calling,
                             IsIncoming = false,
-                            Transport = CallTransport.WebRtc
+                            Transport = CallTransport.WebRtc,
+                            ConnectionSlot = isSecondary ? CallConnectionSlot.Secondary : CallConnectionSlot.Main
                         };
                         _callHistoryService.AddCall(outgoingCallItem);
                         LoadCallHistory();
                         currentCallHistoryItem = outgoingCallItem;
                         
-                        callWindow = new CallWindow(webRtcConfig, number, isIncomingCall: false, callStartTime: callStartTime, amoCrmLeadId: leadId)
+                        callWindow = new CallWindow(webRtcConfig, number, isIncomingCall: false, callStartTime: callStartTime, amoCrmLeadId: leadId, webRtcService: webRtcSlotService)
                 {
                     Owner = this
                         };
@@ -3243,16 +4547,26 @@ namespace Softphone
 
                             Log($"[Call][Originate] Using PBX Originate: dst={number}, callerId={selectedCallerId}");
 
+                            // Register pending originate BEFORE the HTTP call — PBX can INVITE us before the API returns.
+                            OriginateCoordinator.BeginPending(number, selectedCallerId, callWindow);
+                            _ = webRtcSlotService.NotifyOriginatePendingAsync(true);
+                            callWindow.MarkAsOriginateCall();
+                            callWindow.SetOutboundCallerId(selectedCallerId);
+                            CallHandlingHelpers.PrepareCallWindowForDisplay(callWindow, isIncomingCall: false);
+                            callWindow.Show();
+                            callWindowShownEarly = true;
+
+                            TryAttachOutgoingCallCoreHandlers(
+                                callWindow, number, callStartTime, currentCallHistoryItem,
+                                sipServiceToUse, webRtcSlotService, ref outgoingCallHandlersAttached);
+                            try { webRtcSlotService.PauseAutoReconnect("originate_pending"); } catch { }
+
                             try
                             {
                                 var origResult = await _mikoPbxCdrService!.OriginateCallAsync(number, selectedCallerId);
                                 if (origResult.Success)
                                 {
-                                    _pendingOriginateId = origResult.OriginateId;
-                                    _pendingOriginateCallerId = selectedCallerId;
-                                    _pendingOriginateDestination = number;
-                                    _pendingOriginateCallWindow = callWindow;
-                                    callWindow.SetOutboundCallerId(selectedCallerId);
+                                    OriginateCoordinator.SetPendingId(origResult.OriginateId);
                                     Log($"[Call][Originate] Success. Waiting for PBX callback, originateId={origResult.OriginateId}, callerId={selectedCallerId}");
 
                                     // Save last selected CallerID
@@ -3282,18 +4596,20 @@ namespace Softphone
                                 else
                                 {
                                     Log($"[Call][Originate] Failed: {origResult.Error}. Falling back to direct WebRTC call.");
+                                    ClearPendingOriginateState(resetAcceptedSession: true);
                                 }
                             }
                             catch (Exception ex)
                             {
                                 Log($"[Call][Originate] Exception: {ex.Message}. Falling back to direct WebRTC call.");
+                                ClearPendingOriginateState(resetAcceptedSession: true);
                             }
                         }
 
                         // Direct WebRTC call (standard path or fallback from Originate failure)
                         try
                         {
-                            await WebRtcService.Instance.MakeCallAsync(number);
+                            await webRtcSlotService.MakeCallAsync(number);
                         }
                         catch (Exception ex)
                         {
@@ -3334,7 +4650,8 @@ namespace Softphone
                         CallTime = callStartTime,
                         Status = CallStatus.Calling,
                         IsIncoming = false,
-                        Transport = CallTransport.Sip
+                        Transport = CallTransport.Sip,
+                        ConnectionSlot = isSecondary ? CallConnectionSlot.Secondary : CallConnectionSlot.Main
                     };
                     _callHistoryService.AddCall(outgoingCallItem);
                     LoadCallHistory();
@@ -3347,41 +4664,33 @@ namespace Softphone
                 }
                 
                 afterCallWindowCreated:
-                // Подписываемся на события обновления детальной информации о звонке для исходящих звонков
-                callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
-                {
-                    string? outboundCallerId = callWindow.GetOutboundCallerId();
-                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
-                    
-                    Dispatcher.Invoke(() => LoadCallHistory());
+                TryAttachOutgoingCallCoreHandlers(
+                    callWindow, number, callStartTime, currentCallHistoryItem,
+                    sipServiceToUse, webRtcSlotService, ref outgoingCallHandlersAttached);
 
-                    if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
-                        TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
-                    
-                    string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
-                    long? callLeadId = callWindow.GetAmoCrmLeadId();
-                    Log($"[MainWindow] OnCallDetailsChanged: Retrieved leadId from CallWindow: {callLeadId?.ToString() ?? "null"}");
-                    ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId, callLeadId);
-                };
-                
-                bool callConnected = false;
-                DateTime? callConnectedTime = null;
-                
                 // Подписываемся на события статуса для отслеживания состояния звонка (только для SIP звонков)
                 if (sipServiceToUse != null && !useWebRtc)
                 {
                     sipServiceToUse.OnStatusChanged += (status) =>
                     {
-                        // Устанавливаем callConnected только при реальном подключении, а не при начале звонка
-                        if (status.Contains("Call connected") || status.Contains("Call answered") || 
-                            status.Contains("200 OK") || status.Contains("Call progress: 200 OK"))
+                        // Только INVITE 200 OK / явное «connected» — не CANCEL/REGISTER 200 OK (иначе WasAnswered=true без разговора).
+                        if (status.Contains("Call connected") || status.Contains("Call answered") ||
+                            status.Contains("Call progress: 200 OK"))
                         {
                             callConnected = true;
                             callConnectedTime = DateTime.Now;
                             if (currentCallHistoryItem != null)
                             {
                                 currentCallHistoryItem.Status = CallStatus.Connected;
+                                currentCallHistoryItem.WasAnswered = true;
+                                currentCallHistoryItem.AnswerTime ??= callConnectedTime;
                                 _callHistoryService.UpdateCallStatus(number, callStartTime, CallStatus.Connected);
+                                _callHistoryService.UpdateCallDetails(
+                                    number,
+                                    callStartTime,
+                                    answerTime: callConnectedTime,
+                                    wasAnswered: true,
+                                    transport: CallTransport.Sip);
                             }
                         }
                     };
@@ -3392,6 +4701,7 @@ namespace Softphone
                         Dispatcher.Invoke(() =>
                         {
                             SetCallButtonsEnabled(true);
+                            try { WebRtcService.Main?.ResumeAutoReconnect("sip_call_ended"); } catch { }
 
                             // Обновляем историю звонка
                             if (currentCallHistoryItem != null)
@@ -3412,48 +4722,13 @@ namespace Softphone
                     };
                 }
                 
-                // Обрабатываем закрытие окна звонка
-                callWindow.Closed += (s, e) =>
-                {
-                    // Если окно закрылось, но звонок еще активен, завершаем его
-                    if (sipServiceToUse != null && sipServiceToUse.IsInCall)
-                    {
-                        sipServiceToUse.Hangup();
-                    }
-                    
-                    // Обновляем историю, если звонок был отменен (только если он не был принят)
-                    // Проверяем, был ли звонок принят через детали звонка
-                    if (currentCallHistoryItem != null && currentCallHistoryItem.Status == CallStatus.Calling)
-                    {
-                        // Если звонок был принят (WasAnswered = true), статус должен быть "Ended", а не "Cancelled"
-                        // Проверяем через детали звонка, которые уже должны быть обновлены через OnCallDetailsChanged
-                        if (currentCallHistoryItem.WasAnswered)
-                        {
-                            // Звонок был принят, но статус не обновился - обновляем на Ended
-                            TimeSpan? duration = currentCallHistoryItem.Duration;
-                            currentCallHistoryItem.Status = CallStatus.Ended;
-                            _callHistoryService.UpdateCallStatus(number, callStartTime, CallStatus.Ended, duration);
-                        }
-                        else
-                        {
-                            // Звонок не был принят - это действительно отмена
-                            currentCallHistoryItem.Status = CallStatus.Cancelled;
-                            _callHistoryService.UpdateCallStatus(number, callStartTime, CallStatus.Cancelled);
-                        }
-
-                        // После любого обновления статуса перерисовываем список истории,
-                        // иначе последний завершённый звонок остаётся со статусом "Calling..."
-                        LoadCallHistory();
-                    }
-                    
-                    SetCallButtonsEnabled(true);
-                };
-                
-                callWindow.Show();
+                if (!callWindowShownEarly)
+                    callWindow.Show();
 
                 // Инициируем звонок только для SIPSorcery (не для WebRTC)
                 if (!useWebRtc && sipServiceToUse != null)
                 {
+                    try { WebRtcService.Main?.PauseAutoReconnect("sip_call_active"); } catch { }
                     await sipServiceToUse.CallAsync(number);
                 }
             }
@@ -3654,6 +4929,9 @@ namespace Softphone
         private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
 
         [DllImport("user32.dll")]
+        private static extern uint GetDpiForWindow(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 
         private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam)
@@ -3677,6 +4955,31 @@ namespace Softphone
                     mmi.ptMaxSize.Y = workArea.bottom - workArea.top;
                 }
             }
+
+            // Enforce minimum window size even with borderless WindowChrome.
+            // Values are in DIPs in XAML; convert to device pixels using window DPI.
+            try
+            {
+                const double minWidthDip = 780;
+                const double minHeightDip = 560;
+
+                uint dpi = 96;
+                try
+                {
+                    var d = GetDpiForWindow(hwnd);
+                    if (d >= 96 && d <= 480) dpi = d;
+                }
+                catch { }
+
+                double scale = dpi / 96.0;
+                int minWpx = (int)Math.Ceiling(minWidthDip * scale);
+                int minHpx = (int)Math.Ceiling(minHeightDip * scale);
+
+                // Do not shrink below these.
+                mmi.ptMinTrackSize.X = Math.Max(mmi.ptMinTrackSize.X, minWpx);
+                mmi.ptMinTrackSize.Y = Math.Max(mmi.ptMinTrackSize.Y, minHpx);
+            }
+            catch { }
 
             Marshal.StructureToPtr(mmi, lParam, true);
         }
@@ -3716,6 +5019,8 @@ namespace Softphone
                     }
                 }
                 
+                StopSecondarySipMaintenanceTimer();
+
                 // Останавливаем SIP сервисы
                 _sipService?.Dispose();
                 _sipService = null;
@@ -3723,14 +5028,14 @@ namespace Softphone
                 _sipService2 = null;
                 
                 // Останавливаем watchdog timer WebRTC
-                WebRtcService.Instance.StopWatchdog();
+                WebRtcService.Main.StopWatchdog();
 
                 // Останавливаем auto-reconnect и отвязываем engine (важно: иначе таймеры могут жить после Dispose WebView2).
-                try { WebRtcService.Instance.StopAutoReconnect(); } catch { }
-                try { WebRtcService.Instance.DetachEngine(resetState: true); } catch { }
+                try { WebRtcService.Main.StopAutoReconnect(); } catch { }
+                try { WebRtcService.Main.DetachEngine(resetState: true); } catch { }
                 
                 // Отписываемся от событий WebRTC
-                WebRtcService.Instance.Event -= OnWebRtcEvent;
+                WebRtcService.Main.Event -= OnWebRtcEvent;
                 
                 // Очищаем WebView2 (критично для предотвращения утечки handles)
                 if (_webRtcEngine != null)
@@ -3746,6 +5051,7 @@ namespace Softphone
                         // Dispose WebView2 (освобождает все ресурсы и handles, включая CoreWebView2)
                         _webRtcEngine.Dispose();
                         _webRtcEngine = null;
+                        _sharedWebRtcHost = null;
                         Log("[MainWindow] WebView2 disposed");
                     }
                     catch (Exception ex)
@@ -3753,6 +5059,7 @@ namespace Softphone
                         Log($"[MainWindow] Error disposing WebView2: {ex.Message}");
                         // Пытаемся обнулить ссылку даже при ошибке
                         _webRtcEngine = null;
+                        _sharedWebRtcHost = null;
                     }
                 }
                 
@@ -3778,6 +5085,7 @@ namespace Softphone
             }
             finally
             {
+                SingleInstanceManager.UnregisterMainWindow(this);
                 base.OnClosed(e);
             }
         }
@@ -3786,8 +5094,8 @@ namespace Softphone
         {
             _logHistory.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
             
-            // Ограничиваем размер истории (последние 1000 записей)
-            if (_logHistory.Count > 1000)
+            // Ограничиваем размер истории (последние 5000 записей)
+            if (_logHistory.Count > 5000)
             {
                 _logHistory.RemoveAt(0);
             }
@@ -3822,13 +5130,13 @@ namespace Softphone
         {
             if (_logWindow == null || !_logWindow.IsLoaded)
             {
-                _logWindow = new LogWindow
-                {
-                    Owner = this
-                };
+                _logWindow = new LogWindow();
+                CenterNonOwnedWindowOverThis(_logWindow);
                 
-                // Загружаем историю логов
-                _logWindow.SetLogs(string.Join("\n", _logHistory));
+                // Предпочитаем загружать из файла лога — там полная история за день.
+                // Если файл недоступен, fallback на in-memory буфер.
+                string initialLogs = LoadLogsFromFileForWindow();
+                _logWindow.SetLogs(initialLogs);
                 
                 _logWindow.Closed += (s, args) => { _logWindow = null; };
                 _logWindow.Show();
@@ -3837,6 +5145,39 @@ namespace Softphone
             {
                 _logWindow.Activate();
             }
+        }
+
+        /// <summary>
+        /// Читает последние 5000 строк из сегодняшнего файла лога.
+        /// Если файл недоступен, возвращает in-memory буфер.
+        /// </summary>
+        private string LoadLogsFromFileForWindow()
+        {
+            try
+            {
+                string logFilePath = FileLogService.Instance.GetCurrentLogFilePath();
+                if (File.Exists(logFilePath))
+                {
+                    // Читаем с FileShare.ReadWrite, чтобы не мешать текущей записи
+                    using var fs = new FileStream(logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var reader = new System.IO.StreamReader(fs, System.Text.Encoding.UTF8);
+                    string content = reader.ReadToEnd();
+
+                    // Берём последние 5000 строк, чтобы не перегружать UI
+                    var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                    if (lines.Length > 5000)
+                        lines = lines[^5000..];
+
+                    return string.Join("\n", lines);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] LoadLogsFromFileForWindow: could not read log file: {ex.Message}");
+            }
+
+            // Fallback: in-memory буфер
+            return string.Join("\n", _logHistory);
         }
 
         private string? FormatStatusMessage(string technicalStatus)
@@ -3918,40 +5259,17 @@ namespace Softphone
             return null;
         }
 
+        /// <summary>Заглушка: индикатор WebRTC на дайлере убран вместе со строкой «Status:».</summary>
         public void UpdateWebRtcIndicator()
         {
-            try
-            {
-                bool useWebRtc = ShouldUseWebRtc();
-                if (WebRtcIndicator != null)
-                {
-                    WebRtcIndicator.Visibility = useWebRtc ? Visibility.Visible : Visibility.Collapsed;
-                    if (useWebRtc)
-                    {
-                        // Цвет индикатора зависит от состояния подключения
-                        bool isConnected = WebRtcService.Instance?.IsReadyForCalls ?? false;
-                        if (isConnected)
-                        {
-                            // Зеленый — подключено
-                            WebRtcIndicator.Background = new SolidColorBrush(Color.FromRgb(76, 175, 80));
-                        }
-                        else
-                        {
-                            // Серый — не подключено / подключается
-                            WebRtcIndicator.Background = new SolidColorBrush(Color.FromRgb(158, 158, 158));
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Игнорируем ошибки
-            }
         }
 
         // Throttling для UpdateConnectionStatus - предотвращает слишком частые вызовы
         private DateTime _lastStatusUpdateTime = DateTime.MinValue;
         private const int STATUS_UPDATE_THROTTLE_MS = 500; // Минимум 500мс между обновлениями
+
+        /// <summary>Last settings file write time (UTC ticks) used for connection name labels; -1 if file missing.</summary>
+        private long _connectionDisplayNamesSettingsTicks = long.MinValue;
         
         /// <summary>
         /// Публичное свойство для получения текущего статуса подключения (для синхронизации с SettingsWindow)
@@ -3972,6 +5290,8 @@ namespace Softphone
         {
             try
             {
+                EnsureConnectionStatusLabelsCurrent();
+
                 // Обновляем статус основного подключения
                 UpdateMainConnectionStatus();
                 
@@ -4013,12 +5333,25 @@ namespace Softphone
                     }
                     else
                     {
-                        // WebRTC не подключен
+                        // WebRTC не подключен — не используем широкий Contains("Connected"): строка
+                        // "Connected to WebRTC..." (WSS открыт, SIP ещё нет) содержит "Connected" и
+                        // иначе навсегда блокировала бы сброс при reg_failed.
                         string currentStatus = MainStatusTextBlock.Text ?? "";
-                        
-                        if (!currentStatus.Contains("Initializing") && 
-                            !currentStatus.Contains("Connecting") && 
-                            !currentStatus.Contains("Connected"))
+                        bool inProgress =
+                            currentStatus.Contains("Initializing", StringComparison.OrdinalIgnoreCase) ||
+                            currentStatus.Contains("Connecting", StringComparison.OrdinalIgnoreCase) ||
+                            currentStatus.StartsWith("Connected to WebRTC", StringComparison.OrdinalIgnoreCase);
+                        bool regOrAuthError =
+                            currentStatus.Contains("Registration failed", StringComparison.OrdinalIgnoreCase) ||
+                            currentStatus.Contains("Authentication", StringComparison.OrdinalIgnoreCase) ||
+                            currentStatus.Contains("Forbidden", StringComparison.OrdinalIgnoreCase);
+
+                        if (regOrAuthError)
+                        {
+                            newStatus = currentStatus;
+                            statusColor = (Brush)FindResource("AccentRedBrush");
+                        }
+                        else if (!inProgress)
                         {
                             if (_lastIsConnected)
                             {
@@ -4034,12 +5367,13 @@ namespace Softphone
                             {
                                 newStatus = "Not connected";
                             }
+                            statusColor = (Brush)FindResource("TextSecondaryBrush");
                         }
                         else
                         {
                             newStatus = currentStatus;
+                            statusColor = (Brush)FindResource("TextSecondaryBrush");
                         }
-                        statusColor = (Brush)FindResource("TextSecondaryBrush");
                     }
                 }
                 else
@@ -4093,11 +5427,20 @@ namespace Softphone
                     }
                 }
                 catch { }
-                
-                bool hasSecondaryConfig = settings != null && 
-                                        !string.IsNullOrEmpty(settings.SipServer2) && 
-                                        !string.IsNullOrEmpty(settings.SipUsername2) && 
-                                        !string.IsNullOrEmpty(settings.SipPasswordEncrypted2);
+
+                bool secondaryUsesWebRtc = settings != null && AppSettings.SecondaryLineUsesWebRtc(settings);
+
+                // Panel is visible if either SIP or WebRTC secondary is configured.
+                bool hasSipConfig = settings != null &&
+                                    !string.IsNullOrEmpty(settings.SipServer2) &&
+                                    !string.IsNullOrEmpty(settings.SipUsername2) &&
+                                    !string.IsNullOrEmpty(settings.SipPasswordEncrypted2);
+                bool hasWebRtcConfig = settings != null &&
+                                       AppSettings.HasMeaningfulWebRtcWsUri(settings.WebRtcWsUri2) &&
+                                       !string.IsNullOrEmpty(AppSettings.EffectiveSecondaryWebRtcUsername(settings)) &&
+                                       SipPasswordProvider.GetSecondaryWebRtcPassword(settings) != null;
+
+                bool hasSecondaryConfig = secondaryUsesWebRtc ? hasWebRtcConfig : hasSipConfig;
                 
                 if (!hasSecondaryConfig)
                 {
@@ -4106,9 +5449,14 @@ namespace Softphone
                 }
                 
                 SecondaryStatusPanel.Visibility = Visibility.Visible;
-                
-                bool isConnected = _sipService2?.IsRegistered ?? false;
-                string newStatus = isConnected ? "Connected" : "Not connected";
+
+                bool isConnected = secondaryUsesWebRtc
+                    ? (WebRtcService.Secondary?.IsReadyForCalls ?? false)
+                    : (_sipService2?.IsRegistered ?? false);
+
+                string newStatus = isConnected
+                    ? (secondaryUsesWebRtc ? "Connected with WebRTC" : "Connected")
+                    : "Not connected";
                 Brush statusColor = isConnected 
                     ? (Brush)FindResource("AccentGreenBrush")
                     : (Brush)FindResource("TextSecondaryBrush");
@@ -4144,9 +5492,7 @@ namespace Softphone
                 }
                 catch { }
                 
-                bool isEnabled = settings != null && 
-                               settings.EnableAmoCrmIntegration && 
-                               !string.IsNullOrEmpty(settings.AmoCrmSubdomain);
+                bool isEnabled = settings != null && settings.EnableAmoCrmIntegration;
                 
                 if (!isEnabled)
                 {
@@ -4207,7 +5553,7 @@ namespace Softphone
                 string json = File.ReadAllText(settingsFilePath);
                 var settings = JsonConvert.DeserializeObject<AppSettings>(json);
                 
-                if (settings == null || string.IsNullOrEmpty(settings.SipUsername))
+                if (settings == null)
                 {
                     UserAccountTextBlock.Text = "Not connected";
                     if (UserAccountTextBlock.ToolTip is ToolTip toolTip && toolTip.Content is StackPanel panel)
@@ -4218,17 +5564,40 @@ namespace Softphone
                     }
                     return;
                 }
-                
-                // Формируем текст в формате "username@server"
-                string username = settings.SipUsername;
-                string server = settings.SipServer ?? "";
-                
-                // Убираем порт из сервера, если он есть (например, "server:5060" -> "server")
-                if (!string.IsNullOrEmpty(server) && server.Contains(":"))
+
+                bool mainWebRtc = ShouldUseWebRtcForConnection(false);
+                string username;
+                string server;
+                if (mainWebRtc)
                 {
-                    server = server.Split(':')[0];
+                    username = AppSettings.EffectiveMainWebRtcUsername(settings) ?? "";
+                    server = "";
+                    try
+                    {
+                        if (AppSettings.HasMeaningfulWebRtcWsUri(settings.WebRtcWsUri))
+                            server = new Uri(settings.WebRtcWsUri!.Trim()).Host;
+                    }
+                    catch { }
+                }
+                else
+                {
+                    username = settings.SipUsername ?? "";
+                    server = SipEndpointHelper.GetHostOnly(settings.SipServer ?? "");
+                }
+
+                if (string.IsNullOrEmpty(username))
+                {
+                    UserAccountTextBlock.Text = "Not connected";
+                    if (UserAccountTextBlock.ToolTip is ToolTip toolTip0 && toolTip0.Content is StackPanel panel0)
+                    {
+                        var textBlock = panel0.Children.OfType<TextBlock>().FirstOrDefault();
+                        if (textBlock != null)
+                            textBlock.Text = "Not connected";
+                    }
+                    return;
                 }
                 
+                // Формируем текст в формате "username@server"
                 string displayText;
                 if (string.IsNullOrEmpty(server))
                 {
@@ -4273,26 +5642,70 @@ namespace Softphone
             }
         }
         
-        private void UpdateStatusColor(bool isConnected)
+        // WebRTC helper methods
+
+        /// <summary>
+        /// Возвращает true, если основное подключение использует WebRTC (для обратной совместимости).
+        /// Учитывает миграцию legacy-флага UseWebRtcAudio.
+        /// </summary>
+        private bool ShouldUseWebRtc()
         {
-            // Находим TextBlock с именем StatusLabel и меняем его цвет
-            var statusLabel = FindName("StatusLabel") as System.Windows.Controls.TextBlock;
-            
-            if (statusLabel != null)
+            return ShouldUseWebRtcForConnection(false);
+        }
+
+        /// <summary>
+        /// First-load migration: если в настройках отсутствует MainConnectionTransport,
+        /// но legacy UseWebRtcAudio=true, ставим MainConnectionTransport="WebRtc" и сохраняем файл.
+        /// Это нужно, чтобы пользователи, обновлённые со старой версии, не теряли WebRTC-режим.
+        /// </summary>
+        private static void MigrateLegacyTransportSettingIfNeeded()
+        {
+            string settingsFilePath = AppDataHelper.GetSettingsFilePath();
+            if (!File.Exists(settingsFilePath)) return;
+
+            string json = File.ReadAllText(settingsFilePath);
+            var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+            if (settings == null) return;
+
+            bool migrated = false;
+
+            // Main: legacy UseWebRtcAudio=true → MainConnectionTransport="WebRtc"
+            if (string.IsNullOrWhiteSpace(settings.MainConnectionTransport))
             {
-                if (isConnected)
+                if (settings.UseWebRtcAudio)
                 {
-                    statusLabel.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
+                    settings.MainConnectionTransport = "WebRtc";
+                    migrated = true;
+                    Log("[MainWindow] Migration: legacy UseWebRtcAudio=true → MainConnectionTransport=WebRtc");
                 }
                 else
                 {
-                    statusLabel.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                    settings.MainConnectionTransport = "Sip";
+                    migrated = true;
                 }
             }
+
+            // Secondary: при отсутствии поля — WebRTC, если в файле только WSS-конфиг, иначе Sip.
+            if (string.IsNullOrWhiteSpace(settings.SecondaryConnectionTransport))
+            {
+                settings.SecondaryConnectionTransport =
+                    AppSettings.SecondaryLineUsesWebRtc(settings) ? "WebRtc" : "Sip";
+                migrated = true;
+            }
+
+            if (migrated)
+            {
+                string updated = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsFilePath, updated);
+                Log("[MainWindow] Migration: per-connection transport fields persisted to settings file");
+            }
         }
-        
-        // WebRTC helper methods
-        private bool ShouldUseWebRtc()
+
+        /// <summary>
+        /// Возвращает true, если указанное подключение (Main / Secondary) использует WebRTC.
+        /// Читает MainConnectionTransport / SecondaryConnectionTransport из AppSettings.
+        /// </summary>
+        internal static bool ShouldUseWebRtcForConnection(bool secondary)
         {
             try
             {
@@ -4301,7 +5714,17 @@ namespace Softphone
                 {
                     string json = File.ReadAllText(settingsFilePath);
                     var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                    return settings?.UseWebRtcAudio ?? false;
+                    if (settings == null) return false;
+                    if (secondary)
+                    {
+                        return AppSettings.SecondaryLineUsesWebRtc(settings);
+                    }
+                    // Legacy fallback: если MainConnectionTransport не выставлен, смотрим на UseWebRtcAudio.
+                    if (string.IsNullOrWhiteSpace(settings.MainConnectionTransport) || string.Equals(settings.MainConnectionTransport, "Sip", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return settings.UseWebRtcAudio;
+                    }
+                    return string.Equals(settings.MainConnectionTransport, "WebRtc", StringComparison.OrdinalIgnoreCase);
                 }
             }
             catch
@@ -4313,71 +5736,79 @@ namespace Softphone
         
         private WebRtcConfig? GetWebRtcConfig()
         {
+            return GetWebRtcConfigForConnection(false);
+        }
+
+        /// <summary>
+        /// Собирает WebRtcConfig для указанного слота. secondary=true читает второй набор полей.
+        /// </summary>
+        private WebRtcConfig? GetWebRtcConfigForConnection(bool secondary)
+        {
             try
             {
                 string settingsFilePath = AppDataHelper.GetSettingsFilePath();
-                if (File.Exists(settingsFilePath))
+                if (!File.Exists(settingsFilePath)) return null;
+
+                string json = File.ReadAllText(settingsFilePath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null) return null;
+
+                string? wsUriValue = secondary ? settings.WebRtcWsUri2 : settings.WebRtcWsUri;
+                string? username = secondary
+                    ? AppSettings.EffectiveSecondaryWebRtcUsername(settings)
+                    : AppSettings.EffectiveMainWebRtcUsername(settings);
+                string? sipServer = secondary ? settings.SipServer2 : settings.SipServer;
+                string? sipPassword = secondary
+                    ? SipPasswordProvider.GetSecondaryWebRtcPassword(settings)
+                    : SipPasswordProvider.GetMainWebRtcPassword(settings);
+
+                string? turnUri = secondary ? settings.SecondaryWebRtcTurnUri : (settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri);
+                string? turnUser = secondary ? settings.SecondaryWebRtcTurnUsername : (settings.MainWebRtcTurnUsername ?? settings.WebRtcTurnUsername);
+                string? turnPass = secondary
+                    ? TurnPasswordProvider.GetSecondaryTurnPassword(settings)
+                    : TurnPasswordProvider.GetMainTurnPassword(settings);
+
+                if (string.IsNullOrEmpty(wsUriValue) || string.IsNullOrEmpty(username) || string.IsNullOrEmpty(sipPassword))
                 {
-                    string json = File.ReadAllText(settingsFilePath);
-                    var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                    string? sipPassword = SipPasswordProvider.GetPassword(settings);
-                    
-                    if (settings != null && !string.IsNullOrEmpty(settings.WebRtcWsUri) &&
-                        !string.IsNullOrEmpty(settings.SipUsername) && !string.IsNullOrEmpty(sipPassword))
-                    {
-                        // Формируем SIP URI из настроек
-                        // Для MikoPBX WebRTC нужно добавить суффикс -WS к имени пользователя
-                        // Формат: sip:username@pbx_address, где pbx_address - это адрес сервера PBX
-                        string pbxAddress = "";
-                        
-                        // Пытаемся извлечь адрес PBX из WebSocket URI (например, из wss://pbx.intermark.global:8089/asterisk/ws)
-                        if (!string.IsNullOrEmpty(settings.WebRtcWsUri))
-                        {
-                            try
-                            {
-                                var uri = new Uri(settings.WebRtcWsUri);
-                                pbxAddress = uri.Host; // Извлекаем домен/IP из WebSocket URI
-                            }
-                            catch
-                            {
-                                // Если не удалось распарсить WebSocket URI, используем SipServer
-                            }
-                        }
-                        
-                        // Если не удалось извлечь из WebSocket URI, используем SipServer
-                        if (string.IsNullOrEmpty(pbxAddress))
-                        {
-                            pbxAddress = settings.SipServer?.Split(':')[0] ?? "";
-                        }
-                        
-                        if (string.IsNullOrEmpty(pbxAddress))
-                        {
-                            // Если адрес PBX не указан, не можем создать конфиг
-                            return null;
-                        }
-                        
-                        string username = settings.SipUsername;
-                        // Формируем SIP URI: sip:username@pbx_address
-                        string sipUri = $"sip:{username}@{pbxAddress}";
-                        
-                        var config = new WebRtcConfig
-                        {
-                            WsUri = settings.WebRtcWsUri,
-                            SipUri = sipUri,
-                            Password = sipPassword,
-                            EnableDebug = settings.EnableWebRtcDebug,
-                            TurnServer = settings.WebRtcTurnUri,
-                            TurnUsername = settings.WebRtcTurnUsername,
-                            TurnPassword = settings.WebRtcTurnPassword
-                        };
-                        Log($"[MainWindow] GetWebRtcConfig: Created config - WsUri={config.WsUri}, SipUri={config.SipUri}");
-                        return config;
-                    }
-                    else
-                    {
-                        Log($"[MainWindow] GetWebRtcConfig: Missing required settings - WebRtcWsUri={(string.IsNullOrEmpty(settings?.WebRtcWsUri) ? "empty" : "set")}, SipUsername={(string.IsNullOrEmpty(settings?.SipUsername) ? "empty" : "set")}, SipPassword={(string.IsNullOrEmpty(sipPassword) ? "empty" : "set")}");
-                    }
+                    Log($"[MainWindow] GetWebRtcConfigForConnection(secondary={secondary}): Missing required settings - wsUri={(string.IsNullOrEmpty(wsUriValue) ? "empty" : "set")}, user={(string.IsNullOrEmpty(username) ? "empty" : "set")}, pass={(string.IsNullOrEmpty(sipPassword) ? "empty" : "set")}");
+                    return null;
                 }
+
+                // Формируем PBX-адрес: предпочтительно из WS URI, иначе из SIP-сервера.
+                string pbxAddress = "";
+                try
+                {
+                    var uri = new Uri(wsUriValue);
+                    pbxAddress = uri.Host;
+                }
+                catch { }
+
+                if (string.IsNullOrEmpty(pbxAddress))
+                {
+                    pbxAddress = SipEndpointHelper.GetHostOnly(sipServer);
+                }
+
+                if (string.IsNullOrEmpty(pbxAddress))
+                {
+                    return null;
+                }
+
+                // MikoPBX WebRTC AoR с суффиксом -WS (см. историю комментариев в проекте).
+                string wsAor = username.EndsWith("-WS", StringComparison.OrdinalIgnoreCase) ? username : $"{username}-WS";
+                string sipUri = $"sip:{wsAor}@{pbxAddress}";
+
+                var config = new WebRtcConfig
+                {
+                    WsUri = wsUriValue,
+                    SipUri = sipUri,
+                    Password = sipPassword,
+                    EnableDebug = settings.EnableWebRtcDebug,
+                    TurnServer = turnUri,
+                    TurnUsername = turnUser,
+                    TurnPassword = turnPass
+                };
+                Log($"[MainWindow] GetWebRtcConfigForConnection(secondary={secondary}): WsUri={config.WsUri}, SipUri={config.SipUri}, TurnServer={(string.IsNullOrWhiteSpace(config.TurnServer) ? "<none>" : config.TurnServer)}");
+                return config;
             }
             catch
             {
@@ -4391,7 +5822,20 @@ namespace Softphone
         /// </summary>
         public bool IsAmoCrmServiceInitialized()
         {
-            return _amoCrmService != null && _amoCrmService.IsInitialized;
+            return IsAmoCrmIntegrationEnabled() && _amoCrmService != null && _amoCrmService.IsInitialized;
+        }
+
+        private static bool IsAmoCrmIntegrationEnabled()
+        {
+            try
+            {
+                var settings = AppDataHelper.LoadSettingsOrNew();
+                return settings.EnableAmoCrmIntegration;
+            }
+            catch
+            {
+                return false;
+            }
         }
         
         /// <summary>
@@ -4405,6 +5849,275 @@ namespace Softphone
         /// <summary>
         /// Инициализирует AmoCRM сервис при старте приложения (асинхронно, не блокирует UI)
         /// </summary>
+        private static bool IsLocalKommoConfigured(AppSettings settings)
+        {
+            if (!settings.EnableAmoCrmIntegration || string.IsNullOrWhiteSpace(settings.AmoCrmSubdomain))
+                return false;
+
+            string authMode = settings.AmoCrmAuthMode ?? "manual";
+            if (authMode == "oauth")
+                return !string.IsNullOrEmpty(settings.AmoCrmOAuthAccessTokenEncrypted);
+
+            return !string.IsNullOrEmpty(settings.AmoCrmAccessTokenEncrypted);
+        }
+
+        private static bool IsPbxGatewayCdrConfigured(AppSettings settings)
+        {
+            return settings.EnableMikoPbxCdr
+                && !string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl)
+                && !string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted)
+                && !string.IsNullOrEmpty(settings.MikoPbxExtension);
+        }
+
+        /// <summary>
+        /// Read the latest saved Kommo source from disk so queued inits do not use a stale snapshot.
+        /// </summary>
+        private static string? LoadKommoConnectionSourceFromDisk()
+        {
+            try
+            {
+                var source = AppDataHelper.LoadSettingsOrNew().AmoCrmConnectionSource?.Trim().ToLowerInvariant();
+                return source is "gateway" or "local" ? source : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static string? ResolveKommoConnectionSource(AppSettings settings)
+        {
+            return LoadKommoConnectionSourceFromDisk()
+                ?? settings.AmoCrmConnectionSource?.Trim().ToLowerInvariant();
+        }
+
+        private static bool IsKommoGatewayModuleOfferedToClient(KommoGatewayStatus? status)
+        {
+            return status != null
+                && !status.Excluded
+                && (status.OfferGateway || status.Enabled);
+        }
+
+        public KommoGatewayStatus? GetCachedKommoGatewayStatus() => _cachedKommoGatewayStatus;
+
+        private async Task RefreshCachedKommoGatewayStatusAsync()
+        {
+            if (_mikoPbxCdrService == null)
+                return;
+
+            try
+            {
+                var status = await _mikoPbxCdrService.GetKommoStatusAsync().ConfigureAwait(false);
+                _cachedKommoGatewayStatus = status;
+                if (IsKommoGatewayModuleOfferedToClient(status))
+                {
+                    Log("[MainWindow] Gateway Kommo module offered to this extension (cached for settings UI)");
+                }
+
+                await Dispatcher.InvokeAsync(NotifySettingsKommoGatewayModuleStatus);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Kommo gateway status prefetch error: {ex.Message}");
+            }
+        }
+
+        private void NotifySettingsKommoGatewayModuleStatus()
+        {
+            var settingsWindow = Application.Current?.Windows.OfType<SettingsWindow>().FirstOrDefault();
+            settingsWindow?.SyncKommoGatewayModuleFromMain(refreshFromGateway: false);
+        }
+
+        private async Task<bool> IsGatewayKommoAvailableAsync()
+        {
+            if (_mikoPbxCdrService == null)
+                return false;
+
+            var status = await _mikoPbxCdrService.GetKommoStatusAsync().ConfigureAwait(false);
+            _cachedKommoGatewayStatus = status;
+            return status?.Available == true;
+        }
+
+        private async Task<bool> IsGatewayKommoOfferedToUserAsync()
+        {
+            if (_mikoPbxCdrService == null)
+                return false;
+
+            var status = await _mikoPbxCdrService.GetKommoStatusAsync().ConfigureAwait(false);
+            _cachedKommoGatewayStatus = status;
+            return IsKommoGatewayModuleOfferedToClient(status);
+        }
+
+        private async Task<bool> IsCurrentUserExcludedFromGatewayKommoAsync()
+        {
+            if (_mikoPbxCdrService == null)
+                return false;
+
+            var status = await _mikoPbxCdrService.GetKommoStatusAsync().ConfigureAwait(false);
+            _cachedKommoGatewayStatus = status;
+            return status?.Excluded == true;
+        }
+
+        private static void SaveAmoCrmConnectionSourceSetting(string source)
+        {
+            try
+            {
+                AppDataHelper.SetKommoConnectionSource(source);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Failed to save AmoCrmConnectionSource: {ex.Message}");
+            }
+        }
+
+        private string? PromptKommoConnectionSource()
+        {
+            var result = CustomMessageBox.Show(
+                "Kommo is configured both in PBX Gateway and in this softphone.\n\nUse Gateway (shared company account) or Local (this app settings)?",
+                "Choose Kommo connection",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question,
+                this,
+                yesButtonText: "Gateway",
+                noButtonText: "Local");
+
+            if (result == MessageBoxResult.Yes)
+                return "gateway";
+            if (result == MessageBoxResult.No)
+                return "local";
+            return null;
+        }
+
+        private async Task<(bool Success, string? Error)> InitializeAmoCrmFromGatewayAsync()
+        {
+            if (_mikoPbxCdrService == null)
+                return (false, "PBX Gateway client is not initialized");
+
+            var (session, sessionError) = await _mikoPbxCdrService.GetKommoSessionAsync().ConfigureAwait(false);
+            if (session == null || string.IsNullOrWhiteSpace(session.AccessToken))
+                return (false, sessionError ?? "PBX Gateway Kommo session is unavailable");
+
+            DateTime? expires = ParseKommoExpiresAt(session.ExpiresAt);
+
+            if (_amoCrmService != null)
+            {
+                _amoCrmService.Dispose();
+                _amoCrmService = null;
+            }
+
+            _amoCrmService = new AmoCrmService();
+            var gateway = _mikoPbxCdrService;
+            MainWindow.Log(
+                $"[MainWindow] Gateway Kommo session: subdomain={session.Subdomain}, " +
+                $"tokenLen={session.AccessToken.Length}, base={session.AccountBaseUrl ?? "(default)"}, " +
+                $"kommoUserId={session.KommoUserId?.ToString() ?? "?"}, source={session.KommoUserIdSource ?? "?"}");
+            await _amoCrmService.InitializeGatewayOAuthAsync(
+                session.Subdomain,
+                session.AccessToken,
+                expires,
+                async (forceRefresh) =>
+                {
+                    var (refreshed, _) = await gateway.GetKommoSessionAsync(forceRefresh).ConfigureAwait(false);
+                    if (refreshed == null || string.IsNullOrWhiteSpace(refreshed.AccessToken))
+                        return (string.Empty, null);
+                    return (refreshed.AccessToken, ParseKommoExpiresAt(refreshed.ExpiresAt));
+                },
+                session.AccountBaseUrl,
+                session.KommoUserId,
+                session.KommoUserName).ConfigureAwait(false);
+
+            return (true, null);
+        }
+
+        private async Task<(bool Success, string? Error)> InitializeAmoCrmFromGatewayWithRetryAsync()
+        {
+            const int maxAttempts = 3;
+            int[] delaysMs = { 0, 2000, 5000 };
+            string? lastError = null;
+
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
+            {
+                if (attempt > 0)
+                    await Task.Delay(delaysMs[attempt]).ConfigureAwait(false);
+
+                try
+                {
+                    var result = await InitializeAmoCrmFromGatewayAsync().ConfigureAwait(false);
+                    if (result.Success)
+                        return result;
+
+                    lastError = result.Error;
+                    var kind = KommoInitHelper.ClassifyFailureMessage(result.Error);
+                    if (kind != KommoInitFailureKind.Network || attempt == maxAttempts - 1)
+                        return result;
+
+                    await Dispatcher.InvokeAsync(() =>
+                        Log($"[MainWindow] Gateway Kommo network error (attempt {attempt + 1}/{maxAttempts}): {result.Error}. Retrying..."));
+                }
+                catch (Exception ex)
+                {
+                    lastError = ex.Message;
+                    var kind = KommoInitHelper.ClassifyFailure(ex);
+                    if (kind == KommoInitFailureKind.Auth || attempt == maxAttempts - 1)
+                        throw;
+
+                    await Dispatcher.InvokeAsync(() =>
+                        Log($"[MainWindow] Gateway Kommo network error (attempt {attempt + 1}/{maxAttempts}): {ex.Message}. Retrying..."));
+                }
+            }
+
+            return (false, lastError);
+        }
+
+        private void ScheduleDeferredKommoInitRetry()
+        {
+            _kommoDeferredRetryCts?.Cancel();
+            _kommoDeferredRetryCts = new CancellationTokenSource();
+            var token = _kommoDeferredRetryCts.Token;
+
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(45), token).ConfigureAwait(false);
+                    if (token.IsCancellationRequested || IsAmoCrmServiceInitialized())
+                        return;
+
+                    string settingsPath = AppDataHelper.GetSettingsFilePath();
+                    if (!File.Exists(settingsPath))
+                        return;
+
+                    var settings = JsonConvert.DeserializeObject<AppSettings>(File.ReadAllText(settingsPath));
+                    if (settings?.EnableAmoCrmIntegration != true)
+                        return;
+
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        Log("[MainWindow] Deferred Kommo init retry after network error...");
+                        InitializeAmoCrmService(settings);
+                    });
+                }
+                catch (OperationCanceledException)
+                {
+                    // Superseded by a newer retry or app shutdown.
+                }
+                catch (Exception ex)
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                        Log($"[MainWindow] Deferred Kommo init retry failed: {ex.Message}"));
+                }
+            }, token);
+        }
+
+        private static DateTime? ParseKommoExpiresAt(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
+            if (DateTime.TryParse(raw, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt))
+                return dt.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(dt, DateTimeKind.Utc) : dt.ToUniversalTime();
+            return null;
+        }
+
         private async Task InitializeAmoCrmServiceOnStartup()
         {
             try
@@ -4420,21 +6133,19 @@ namespace Softphone
                     if (settings != null)
                     {
                         Log($"[MainWindow] Loading AmoCRM settings on startup: EnableIntegration={settings.EnableAmoCrmIntegration}, AuthMode={settings.AmoCrmAuthMode}, HasOAuthToken={!string.IsNullOrEmpty(settings.AmoCrmOAuthAccessTokenEncrypted)}, HasManualToken={!string.IsNullOrEmpty(settings.AmoCrmAccessTokenEncrypted)}");
-                        InitializeAmoCrmService(settings);
+
+                        // When PBX Gateway is configured, Kommo init runs from InitializeMikoPbxCdrService only.
+                        if (!IsPbxGatewayCdrConfigured(settings))
+                            InitializeAmoCrmService(settings);
                         
                         // Проверяем результат инициализации через небольшую задержку
                         // (инициализация происходит асинхронно в Task.Run)
                         await Task.Delay(2000);
                         
-                        // Проверяем, была ли инициализация успешной
                         if (settings.EnableAmoCrmIntegration && !IsAmoCrmServiceInitialized())
                         {
-                            Dispatcher.Invoke(() =>
-                            {
-                                string authMode = settings.AmoCrmAuthMode ?? "manual";
-                                Log($"[MainWindow] Kommo integration enabled but service not initialized after startup. AuthMode={authMode}");
-                                ShowKommoIntegrationWarning(authMode);
-                            });
+                            string authMode = settings.AmoCrmAuthMode ?? "manual";
+                            Log($"[MainWindow] Kommo integration enabled but service not initialized after startup. AuthMode={authMode}");
                         }
                     }
                 }
@@ -4459,8 +6170,214 @@ namespace Softphone
             // если UI поток занят модальным диалогом (например, OAuth success message).
             _ = Task.Run(async () =>
             {
+                await _amoCrmInitSemaphore.WaitAsync().ConfigureAwait(false);
+                var warningShownThisInit = false;
+                async Task ShowKommoWarningIfNeededAsync(string authMode, KommoInitFailureKind failureKind, string? errorDetails = null)
+                {
+                    if (warningShownThisInit)
+                        return;
+
+                    if (failureKind == KommoInitFailureKind.Network)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                            Log($"[MainWindow] Kommo temporarily unreachable (network). No popup. {errorDetails}"));
+                        ScheduleDeferredKommoInitRetry();
+                        return;
+                    }
+
+                    warningShownThisInit = true;
+                    await Dispatcher.InvokeAsync(() => ShowKommoIntegrationWarning(authMode, failureKind, errorDetails)).Task.ConfigureAwait(false);
+                }
+
                 try
                 {
+                    if (!settings.EnableAmoCrmIntegration)
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            Log("[MainWindow] Kommo integration disabled in settings — disconnecting service");
+                            DisconnectAmoCrmService();
+                        }).Task.ConfigureAwait(false);
+                        return;
+                    }
+
+                    bool gatewayCdrConfigured = IsPbxGatewayCdrConfigured(settings);
+                    var savedSource = ResolveKommoConnectionSource(settings);
+                    bool excludedFromGatewayKommo = await IsCurrentUserExcludedFromGatewayKommoAsync().ConfigureAwait(false);
+
+                    if (excludedFromGatewayKommo)
+                    {
+                        savedSource = "local";
+                        _amoCrmConnectionSource = "local";
+                        if (LoadKommoConnectionSourceFromDisk() != "local")
+                            SaveAmoCrmConnectionSourceSetting("local");
+                        await Dispatcher.InvokeAsync(() =>
+                            Log("[MainWindow] Gateway Kommo excluded for this extension — local-only (no shared Kommo)"));
+                    }
+
+                    // User may switch to local while a gateway init was queued — always prefer latest disk value.
+                    if (!excludedFromGatewayKommo
+                        && savedSource == "gateway"
+                        && LoadKommoConnectionSourceFromDisk() == "local")
+                        savedSource = "local";
+
+                    // Local mode: skip gateway entirely (even if PBX Gateway CDR is configured).
+                    if (savedSource == "local")
+                    {
+                        _amoCrmConnectionSource = "local";
+                    }
+                    else if (savedSource == "gateway")
+                    {
+                        _amoCrmConnectionSource = "gateway";
+                        if (gatewayCdrConfigured && _mikoPbxCdrService == null)
+                        {
+                            await Dispatcher.InvokeAsync(() =>
+                                Log("[MainWindow] Deferring gateway Kommo init until PBX Gateway client is ready"));
+                            return;
+                        }
+
+                        await Dispatcher.InvokeAsync(() =>
+                            Log("[MainWindow] Initializing Kommo via PBX Gateway (shared company account)"));
+
+                        try
+                        {
+                            var (gatewayOk, gatewayError) = await InitializeAmoCrmFromGatewayWithRetryAsync().ConfigureAwait(false);
+                            if (gatewayOk)
+                            {
+                                ResetKommoIntegrationWarningShown();
+                                _kommoDeferredRetryCts?.Cancel();
+                                await RefreshCachedKommoGatewayStatusAsync().ConfigureAwait(false);
+                                await Dispatcher.InvokeAsync(() =>
+                                {
+                                    Log("[MainWindow] Kommo gateway initialization completed successfully");
+                                    UpdateConnectionStatus();
+                                });
+                            }
+                            else
+                            {
+                                await Dispatcher.InvokeAsync(() =>
+                                {
+                                    Log($"[MainWindow] Kommo gateway session unavailable: {gatewayError}");
+                                    DisconnectAmoCrmService();
+                                });
+                                await ShowKommoWarningIfNeededAsync("gateway",
+                                    KommoInitHelper.ClassifyFailureMessage(gatewayError), gatewayError).ConfigureAwait(false);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                Log($"[MainWindow] Kommo gateway init error: {ex.Message}");
+                                DisconnectAmoCrmService();
+                            });
+                            await ShowKommoWarningIfNeededAsync("gateway",
+                                KommoInitHelper.ClassifyFailure(ex), ex.Message).ConfigureAwait(false);
+                        }
+                        return;
+                    }
+
+                    if (gatewayCdrConfigured && _mikoPbxCdrService == null && savedSource != "local")
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                            Log("[MainWindow] Deferring Kommo init until PBX Gateway client is ready"));
+                        return;
+                    }
+
+                    bool localConfigured = IsLocalKommoConfigured(settings);
+                    bool gatewayAvailable = await IsGatewayKommoAvailableAsync().ConfigureAwait(false);
+                    bool gatewayOffered = await IsGatewayKommoOfferedToUserAsync().ConfigureAwait(false);
+
+                    string? source = savedSource;
+                    if (string.IsNullOrEmpty(source))
+                    {
+                        // Shared gateway is the company default when offered — never for excluded extensions.
+                        if (!excludedFromGatewayKommo && gatewayOffered && gatewayAvailable)
+                        {
+                            source = "gateway";
+                            SaveAmoCrmConnectionSourceSetting(source);
+                            await Dispatcher.InvokeAsync(() =>
+                                Log("[MainWindow] Kommo: auto-selected PBX Gateway (shared account). Switch to Local in Settings if needed."));
+                        }
+                        else if (localConfigured)
+                        {
+                            source = "local";
+                        }
+                        else if (excludedFromGatewayKommo)
+                        {
+                            source = "local";
+                        }
+                    }
+
+                    // Excluded users must never use gateway Kommo, even if a stale setting says gateway.
+                    if (excludedFromGatewayKommo && source == "gateway")
+                    {
+                        source = "local";
+                        SaveAmoCrmConnectionSourceSetting("local");
+                    }
+
+                    _amoCrmConnectionSource = source;
+
+                    if (string.IsNullOrEmpty(source))
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                        {
+                            Log("[MainWindow] Kommo not initialized — no gateway session and no local configuration");
+                            DisconnectAmoCrmService();
+                        });
+                        return;
+                    }
+
+                    if (source == "gateway")
+                    {
+                        await Dispatcher.InvokeAsync(() =>
+                            Log("[MainWindow] Initializing Kommo via PBX Gateway (shared company account)"));
+
+                        try
+                        {
+                            var (gatewayOk, gatewayError) = await InitializeAmoCrmFromGatewayWithRetryAsync().ConfigureAwait(false);
+                            if (gatewayOk)
+                            {
+                                ResetKommoIntegrationWarningShown();
+                                _kommoDeferredRetryCts?.Cancel();
+                                await RefreshCachedKommoGatewayStatusAsync().ConfigureAwait(false);
+                                await Dispatcher.InvokeAsync(() =>
+                                {
+                                    Log("[MainWindow] Kommo gateway initialization completed successfully");
+                                    UpdateConnectionStatus();
+                                });
+                            }
+                            else
+                            {
+                                await Dispatcher.InvokeAsync(() =>
+                                {
+                                    Log($"[MainWindow] Kommo gateway session unavailable: {gatewayError}");
+                                    DisconnectAmoCrmService();
+                                });
+                                await ShowKommoWarningIfNeededAsync("gateway",
+                                    KommoInitHelper.ClassifyFailureMessage(gatewayError), gatewayError).ConfigureAwait(false);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            await Dispatcher.InvokeAsync(() =>
+                            {
+                                Log($"[MainWindow] Kommo gateway init error: {ex.Message}");
+                                DisconnectAmoCrmService();
+                            });
+                            await ShowKommoWarningIfNeededAsync("gateway",
+                                KommoInitHelper.ClassifyFailure(ex), ex.Message).ConfigureAwait(false);
+                        }
+                        return;
+                    }
+
+                    if (source != "local")
+                    {
+                        await Dispatcher.InvokeAsync(() => DisconnectAmoCrmService());
+                        return;
+                    }
+
+                    // Local Kommo only — gateway mode must never reach this block.
                     if (settings.EnableAmoCrmIntegration && !string.IsNullOrEmpty(settings.AmoCrmSubdomain))
                     {
                         string authMode = settings.AmoCrmAuthMode ?? "manual";
@@ -4519,15 +6436,17 @@ namespace Softphone
                                             Log($"[MainWindow] Calling InitializeOAuthAsync with subdomain={settings.AmoCrmSubdomain}, expiresAt={settings.AmoCrmOAuthTokenExpiresAt}");
                                         });
                                         
-                                        // Инициализируем с OAuth токенами
-                                        await _amoCrmService.InitializeOAuthAsync(
-                                            settings.AmoCrmSubdomain,
-                                            accessToken,
-                                            refreshToken,
-                                            settings.AmoCrmOAuthTokenExpiresAt,
-                                            clientId,
-                                            clientSecret
-                                        );
+                                        // Инициализируем с OAuth токенами (retry on transient network errors)
+                                        await KommoInitHelper.ExecuteWithNetworkRetryAsync(
+                                            () => _amoCrmService!.InitializeOAuthAsync(
+                                                settings.AmoCrmSubdomain,
+                                                accessToken,
+                                                refreshToken,
+                                                settings.AmoCrmOAuthTokenExpiresAt,
+                                                clientId,
+                                                clientSecret,
+                                                settings.AmoCrmRedirectUri),
+                                            msg => Dispatcher.Invoke(() => Log($"[MainWindow] {msg}")));
                                         
                                         initialized = true;
                                         
@@ -4551,13 +6470,10 @@ namespace Softphone
                                     {
                                         Log($"[MainWindow] OAuth token is invalid or expired: {ex.Message}");
                                         Log($"[MainWindow] Stack trace: {ex.StackTrace}");
-                                        
-                                        // Отключаем сервис, так как токен недействителен
                                         DisconnectAmoCrmService();
-                                        
-                                        // Показываем предупреждение пользователю
-                                        ShowKommoIntegrationWarning("oauth", "Token is invalid or expired. Please re-authorize the application.");
                                     });
+                                    await ShowKommoWarningIfNeededAsync("oauth", KommoInitFailureKind.Auth,
+                                        "Token is invalid or expired. Please re-authorize the application.").ConfigureAwait(false);
                                 }
                                 catch (Exception ex)
                                 {
@@ -4565,13 +6481,10 @@ namespace Softphone
                                     {
                                         Log($"[MainWindow] Error decrypting or initializing OAuth tokens: {ex.Message}");
                                         Log($"[MainWindow] Stack trace: {ex.StackTrace}");
-                                        
-                                        // Отключаем сервис при ошибке инициализации
                                         DisconnectAmoCrmService();
-                                        
-                                        // Показываем предупреждение пользователю
-                                        ShowKommoIntegrationWarning("oauth", ex.Message);
                                     });
+                                    await ShowKommoWarningIfNeededAsync("oauth",
+                                        KommoInitHelper.ClassifyFailure(ex), ex.Message).ConfigureAwait(false);
                                 }
                             }
                             else
@@ -4604,7 +6517,9 @@ namespace Softphone
                                     try
                                     {
                                         // Инициализируем асинхронно
-                                        await _amoCrmService.InitializeAsync(settings.AmoCrmSubdomain, accessToken);
+                                        await KommoInitHelper.ExecuteWithNetworkRetryAsync(
+                                            () => _amoCrmService!.InitializeAsync(settings.AmoCrmSubdomain, accessToken),
+                                            msg => Dispatcher.Invoke(() => Log($"[MainWindow] {msg}")));
                                         
                                         initialized = true;
                                     }
@@ -4614,13 +6529,10 @@ namespace Softphone
                                         await Dispatcher.InvokeAsync(() =>
                                         {
                                             Log($"[MainWindow] Manual token is invalid or expired: {ex.Message}");
-                                            
-                                            // Отключаем сервис, так как токен недействителен
                                             DisconnectAmoCrmService();
-                                            
-                                            // Показываем предупреждение пользователю
-                                            ShowKommoIntegrationWarning("manual", "Token is invalid or expired. Please check your access token in settings.");
                                         });
+                                        await ShowKommoWarningIfNeededAsync("manual", KommoInitFailureKind.Auth,
+                                            "Token is invalid or expired. Please check your access token in settings.").ConfigureAwait(false);
                                     }
                                     catch (Exception ex)
                                     {
@@ -4628,13 +6540,10 @@ namespace Softphone
                                         {
                                             Log($"[MainWindow] Error initializing Manual token: {ex.Message}");
                                             Log($"[MainWindow] Stack trace: {ex.StackTrace}");
-                                            
-                                            // Отключаем сервис при ошибке инициализации
                                             DisconnectAmoCrmService();
-                                            
-                                            // Показываем предупреждение пользователю
-                                            ShowKommoIntegrationWarning("manual", ex.Message);
                                         });
+                                        await ShowKommoWarningIfNeededAsync("manual",
+                                            KommoInitHelper.ClassifyFailure(ex), ex.Message).ConfigureAwait(false);
                                     }
                                 }
                             }
@@ -4642,6 +6551,8 @@ namespace Softphone
                         
                         if (initialized)
                         {
+                            ResetKommoIntegrationWarningShown();
+                            _kommoDeferredRetryCts?.Cancel();
                             // Логируем в UI потоке и обновляем статус в настройках
                             await Dispatcher.InvokeAsync(() =>
                             {
@@ -4669,20 +6580,17 @@ namespace Softphone
                         else
                         {
                             // Интеграция включена, но инициализация не удалась - показываем предупреждение
-                            await Dispatcher.InvokeAsync(() =>
+                            if (authMode == "oauth")
                             {
-                                if (authMode == "oauth")
-                                {
-                                    Log("[MainWindow] OAuth initialization failed: token not found or decryption failed");
-                                }
-                                else
-                                {
-                                    Log("[MainWindow] Manual token initialization failed: token not found or decryption failed");
-                                }
-                                
-                                // Показываем предупреждение пользователю
-                                ShowKommoIntegrationWarning(authMode);
-                            });
+                                Log("[MainWindow] OAuth initialization failed: token not found or decryption failed");
+                            }
+                            else
+                            {
+                                Log("[MainWindow] Manual token initialization failed: token not found or decryption failed");
+                            }
+
+                            await ShowKommoWarningIfNeededAsync(authMode, KommoInitFailureKind.Other,
+                                "Kommo credentials were not found or could not be decrypted.").ConfigureAwait(false);
                         }
                     }
                     else
@@ -4709,37 +6617,97 @@ namespace Softphone
                         {
                             settingsWindow.UpdateAmoCrmStatus($"Error: {ex.Message}", false);
                         }
-                        
-                        // Если интеграция была включена, но произошла ошибка - показываем предупреждение
-                        if (settings.EnableAmoCrmIntegration)
-                        {
-                            string authMode = settings.AmoCrmAuthMode ?? "manual";
-                            ShowKommoIntegrationWarning(authMode, ex.Message);
-                        }
                     });
+
+                    if (settings.EnableAmoCrmIntegration || _amoCrmConnectionSource == "gateway")
+                    {
+                        string authMode = _amoCrmConnectionSource == "gateway"
+                            ? "gateway"
+                            : (settings.AmoCrmAuthMode ?? "manual");
+                        await ShowKommoWarningIfNeededAsync(authMode,
+                            KommoInitHelper.ClassifyFailure(ex), ex.Message).ConfigureAwait(false);
+                    }
+                }
+                finally
+                {
+                    _amoCrmInitSemaphore.Release();
                 }
             });
         }
         
+        private void ResetKommoIntegrationWarningShown()
+        {
+            lock (_kommoWarningLock)
+            {
+                _kommoIntegrationWarningShown = false;
+            }
+        }
+
         /// <summary>
         /// Показывает предупреждение о проблеме с интеграцией Kommo
         /// </summary>
-        private void ShowKommoIntegrationWarning(string authMode, string? errorDetails = null)
+        private void ShowKommoIntegrationWarning(string authMode, KommoInitFailureKind failureKind, string? errorDetails = null)
         {
+            lock (_kommoWarningLock)
+            {
+                if (_kommoIntegrationWarningShown || _kommoIntegrationWarningShowing)
+                {
+                    Log("[MainWindow] Kommo integration warning skipped (already shown or showing)");
+                    return;
+                }
+                _kommoIntegrationWarningShowing = true;
+            }
+
             try
             {
+                if (_amoCrmConnectionSource == "gateway" && authMode != "gateway")
+                    authMode = "gateway";
+
                 string message;
-                if (authMode == "oauth")
+                if (authMode == "gateway")
                 {
-                    message = "Kommo integration is enabled, but authorization failed.\n\n";
-                    message += "Please check your OAuth settings:\n";
-                    message += "• Client ID\n";
-                    message += "• Client Secret\n";
-                    message += "• Redirect URI\n";
-                    message += "• Make sure you have authorized the application\n\n";
+                    message = "Kommo via PBX Gateway failed.\n\n";
+                    message += "The gateway returned a token, but Kommo rejected API access (401 Unauthorized).\n";
+                    message += "OAuth on the gateway can succeed while API calls still fail — usually the gateway integration ";
+                    message += "(Client ID dbdc7f97-...) lacks «Access to account data» or is not fully installed in mdkb.\n\n";
+                    message += "Your Local Kommo OAuth (different integration) may still work — switch to Local in Settings → Integrations as a workaround.\n\n";
+                    message += "Admin: Kommo → Integrations → gateway app → verify permissions → Disconnect + re-Authorize in gateway admin.\n\n";
                     if (!string.IsNullOrEmpty(errorDetails))
                     {
                         message += $"Error details: {errorDetails}\n\n";
+                    }
+                }
+                else if (failureKind == KommoInitFailureKind.Auth && authMode == "oauth")
+                {
+                    message = "Kommo authorization failed.\n\n";
+                    message += "Your OAuth session is invalid or expired.\n";
+                    message += "Open Settings → Integrations and authorize Kommo again.\n\n";
+                    if (!string.IsNullOrEmpty(errorDetails))
+                    {
+                        message += $"Details: {errorDetails}\n\n";
+                    }
+                    message += "Click OK to open integration settings.";
+                }
+                else if (authMode == "oauth")
+                {
+                    message = "Kommo integration is enabled, but connection failed.\n\n";
+                    message += "Please check your OAuth settings:\n";
+                    message += "• Client ID and Client Secret\n";
+                    message += "• Redirect URI\n";
+                    message += "• Subdomain\n\n";
+                    if (!string.IsNullOrEmpty(errorDetails))
+                    {
+                        message += $"Error details: {errorDetails}\n\n";
+                    }
+                    message += "Click OK to open integration settings.";
+                }
+                else if (failureKind == KommoInitFailureKind.Auth)
+                {
+                    message = "Kommo access token is invalid or expired.\n\n";
+                    message += "Update the token in Settings → Integrations.\n\n";
+                    if (!string.IsNullOrEmpty(errorDetails))
+                    {
+                        message += $"Details: {errorDetails}\n\n";
                     }
                     message += "Click OK to open integration settings.";
                 }
@@ -4791,6 +6759,14 @@ namespace Softphone
             {
                 Log($"[MainWindow] Error showing Kommo integration warning: {ex.Message}");
             }
+            finally
+            {
+                lock (_kommoWarningLock)
+                {
+                    _kommoIntegrationWarningShown = true;
+                    _kommoIntegrationWarningShowing = false;
+                }
+            }
         }
 
         /// <summary>
@@ -4835,9 +6811,16 @@ namespace Softphone
         private void ProcessCallInAmoCrm(string phoneNumber, DateTime callTime, List<string>? technicalDetails, string? recordingFilePath, string? sessionId = null, long? leadId = null)
         {
             Log($"[MainWindow] ProcessCallInAmoCrm called: phone={phoneNumber}, leadId={leadId?.ToString() ?? "null"}, sessionId={sessionId ?? "null"}");
-            if (_amoCrmService == null || !_amoCrmService.IsInitialized)
+            if (!IsAmoCrmIntegrationEnabled() || _amoCrmService == null || !_amoCrmService.IsInitialized)
             {
                 return; // Интеграция не включена или не инициализирована
+            }
+
+            // PBX Originate callback leg arrives as inbound INVITE From=our trunk CallerID — not a real client call.
+            if (IsOwnOutboundCallerId(phoneNumber))
+            {
+                Log($"[MainWindow] AmoCRM: Skipping originate callback leg (own CallerID {phoneNumber})");
+                return;
             }
 
             // КРИТИЧНО: Создаем уникальный ключ для дедупликации
@@ -4906,7 +6889,7 @@ namespace Softphone
                     break; // Очередь завершена
                 }
 
-                if (_amoCrmService == null || !_amoCrmService.IsInitialized)
+                if (!IsAmoCrmIntegrationEnabled() || _amoCrmService == null || !_amoCrmService.IsInitialized)
                 {
                     _processedCalls.TryRemove(job.DedupKey, out _);
                     continue;
@@ -4947,6 +6930,20 @@ namespace Softphone
 
                     string? finalRecordingPath = job.RecordingFilePath;
 
+                    string? FindMatchingCallFromHistory()
+                    {
+                        var h = _callHistoryService.GetHistory();
+                        var c = h
+                            .Where(x => x.PhoneNumber == job.PhoneNumber && Math.Abs((x.CallTime - job.CallTime).TotalSeconds) < 1)
+                            .OrderByDescending(x => x.CallTime)
+                            .FirstOrDefault();
+                        if (c == null)
+                        {
+                            c = h.Where(x => x.PhoneNumber == job.PhoneNumber).OrderByDescending(x => x.CallTime).FirstOrDefault();
+                        }
+                        return c?.RecordingFilePath;
+                    }
+
                     // Защита от "пустых" исходящих звонков:
                     // Если исходящий звонок НЕ был принят, пользователь сам завершил его,
                     // и с момента начала вызова прошло <= 5 секунд, то пропускаем загрузку записи,
@@ -4978,6 +6975,22 @@ namespace Softphone
                             }
                         }
                     }
+                    // SIP only: ensure in-flight RTP finalize / orphan PCM recovery before waiting for WAV.
+                    if (!string.IsNullOrEmpty(job.RecordingFilePath) && call?.Transport == CallTransport.Sip)
+                    {
+                        try
+                        {
+                            await (_sipService?.FinalizeCallRecordingIfActiveAsync(90000) ?? Task.CompletedTask).ConfigureAwait(false);
+                            await (_sipService2?.FinalizeCallRecordingIfActiveAsync(90000) ?? Task.CompletedTask).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[MainWindow] AmoCRM queue: SIP recording finalize: {ex.Message}");
+                        }
+                        if (!string.IsNullOrEmpty(job.RecordingFilePath) && File.Exists(job.RecordingFilePath))
+                            finalRecordingPath = job.RecordingFilePath;
+                    }
+
                     // Ждём появления файла записи до 5 минут (колл-центр: конвертация идёт по одной, предыдущий успеет)
                     if (!string.IsNullOrEmpty(job.RecordingFilePath) && !File.Exists(job.RecordingFilePath))
                     {
@@ -4990,13 +7003,22 @@ namespace Softphone
                         for (int i = 0; i < waitSeconds; i++)
                         {
                             await Task.Delay(1000).ConfigureAwait(false);
-                            if (File.Exists(job.RecordingFilePath))
+                            if (!string.IsNullOrEmpty(job.RecordingFilePath) && File.Exists(job.RecordingFilePath))
                             {
-                                Log($"[MainWindow] AmoCRM queue: file ready after {i + 1}s");
+                                finalRecordingPath = job.RecordingFilePath;
+                                Log($"[MainWindow] AmoCRM queue: job path file ready after {i + 1}s");
+                                break;
+                            }
+
+                            var histPath = FindMatchingCallFromHistory();
+                            if (!string.IsNullOrEmpty(histPath) && File.Exists(histPath))
+                            {
+                                finalRecordingPath = histPath;
+                                Log($"[MainWindow] AmoCRM queue: file ready from history after {i + 1}s: {histPath}");
                                 break;
                             }
                         }
-                        if (!File.Exists(job.RecordingFilePath))
+                        if (string.IsNullOrEmpty(finalRecordingPath) || !File.Exists(finalRecordingPath))
                             Log($"[MainWindow] AmoCRM queue: file still not found after {waitSeconds}s, sending without recording");
                     }
                     
@@ -5027,6 +7049,39 @@ namespace Softphone
                         }
                         endedBy = call.EndedBy;
                         Log($"[MainWindow] AmoCrmWorkerAsync: After re-reading history - call?.WasAnswered={call.WasAnswered}, call?.AnswerTime.HasValue={call.AnswerTime.HasValue}, final wasAnswered={wasAnswered}, duration={durationSeconds}s");
+
+                        if (!string.IsNullOrEmpty(call.RecordingFilePath))
+                        {
+                            finalRecordingPath = call.RecordingFilePath;
+                        }
+                    }
+
+                    TimeSpan? ringbackSpan = null;
+                    if (ringbackStart.HasValue && ringbackEnd.HasValue)
+                        ringbackSpan = ringbackEnd.Value - ringbackStart.Value;
+                    bool isOriginateJob = job.TechnicalDetails?.Any(d =>
+                        d.IndexOf("Originate", StringComparison.OrdinalIgnoreCase) >= 0) == true;
+                    CallWindowHelpers.ApplyRecordingMetrics(
+                        ref durationSeconds,
+                        ref wasAnswered,
+                        finalRecordingPath,
+                        endedBy,
+                        ringbackSpan,
+                        isOriginateCall: isOriginateJob);
+                    if (wasAnswered && call != null && !call.WasAnswered)
+                    {
+                        Log($"[MainWindow] AmoCrmWorkerAsync: inferred wasAnswered=true from recording (duration={durationSeconds}s)");
+                        var inferredAnswer = call.AnswerTime
+                            ?? ringbackEnd
+                            ?? job.CallTime.AddSeconds(Math.Max(3, ringbackSpan?.TotalSeconds ?? 3));
+                        _callHistoryService.UpdateCallDetails(
+                            job.PhoneNumber,
+                            job.CallTime,
+                            answerTime: inferredAnswer,
+                            wasAnswered: true,
+                            endedBy: endedBy,
+                            duration: TimeSpan.FromSeconds(Math.Max(durationSeconds, 1)),
+                            recordingFilePath: finalRecordingPath);
                     }
 
                     bool enableLeadSelection = false;
@@ -5056,6 +7111,7 @@ namespace Softphone
                     
                     // Используем leadId из браузера, если он был передан, иначе используем автоматический поиск
                     Log($"[MainWindow] AmoCrmWorkerAsync: Processing job with leadId={job.AmoCrmLeadId?.ToString() ?? "null"}, phone={job.PhoneNumber}");
+                    string? callFromSubtitleForAmo = await ResolveCallFromSubtitleForAmoAsync(call, job.PhoneNumber, job.CallTime).ConfigureAwait(false);
                     ProcessCallResult result;
                     if (job.AmoCrmLeadId.HasValue)
                     {
@@ -5069,18 +7125,25 @@ namespace Softphone
                             wasAnswered,
                             callLog,
                             finalRecordingPath,
-                            job.CallTime).ConfigureAwait(false);
+                            job.CallTime,
+                            callFromSubtitleForAmo).ConfigureAwait(false);
                     }
                     else
                     {
                         // Обычный звонок - используем автоматический поиск лида
-                        result = await _amoCrmService.ProcessCallAsync(job.PhoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, finalRecordingPath, enableLeadSelection, job.CallTime).ConfigureAwait(false);
+                        result = await _amoCrmService.ProcessCallAsync(job.PhoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, finalRecordingPath, enableLeadSelection, job.CallTime, callFromSubtitleForAmo).ConfigureAwait(false);
                     }
                     
                     // Обновляем статус загрузки в истории звонков
                     if (call != null)
                     {
                         _callHistoryService.UpdateAmoCrmUploadStatus(job.PhoneNumber, call.CallTime, result.UploadStatus, result.Reason);
+                        
+                        try
+                        {
+                            Dispatcher.Invoke(RefreshVisibleDashboards);
+                        }
+                        catch { /* window may be closing */ }
                         
                         if (result.Success && result.LeadId.HasValue)
                         {
@@ -5161,11 +7224,181 @@ namespace Softphone
             public long? AmoCrmLeadId { get; set; }
         }
 
-        // ===== MikoPBX CDR Integration =====
+        // ===== Callspire PBX Gateway integration =====
+
+        /// <summary>
+        /// Redeems a one-time provisioning token issued by the admin panel
+        /// (via <c>callspire://provision?token=...&amp;proxy=...</c>) and wires
+        /// the returned SIP credentials into <c>settings.json</c>, then kicks
+        /// SIP re-registration so the user is on the phone right away.
+        ///
+        /// The token is single-use on the proxy side — replays intentionally
+        /// return 404. We never hand-roll the secret: MikoPBX sends it to us
+        /// decrypted once, we persist it DPAPI-encrypted, done.
+        /// </summary>
+        public async Task HandleProvisionTokenAsync(string tokenId, string proxyUrl)
+        {
+            Log($"[Provision] Redeeming token (proxy={proxyUrl})");
+            try
+            {
+                string baseUrl = (proxyUrl ?? "").Trim().TrimEnd('/');
+                if (string.IsNullOrEmpty(baseUrl) || string.IsNullOrEmpty(tokenId))
+                {
+                    Log("[Provision] Missing proxy or token");
+                    return;
+                }
+
+                using var handler = new System.Net.Http.HttpClientHandler
+                {
+                    ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                    SslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
+                };
+                using var http = new System.Net.Http.HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+
+                string redeemUrl = $"{baseUrl}/api/provision/redeem?token={Uri.EscapeDataString(tokenId)}";
+                var resp = await http.GetAsync(redeemUrl).ConfigureAwait(false);
+                string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    Log($"[Provision] Redeem failed HTTP {(int)resp.StatusCode}: {json}");
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        MessageBox.Show(
+                            resp.StatusCode == System.Net.HttpStatusCode.NotFound
+                                ? "This setup link is invalid, already used, or expired. Ask your administrator for a new one."
+                                : $"Failed to fetch SIP credentials from the PBX.\n\nHTTP {(int)resp.StatusCode}",
+                            "Callspire — setup link",
+                            MessageBoxButton.OK,
+                            MessageBoxImage.Warning);
+                    });
+                    return;
+                }
+
+                var payload = Newtonsoft.Json.Linq.JObject.Parse(json);
+                string extension = (string?)payload["extension"] ?? "";
+                string sipUser = (string?)payload["sip_username"] ?? extension;
+                string sipPassword = (string?)payload["sip_password"] ?? "";
+                string sipServer = (string?)payload["sip_server"] ?? "";
+                string wsUrl = (string?)payload["ws_url"] ?? "";
+                string returnedProxy = (string?)payload["proxy_url"] ?? "";
+
+                if (string.IsNullOrEmpty(sipUser) || string.IsNullOrEmpty(sipPassword))
+                {
+                    Log("[Provision] Payload missing sip_username / sip_password");
+                    return;
+                }
+
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings? settings = null;
+                if (System.IO.File.Exists(settingsPath))
+                {
+                    try
+                    {
+                        settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(
+                            System.IO.File.ReadAllText(settingsPath));
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[Provision] settings.json parse error: {ex.Message} (starting fresh)");
+                    }
+                }
+                settings ??= new AppSettings();
+
+                settings.SipUsername = sipUser;
+                settings.SipPasswordEncrypted = TokenEncryption.Encrypt(sipPassword);
+                settings.SipPassword = null; // never persist plaintext
+                if (!string.IsNullOrEmpty(sipServer))
+                    settings.SipServer = sipServer;
+                if (!string.IsNullOrEmpty(wsUrl))
+                {
+                    settings.WebRtcWsUri = wsUrl;
+                    // Provisioning targets a cloud PBX via WSS. A fresh install
+                    // has UseWebRtcAudio=false and would otherwise ignore the
+                    // WebSocket we just wrote — flip the switch so the user is
+                    // online immediately without opening Settings.
+                    settings.UseWebRtcAudio = true;
+                }
+
+                // Wire up PBX Gateway (same JWT service) so the
+                // softphone gets CDR, CallerIDs and originate for free — the
+                // admin URL the user just clicked is also the proxy base URL.
+                settings.MikoPbxExtension = extension;
+                string cdrUrl = string.IsNullOrEmpty(returnedProxy) ? baseUrl : returnedProxy.TrimEnd('/');
+                if (!string.IsNullOrEmpty(cdrUrl))
+                {
+                    settings.MikoPbxCdrServiceUrl = cdrUrl;
+                    settings.EnableMikoPbxCdr = true;
+                }
+
+                string updated = Newtonsoft.Json.JsonConvert.SerializeObject(settings, Newtonsoft.Json.Formatting.Indented);
+                System.IO.File.WriteAllText(settingsPath, updated);
+                Log($"[Provision] settings.json updated for ext={extension}, server={sipServer}");
+
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    MessageBox.Show(
+                        $"Callspire was configured automatically for extension {extension}.\n\n" +
+                        $"SIP server: {(string.IsNullOrEmpty(sipServer) ? "(existing)" : sipServer)}\n" +
+                        $"User: {sipUser}\n\n" +
+                        "The softphone will reconnect now. Open Settings if you need to change anything.",
+                        "Callspire — setup complete",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information);
+                });
+
+                // Re-initialize both SIP and CDR services so the user is on-line
+                // immediately without manually restarting the app.
+                try { InitializeMikoPbxCdrService(settings); } catch (Exception ex) { Log($"[Provision] CDR re-init: {ex.Message}"); }
+                try { await RestartSipRegistrationAsync().ConfigureAwait(false); }
+                catch (Exception ex) { Log($"[Provision] SIP re-register: {ex.Message}"); }
+                WindowForegroundHelper.RequestForCdrAuthCallback();
+            }
+            catch (Exception ex)
+            {
+                Log($"[Provision] HandleProvisionTokenAsync error: {ex}");
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    MessageBox.Show(
+                        "Could not complete automatic setup.\n\n" + ex.Message,
+                        "Callspire — setup link",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Warning);
+                });
+            }
+        }
+
+        /// <summary>
+        /// Kicks a SIP re-registration after <c>settings.json</c> changed.
+        /// Safe to call from the UI thread. Reads the fresh settings from
+        /// disk so we pick up whatever <c>HandleProvisionTokenAsync</c> just
+        /// wrote, then reuses <c>ConnectWithSettings</c> (the same codepath
+        /// startup uses) so behaviour stays identical.
+        /// </summary>
+        private async Task RestartSipRegistrationAsync()
+        {
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (!System.IO.File.Exists(settingsPath))
+                    return;
+                var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(
+                    System.IO.File.ReadAllText(settingsPath));
+                if (settings == null) return;
+
+                try { _sipService?.Dispose(); } catch { }
+                _sipService = null;
+
+                await ConnectWithSettings(settings).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log($"[Provision] SIP re-register error: {ex.Message}");
+            }
+        }
 
         public void HandleCdrAuthToken(string token)
         {
-            Log($"[MikoPBX CDR] Auth token received (length={token.Length})");
+            Log($"[PBX Gateway] Auth token received (length={token.Length})");
             try
             {
                 string settingsPath = AppDataHelper.GetSettingsFilePath();
@@ -5187,19 +7420,23 @@ namespace Softphone
                 Dispatcher.Invoke(() =>
                 {
                     var settingsWindow = Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault();
-                    settingsWindow?.UpdateMikoPbxCdrStatus("Connected", true);
+                    settingsWindow?.RefreshMikoGatewayConnectionStatus();
                 });
 
-                Log("[MikoPBX CDR] Token saved and service initialized");
+                WindowForegroundHelper.RequestForCdrAuthCallback();
+
+                Log("[PBX Gateway] Token saved and service initialized");
             }
             catch (Exception ex)
             {
-                Log($"[MikoPBX CDR] Error saving token: {ex.Message}");
+                Log($"[PBX Gateway] Error saving token: {ex.Message}");
             }
         }
 
         public void InitializeMikoPbxCdrService(AppSettings settings)
         {
+            StopCallerIdListRetryTimer();
+
             if (!settings.EnableMikoPbxCdr
                 || string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl)
                 || string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted)
@@ -5213,7 +7450,7 @@ namespace Softphone
                 string token = TokenEncryption.Decrypt(settings.MikoPbxCdrTokenEncrypted);
                 if (string.IsNullOrEmpty(token))
                 {
-                    Log("[MikoPBX CDR] Failed to decrypt token");
+                    Log("[PBX Gateway] Failed to decrypt token");
                     return;
                 }
 
@@ -5222,21 +7459,154 @@ namespace Softphone
                     token,
                     settings.MikoPbxExtension);
 
-                Log($"[MikoPBX CDR] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
+                Log($"[PBX Gateway] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
 
                 _ = LoadCallerIdsAsync(settings);
+                // Also start the SIP auth-failure warning poll — piggybacking on
+                // PBX Gateway means no extra credentials and no extra config.
+                StartSipAuthFailurePolling();
+
+                // Re-evaluate Kommo source now that gateway client is available (gateway-only or dual config).
+                InitializeAmoCrmService(settings);
+                _ = RefreshCachedKommoGatewayStatusAsync();
             }
             catch (Exception ex)
             {
-                Log($"[MikoPBX CDR] Init error: {ex.Message}");
+                Log($"[PBX Gateway] Init error: {ex.Message}");
             }
         }
 
         public void DisableMikoPbxCdrService()
         {
+            StopCallerIdListRetryTimer();
             _mikoPbxCdrService?.Dispose();
             _mikoPbxCdrService = null;
-            Log("[MikoPBX CDR] Service disabled");
+            StopSipAuthFailurePolling();
+            Log("[PBX Gateway] Service disabled");
+        }
+
+        private void StopCallerIdListRetryTimer()
+        {
+            _callerIdListRetryTimer?.Dispose();
+            _callerIdListRetryTimer = null;
+        }
+
+        /// <summary>
+        /// When the gateway is enabled but /api/my-callerids fails (offline, 401, etc.), poll until we get a successful HTTP response.
+        /// </summary>
+        private void StartCallerIdListRetryTimer()
+        {
+            try
+            {
+                if (_callerIdListRetryTimer != null) return;
+
+                _callerIdListRetryTimer = new System.Threading.Timer(_ =>
+                {
+                    try
+                    {
+                        string settingsPath = AppDataHelper.GetSettingsFilePath();
+                        if (!File.Exists(settingsPath)) return;
+                        string json = File.ReadAllText(settingsPath);
+                        var s = JsonConvert.DeserializeObject<AppSettings>(json);
+                        if (s == null || !s.EnableMikoPbxCdr) return;
+                        if (_mikoPbxCdrService == null) return;
+
+                        _ = Task.Run(async () =>
+                        {
+                            try { await LoadCallerIdsAsync(s).ConfigureAwait(false); }
+                            catch (Exception ex) { Log($"[CallerID] Retry load error: {ex.Message}"); }
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[CallerID] Retry timer: {ex.Message}");
+                    }
+                }, null, _callerIdRetryFirst, _callerIdRetryInterval);
+
+                Log("[CallerID] Scheduled retries until PBX Gateway returns CallerID list");
+            }
+            catch (Exception ex)
+            {
+                Log($"[CallerID] StartCallerIdListRetryTimer: {ex.Message}");
+            }
+        }
+
+        // ===== SIP auth-failure warning (early Fail2Ban detector) =====
+        //
+        // MikoPBX exposes /sip:getSipAuthFailureStats which lists every recent
+        // rejected REGISTER attempt with username + source IP. We poll it over
+        // PBX Gateway once a minute; if our extension shows up, we show a
+        // banner in the dialer so the user knows to fix their creds BEFORE the
+        // server's Fail2Ban bans their IP.
+
+        private System.Threading.Timer? _sipAuthFailureTimer;
+        private int _lastSipAuthFailureCount = 0;
+        // TimeSpan.Zero = first tick fires immediately, so the user sees the
+        // banner right after startup without waiting a full minute.
+        private static readonly TimeSpan _sipAuthFailurePollFirst = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan _sipAuthFailurePollInterval = TimeSpan.FromMinutes(1);
+
+        private void StartSipAuthFailurePolling()
+        {
+            StopSipAuthFailurePolling();
+            _sipAuthFailureTimer = new System.Threading.Timer(async _ =>
+            {
+                try { await PollSipAuthFailuresAsync().ConfigureAwait(false); }
+                catch (Exception ex) { Log($"[SipAuthWarn] poll error: {ex.Message}"); }
+            }, null, _sipAuthFailurePollFirst, _sipAuthFailurePollInterval);
+            Log("[SipAuthWarn] Polling started (1 min interval)");
+        }
+
+        private void StopSipAuthFailurePolling()
+        {
+            _sipAuthFailureTimer?.Dispose();
+            _sipAuthFailureTimer = null;
+            _lastSipAuthFailureCount = 0;
+            try { Dispatcher.Invoke(HideSipAuthFailureBanner); } catch { }
+        }
+
+        private async Task PollSipAuthFailuresAsync()
+        {
+            var svc = _mikoPbxCdrService;
+            if (svc == null) return;
+            var stats = await svc.GetSipAuthFailuresAsync().ConfigureAwait(false);
+            if (!stats.Supported)
+            {
+                // REST disabled on the proxy — quietly give up, no point polling.
+                StopSipAuthFailurePolling();
+                return;
+            }
+            int count = stats.FailuresForExtension;
+            if (count == _lastSipAuthFailureCount && count == 0) return;
+            _lastSipAuthFailureCount = count;
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (count <= 0) { HideSipAuthFailureBanner(); return; }
+                ShowSipAuthFailureBanner(count);
+            });
+        }
+
+        private void ShowSipAuthFailureBanner(int count)
+        {
+            try
+            {
+                if (SipAuthFailureBanner == null) return;
+                SipAuthFailureBannerText.Text = count == 1
+                    ? "1 recent SIP authentication failure detected for your extension. If you didn't just log in, someone may be trying your password — check settings before the PBX bans your IP."
+                    : $"{count} recent SIP authentication failures detected for your extension. If you didn't just log in, someone may be trying your password — check settings before the PBX bans your IP.";
+                SipAuthFailureBanner.Visibility = Visibility.Visible;
+            }
+            catch (Exception ex) { Log($"[SipAuthWarn] banner show: {ex.Message}"); }
+        }
+
+        private void HideSipAuthFailureBanner()
+        {
+            try
+            {
+                if (SipAuthFailureBanner == null) return;
+                SipAuthFailureBanner.Visibility = Visibility.Collapsed;
+            }
+            catch { }
         }
 
         public MikoPbxCdrService? GetMikoPbxCdrService() => _mikoPbxCdrService;
@@ -5246,74 +7616,186 @@ namespace Softphone
         /// </summary>
         private async Task LoadCallerIdsAsync(AppSettings settings)
         {
+            await _callerIdLoadSemaphore.WaitAsync().ConfigureAwait(false);
             try
             {
                 if (_mikoPbxCdrService == null) return;
 
-                _callerIdItems = await _mikoPbxCdrService.GetMyCallerIdItemsAsync();
-                _allowedCallerIds = _callerIdItems.Select(i => i.Number).ToList();
+                var (items, requestOk) = await _mikoPbxCdrService.GetMyCallerIdItemsAsync().ConfigureAwait(false);
 
-                // Cache for offline
-                settings.CachedOutboundCallerIds = _allowedCallerIds.Count > 0 ? _allowedCallerIds : null;
-
-                Dispatcher.Invoke(() =>
+                if (requestOk)
                 {
-                    CallerIdComboBox.Items.Clear();
-                    CallerIdComboBox.DisplayMemberPath = "";
+                    StopCallerIdListRetryTimer();
+                    _callerIdItems = items;
+                    _allowedCallerIds = _callerIdItems.Select(i => i.Number).ToList();
+                    settings.CachedOutboundCallerIds = _allowedCallerIds.Count > 0 ? _allowedCallerIds : null;
 
-                    if (_allowedCallerIds.Count >= 2)
+                    Dispatcher.Invoke(() =>
                     {
-                        foreach (var item in _callerIdItems)
-                            CallerIdComboBox.Items.Add(item);
+                        CallerIdComboBox.Items.Clear();
+                        CallerIdComboBox.DisplayMemberPath = "";
 
-                        // Restore last selection or pick first
-                        var restored = _callerIdItems.FirstOrDefault(i => i.Number == settings.SelectedOutboundCallerId);
-                        if (restored != null)
-                            CallerIdComboBox.SelectedItem = restored;
+                        if (_allowedCallerIds.Count >= 2)
+                        {
+                            foreach (var item in _callerIdItems)
+                                CallerIdComboBox.Items.Add(item);
+
+                            var restored = _callerIdItems.FirstOrDefault(i => i.Number == settings.SelectedOutboundCallerId);
+                            if (restored != null)
+                                CallerIdComboBox.SelectedItem = restored;
+                            else
+                                CallerIdComboBox.SelectedIndex = 0;
+
+                            CallerIdPanel.Visibility = Visibility.Visible;
+                            Log($"[CallerID] Showing dropdown with {_allowedCallerIds.Count} CallerIDs");
+                        }
                         else
-                            CallerIdComboBox.SelectedIndex = 0;
+                        {
+                            CallerIdPanel.Visibility = Visibility.Collapsed;
+                            if (_allowedCallerIds.Count == 1)
+                                Log($"[CallerID] Single CallerID assigned: {_allowedCallerIds[0]} (auto-selected, no dropdown)");
+                            else
+                                Log("[CallerID] No CallerIDs assigned, using standard WebRTC calling");
+                        }
+                    });
+                    return;
+                }
 
-                        CallerIdPanel.Visibility = Visibility.Visible;
-                        Log($"[CallerID] Showing dropdown with {_allowedCallerIds.Count} CallerIDs");
-                    }
-                    else
+                Log("[CallerID] Gateway did not return CallerID list (network, auth, or server error); using cache if any and retrying");
+
+                if (settings.CachedOutboundCallerIds?.Count > 0)
+                {
+                    _allowedCallerIds = new List<string>(settings.CachedOutboundCallerIds);
+                    _callerIdItems = _allowedCallerIds.Select(n => new CallerIdItem(n, "")).ToList();
+                    Log($"[CallerID] Using {_allowedCallerIds.Count} cached CallerID(s) until gateway responds");
+                    Dispatcher.Invoke(() =>
                     {
+                        CallerIdComboBox.Items.Clear();
+                        CallerIdComboBox.DisplayMemberPath = "";
+                        if (_callerIdItems.Count >= 2)
+                        {
+                            foreach (var item in _callerIdItems)
+                                CallerIdComboBox.Items.Add(item);
+                            var restored = _callerIdItems.FirstOrDefault(i => i.Number == settings.SelectedOutboundCallerId);
+                            if (restored != null)
+                                CallerIdComboBox.SelectedItem = restored;
+                            else
+                                CallerIdComboBox.SelectedIndex = 0;
+                            CallerIdPanel.Visibility = Visibility.Visible;
+                        }
+                        else
+                        {
+                            CallerIdPanel.Visibility = Visibility.Collapsed;
+                        }
+                    });
+                }
+                else
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        CallerIdComboBox.Items.Clear();
                         CallerIdPanel.Visibility = Visibility.Collapsed;
-                        if (_allowedCallerIds.Count == 1)
-                            Log($"[CallerID] Single CallerID assigned: {_allowedCallerIds[0]} (auto-selected, no dropdown)");
-                        else
-                            Log("[CallerID] No CallerIDs assigned, using standard WebRTC calling");
-                    }
-                });
+                    });
+                }
+
+                if (settings.EnableMikoPbxCdr && _mikoPbxCdrService != null)
+                    StartCallerIdListRetryTimer();
             }
             catch (Exception ex)
             {
                 Log($"[CallerID] LoadCallerIdsAsync error: {ex.Message}");
 
-                // Fall back to cached CallerIDs
                 if (settings.CachedOutboundCallerIds?.Count > 0)
                 {
-                    _allowedCallerIds = settings.CachedOutboundCallerIds;
+                    _allowedCallerIds = new List<string>(settings.CachedOutboundCallerIds);
                     _callerIdItems = _allowedCallerIds.Select(n => new CallerIdItem(n, "")).ToList();
                     Log($"[CallerID] Using {_allowedCallerIds.Count} cached CallerID(s)");
                     Dispatcher.Invoke(() =>
                     {
                         CallerIdComboBox.Items.Clear();
+                        CallerIdComboBox.DisplayMemberPath = "";
                         if (_callerIdItems.Count >= 2)
                         {
                             foreach (var item in _callerIdItems)
                                 CallerIdComboBox.Items.Add(item);
-                            CallerIdComboBox.SelectedIndex = 0;
+                            var restored = _callerIdItems.FirstOrDefault(i => i.Number == settings.SelectedOutboundCallerId);
+                            if (restored != null)
+                                CallerIdComboBox.SelectedItem = restored;
+                            else
+                                CallerIdComboBox.SelectedIndex = 0;
                             CallerIdPanel.Visibility = Visibility.Visible;
                         }
                     });
                 }
+
+                if (settings.EnableMikoPbxCdr && _mikoPbxCdrService != null)
+                    StartCallerIdListRetryTimer();
+            }
+            finally
+            {
+                _callerIdLoadSemaphore.Release();
             }
         }
 
-        /// <summary>
-        /// Fire-and-forget: queries MikoPBX CDR for the outbound CallerID and updates the history entry.
-        /// </summary>
+        /// <summary>Subtitle suffix for Amo «Call from …» — Main: outbound number; Secondary: connection display name.</summary>
+        private async System.Threading.Tasks.Task<string?> ResolveCallFromSubtitleForAmoAsync(CallHistoryItem? call, string phoneNumber, DateTime callTime)
+        {
+            if (call == null || call.IsIncoming)
+                return null;
+
+            string? fromHistory = AmoCallFromLabelResolver.Resolve(call);
+            if (!string.IsNullOrEmpty(fromHistory))
+            {
+                if (CallStatisticsService.GetEffectiveConnectionSlot(call) == CallConnectionSlot.Secondary)
+                    Log($"[MainWindow] AmoCRM: Secondary connection label for Amo card: {fromHistory}");
+                return fromHistory;
+            }
+
+            if (CallStatisticsService.GetEffectiveConnectionSlot(call) != CallConnectionSlot.Main)
+                return null;
+
+            if (_mikoPbxCdrService == null)
+                return null;
+
+            int[] delaysMs = { 3000, 5000, 10000, 15000 };
+            for (int attempt = 0; attempt < delaysMs.Length; attempt++)
+            {
+                await System.Threading.Tasks.Task.Delay(delaysMs[attempt]).ConfigureAwait(false);
+
+                var history = _callHistoryService.GetHistory();
+                var refreshed = history
+                    .Where(x => x.PhoneNumber == phoneNumber && Math.Abs((x.CallTime - callTime).TotalSeconds) < 2)
+                    .OrderByDescending(x => x.CallTime)
+                    .FirstOrDefault()
+                    ?? history.Where(x => x.PhoneNumber == phoneNumber).OrderByDescending(x => x.CallTime).FirstOrDefault();
+
+                if (!string.IsNullOrWhiteSpace(refreshed?.OutboundCallerId))
+                {
+                    Log($"[MainWindow] AmoCRM: CallerID from history after wait: {refreshed.OutboundCallerId}");
+                    return refreshed.OutboundCallerId.Trim();
+                }
+
+                try
+                {
+                    string? fromCdr = await _mikoPbxCdrService.GetCallCallerIdAsync(phoneNumber, callTime).ConfigureAwait(false);
+                    if (!string.IsNullOrEmpty(fromCdr))
+                    {
+                        _callHistoryService.UpdateOutboundCallerId(phoneNumber, callTime, fromCdr);
+                        Log($"[MainWindow] AmoCRM: CallerID from CDR for Amo card: {fromCdr}");
+                        return fromCdr.Trim();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] AmoCRM: CDR CallerID lookup failed: {ex.Message}");
+                }
+
+                Log($"[MainWindow] AmoCRM: CDR CallerID attempt {attempt + 1}/{delaysMs.Length} — not ready for {phoneNumber}");
+            }
+
+            return null;
+        }
+
         private void TryFetchOutboundCallerIdFromCdr(string phoneNumber, DateTime callTime)
         {
             if (_mikoPbxCdrService == null) return;
@@ -5331,20 +7813,20 @@ namespace Softphone
                         callerId = await _mikoPbxCdrService.GetCallCallerIdAsync(phoneNumber, callTime);
                         if (!string.IsNullOrEmpty(callerId))
                         {
-                            Log($"[MikoPBX CDR] Got CallerID from CDR: {callerId} for call to {phoneNumber} (attempt {attempt})");
+                            Log($"[PBX Gateway] Got CallerID from CDR: {callerId} for call to {phoneNumber} (attempt {attempt})");
                             _callHistoryService.UpdateOutboundCallerId(phoneNumber, callTime, callerId);
-                            Dispatcher.Invoke(() => LoadCallHistory());
+                            Dispatcher.Invoke(RefreshVisibleDashboards);
                             return;
                         }
 
-                        Log($"[MikoPBX CDR] Attempt {attempt}/4: no CDR yet for call to {phoneNumber}, retrying...");
+                        Log($"[PBX Gateway] Attempt {attempt}/4: no CDR yet for call to {phoneNumber}, retrying...");
                     }
 
-                    Log($"[MikoPBX CDR] No CallerID found in CDR for call to {phoneNumber} after 4 attempts");
+                    Log($"[PBX Gateway] No CallerID found in CDR for call to {phoneNumber} after 4 attempts");
                 }
                 catch (Exception ex)
                 {
-                    Log($"[MikoPBX CDR] CDR lookup failed: {ex.Message}");
+                    Log($"[PBX Gateway] CDR lookup failed: {ex.Message}");
                 }
             });
         }

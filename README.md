@@ -54,3 +54,9 @@ Requirements
 - .NET SDK **8.0**
 - WebView2 Runtime (Evergreen)
 
+---
+
+## Android (Kotlin)
+
+Android client scaffold (without call recording and without amoCRM integration) is available in `android-softphone/`.
+

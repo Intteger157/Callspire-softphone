@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 
 namespace Softphone
 {
@@ -16,16 +17,11 @@ namespace Softphone
         /// </summary>
         public static TimeSpan? CalculateCallDuration(DateTime startTime, DateTime? answerTime, bool wasAnswered, bool isIncomingCall)
         {
-            if (!wasAnswered) return null;
+            if (!wasAnswered && !answerTime.HasValue) return null;
             
-            // Для WebRTC звонков запись начинается при makeCall_started (до call_accepted),
-            // поэтому используем startTime (время начала звонка), а не answerTime
-            // Для SIP звонков запись начинается после 200 OK (когда устанавливается answerTime),
-            // поэтому используем answerTime (время начала записи), если он установлен
-            // Если answerTime установлен, значит это SIP звонок - используем answerTime
-            // Если answerTime не установлен, значит это WebRTC звонок - используем startTime
-            var effectiveStartTime = answerTime.HasValue ? answerTime.Value : startTime;
-            return DateTime.Now - effectiveStartTime;
+            var effectiveStartTime = answerTime ?? startTime;
+            var duration = DateTime.Now - effectiveStartTime;
+            return duration.TotalSeconds >= 0 ? duration : null;
         }
 
         /// <summary>
@@ -89,6 +85,86 @@ namespace Softphone
             {
                 ringbackEndTime = DateTime.Now;
             }
+        }
+
+        /// <summary>
+        /// Estimates WAV duration from file size (pcm_s16le, 48 kHz, mono — WebRtcCallRecorder output).
+        /// </summary>
+        public static int EstimateWavDurationSeconds(string? recordingFilePath)
+        {
+            if (string.IsNullOrEmpty(recordingFilePath) || !File.Exists(recordingFilePath))
+                return 0;
+
+            try
+            {
+                long fileLength = new FileInfo(recordingFilePath).Length;
+                const double bytesPerSecond = 48000.0 * 2.0;
+                int estimated = (int)Math.Round(fileLength / bytesPerSecond);
+                return Math.Max(estimated, 0);
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Infers answered call + duration from recording when signaling missed the B-leg answer (Originate/WebRTC).
+        /// </summary>
+        public static bool TryInferAnsweredFromRecording(
+            string? recordingFilePath,
+            CallEndedBy endedBy,
+            TimeSpan? ringbackDuration,
+            out int estimatedRecordingSeconds,
+            bool remoteAudioDetected = false,
+            bool isOriginateCall = false)
+        {
+            estimatedRecordingSeconds = EstimateWavDurationSeconds(recordingFilePath);
+            if (estimatedRecordingSeconds <= 0)
+                return false;
+
+            if (isOriginateCall && remoteAudioDetected && estimatedRecordingSeconds >= 2)
+                return true;
+
+            // Originate: recording starts at ICE (includes ringback); ringbackEnd often unset until hangup.
+            if (isOriginateCall && estimatedRecordingSeconds >= 5)
+                return true;
+
+            if (endedBy == CallEndedBy.RemoteParty && estimatedRecordingSeconds >= 5)
+                return true;
+
+            if (ringbackDuration.HasValue
+                && estimatedRecordingSeconds > ringbackDuration.Value.TotalSeconds + 5)
+                return true;
+
+            return false;
+        }
+
+        /// <summary>
+        /// Applies recording-based duration and wasAnswered before AmoCRM upload.
+        /// </summary>
+        public static void ApplyRecordingMetrics(
+            ref int durationSeconds,
+            ref bool wasAnswered,
+            string? recordingFilePath,
+            CallEndedBy endedBy = CallEndedBy.Unknown,
+            TimeSpan? ringbackDuration = null,
+            bool isOriginateCall = false)
+        {
+            int recSeconds = EstimateWavDurationSeconds(recordingFilePath);
+            if (recSeconds <= 0)
+                return;
+
+            if (durationSeconds <= 0)
+                durationSeconds = Math.Max(recSeconds, 1);
+
+            if (!wasAnswered && TryInferAnsweredFromRecording(
+                    recordingFilePath,
+                    endedBy,
+                    ringbackDuration,
+                    out _,
+                    isOriginateCall: isOriginateCall))
+                wasAnswered = true;
         }
     }
 }

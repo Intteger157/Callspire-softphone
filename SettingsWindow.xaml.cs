@@ -10,6 +10,9 @@ using Newtonsoft.Json;
 using System.Globalization;
 using System.Windows.Data;
 using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
 using System.Threading.Tasks;
 using FluentIcons.Common;
 
@@ -18,9 +21,21 @@ namespace Softphone
     public partial class SettingsWindow : Window
     {
         private bool _suppressRecordingToggleEvent = false;
+        private bool _suppressSecondaryTransportPersist;
+        private CancellationTokenSource? _secondaryTransportReinitCts;
         private WebRtcStatusService? _webRtcStatusService;
         private static WebRtcStatusService? _sharedWebRtcStatusService; // Общий экземпляр для всех окон
-        
+
+        private string? _primaryConnectionIssueDetail;
+        private string? _secondaryConnectionIssueDetail;
+
+        private CancellationTokenSource? _mainTurnStatusCts;
+        private CancellationTokenSource? _secondaryTurnStatusCts;
+
+        /// <summary>True when /api/kommo/status reports enabled on PBX Gateway.</summary>
+        private bool _gatewayKommoModuleActive;
+        private bool _suppressKommoSourceUiEvents;
+
         /// <summary>
         /// Получает или создает общий экземпляр WebRTC сервиса
         /// </summary>
@@ -81,6 +96,8 @@ namespace Softphone
                 SipPasswordBox.IsEnabled = true;
                 SipPasswordBox.Focusable = true;
             }
+
+            HookTurnStatusHandlers();
             
             ShowView(ConnectionSettingsView);
             
@@ -160,28 +177,442 @@ namespace Softphone
                     }
                 }
             };
+
+            // Initialize TURN status UI once we have loaded settings into the fields.
+            Loaded += (_, __) =>
+            {
+                ScheduleTurnStatusCheck(isMain: true);
+            };
+
+            // Auto-prefill "wss://" for the per-connection WebSocket URI fields.
+            HookWsUriPrefill(MainWsUriTextBox);
+            HookWsUriPrefill(SecondaryWsUriTextBox);
+            if (MainWsUriTextBox != null)
+            {
+                MainWsUriTextBox.TextChanged += (_, __) => UpdateMainWebRtcStatusText();
+            }
+            if (MainWebRtcUsernameTextBox != null)
+            {
+                MainWebRtcUsernameTextBox.TextChanged += (_, __) => UpdateMainWebRtcStatusText();
+            }
+        }
+
+        private static void HookWsUriPrefill(System.Windows.Controls.TextBox? tb)
+        {
+            if (tb == null) return;
+            tb.TextChanged += (s, e) =>
+            {
+                string currentText = tb.Text ?? "";
+                if (string.IsNullOrWhiteSpace(currentText))
+                {
+                    tb.Text = "wss://";
+                    tb.CaretIndex = tb.Text.Length;
+                }
+                else if (!currentText.StartsWith("wss://", StringComparison.OrdinalIgnoreCase) &&
+                         !currentText.StartsWith("ws://", StringComparison.OrdinalIgnoreCase))
+                {
+                    int caretPos = tb.CaretIndex;
+                    tb.Text = "wss://" + currentText;
+                    tb.CaretIndex = Math.Min(caretPos + 6, tb.Text.Length);
+                }
+            };
+            tb.LostFocus += (s, e) =>
+            {
+                string currentText = tb.Text?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(currentText))
+                {
+                    tb.Text = "wss://";
+                }
+            };
+        }
+
+        private void HookTurnStatusHandlers()
+        {
+            if (MainTurnUriTextBox != null) MainTurnUriTextBox.TextChanged += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+            if (MainTurnUsernameTextBox != null) MainTurnUsernameTextBox.TextChanged += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+            if (MainTurnPasswordBox != null) MainTurnPasswordBox.PasswordChanged += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+            if (MainTurnPortTextBox != null) MainTurnPortTextBox.TextChanged += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+            if (MainTurnTransportComboBox != null) MainTurnTransportComboBox.SelectionChanged += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+            if (MainTurnTlsCheckBox != null) MainTurnTlsCheckBox.Checked += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+            if (MainTurnTlsCheckBox != null) MainTurnTlsCheckBox.Unchecked += (_, __) => ScheduleTurnStatusCheck(isMain: true);
+        }
+
+        private void ScheduleTurnStatusCheck(bool isMain)
+        {
+            try
+            {
+                var cts = new CancellationTokenSource();
+                if (isMain)
+                {
+                    _mainTurnStatusCts?.Cancel();
+                    _mainTurnStatusCts = cts;
+                }
+                else
+                {
+                    _secondaryTurnStatusCts?.Cancel();
+                    _secondaryTurnStatusCts = cts;
+                }
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await Task.Delay(400, cts.Token);
+                        if (cts.Token.IsCancellationRequested) return;
+
+                        // TURN status is only supported for Primary (WebRTC) connection.
+                        if (isMain)
+                        {
+                            var builtUri = await Dispatcher.InvokeAsync(() => BuildTurnUriFromUi(isMain: true));
+                            MainWindow.Log($"[SettingsWindow][TURN] ScheduleTurnStatusCheck: builtUri='{builtUri ?? "<null>"}'");
+                            await UpdateTurnStatusAsync(isMain: true, builtUri, cts.Token);
+                        }
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        MainWindow.Log($"[SettingsWindow][TURN] ScheduleTurnStatusCheck error: {ex.Message}");
+                    }
+                }, cts.Token);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow][TURN] ScheduleTurnStatusCheck setup error: {ex.Message}");
+            }
+        }
+
+        private string? BuildTurnUriFromUi(bool isMain)
+        {
+            if (!isMain) return null; // TURN is supported only for Primary (WebRTC) connection.
+
+            string? input = MainTurnUriTextBox?.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(input))
+            {
+                MainWindow.Log("[SettingsWindow][TURN] BuildTurnUriFromUi: empty input");
+                return null;
+            }
+
+            string portText = MainTurnPortTextBox?.Text?.Trim() ?? "";
+            int port = 3478;
+            if (!string.IsNullOrWhiteSpace(portText) && int.TryParse(portText, out var p) && p >= 1 && p <= 65535)
+                port = p;
+
+            string transport = GetTurnTransportFromUi(isMain: true);
+
+            // NOTE: System.Uri does not parse "turn:host:3478?transport=udp" correctly
+            // (unknown scheme -> "host" becomes path, Host is empty). Parse manually.
+            var parsed = ParseTurnLike(input);
+            if (string.IsNullOrWhiteSpace(parsed.Host))
+            {
+                MainWindow.Log($"[SettingsWindow][TURN] BuildTurnUriFromUi: parsed host is empty for input='{input}'");
+                return null;
+            }
+
+            bool tls = GetTurnTlsFromUi(isMain: true) || parsed.Scheme == "turns" || port == 5349;
+            string scheme = tls ? "turns" : "turn";
+            string built = $"{scheme}:{parsed.Host}:{port}?transport={transport}";
+            MainWindow.Log($"[SettingsWindow][TURN] BuildTurnUriFromUi: input='{input}', built='{built}', tls={tls}, transport={transport}");
+            return built;
+        }
+
+        private sealed class TurnLikeParsed
+        {
+            public string Scheme { get; init; } = ""; // "turn" | "turns" | ""
+            public string Host { get; init; } = "";
+            public int? Port { get; init; }
+            public string? Transport { get; init; } // "udp" | "tcp" | null
+        }
+
+        private static TurnLikeParsed ParseTurnLike(string? input)
+        {
+            if (string.IsNullOrWhiteSpace(input))
+                return new TurnLikeParsed();
+
+            string raw = input.Trim();
+            string scheme = "";
+            if (raw.StartsWith("turns:", StringComparison.OrdinalIgnoreCase))
+            {
+                scheme = "turns";
+                raw = raw.Substring("turns:".Length);
+            }
+            else if (raw.StartsWith("turn:", StringComparison.OrdinalIgnoreCase))
+            {
+                scheme = "turn";
+                raw = raw.Substring("turn:".Length);
+            }
+
+            // Strip leading slashes if user typed turns://host...
+            raw = raw.TrimStart('/');
+
+            // Split query
+            string query = "";
+            int qIdx = raw.IndexOf("?", StringComparison.Ordinal);
+            if (qIdx >= 0)
+            {
+                query = raw.Substring(qIdx + 1);
+                raw = raw.Substring(0, qIdx);
+            }
+
+            // Trim any path
+            int slashIdx = raw.IndexOf("/", StringComparison.Ordinal);
+            if (slashIdx >= 0) raw = raw.Substring(0, slashIdx);
+
+            // Drop userinfo if present
+            int atIdx = raw.LastIndexOf("@", StringComparison.Ordinal);
+            if (atIdx >= 0) raw = raw.Substring(atIdx + 1);
+
+            raw = raw.Trim();
+
+            // Parse transport=...
+            string? transport = null;
+            try
+            {
+                foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = part.Split('=', 2);
+                    if (kv.Length == 2 && kv[0].Equals("transport", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var v = kv[1].Trim().ToLowerInvariant();
+                        if (v == "udp" || v == "tcp") transport = v;
+                        break;
+                    }
+                }
+            }
+            catch { }
+
+            // Parse host[:port] (handle IPv6 in [::1]:3478)
+            string host = raw;
+            int? port = null;
+            if (host.StartsWith("[", StringComparison.Ordinal))
+            {
+                int close = host.IndexOf("]", StringComparison.Ordinal);
+                if (close > 0)
+                {
+                    string inside = host.Substring(1, close - 1);
+                    string rest = host.Substring(close + 1);
+                    host = inside;
+                    if (rest.StartsWith(":", StringComparison.Ordinal) && int.TryParse(rest.Substring(1), out var p))
+                        port = p;
+                }
+            }
+            else
+            {
+                int colon = host.LastIndexOf(":", StringComparison.Ordinal);
+                if (colon > 0 && colon < host.Length - 1 && int.TryParse(host.Substring(colon + 1), out var p))
+                {
+                    port = p;
+                    host = host.Substring(0, colon);
+                }
+            }
+
+            return new TurnLikeParsed
+            {
+                Scheme = scheme,
+                Host = host.Trim(),
+                Port = port,
+                Transport = transport
+            };
+        }
+
+        private string GetTurnTransportFromUi(bool isMain)
+        {
+            var combo = MainTurnTransportComboBox;
+            if (combo?.SelectedItem is ComboBoxItem cbi)
+            {
+                var v = (cbi.Content?.ToString() ?? "").Trim().ToLowerInvariant();
+                if (v == "tcp") return "tcp";
+            }
+            return "udp";
+        }
+
+        private bool GetTurnTlsFromUi(bool isMain)
+        {
+            return MainTurnTlsCheckBox?.IsChecked == true;
+        }
+
+        private async Task UpdateTurnStatusAsync(bool isMain, string? turnUri, CancellationToken ct)
+        {
+            MainWindow.Log($"[SettingsWindow][TURN] UpdateTurnStatusAsync: uri='{turnUri ?? "<null>"}'");
+            await Dispatcher.InvokeAsync(() =>
+            {
+                SetTurnStatusUi(isMain, string.IsNullOrWhiteSpace(turnUri) ? "Not configured" : "Checking...",
+                    string.IsNullOrWhiteSpace(turnUri)
+                        ? (Brush)FindResource("TextSecondaryBrush")
+                        : (Brush)FindResource("AccentBlueBrush"));
+            });
+
+            if (string.IsNullOrWhiteSpace(turnUri))
+                return;
+
+            var result = await ProbeTurnAsync(turnUri, ct);
+            MainWindow.Log($"[SettingsWindow][TURN] UpdateTurnStatusAsync result: kind={result.Kind}, message='{result.Message ?? ""}'");
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                switch (result.Kind)
+                {
+                    case TurnProbeKind.NotConfigured:
+                        SetTurnStatusUi(isMain, "Not configured", (Brush)FindResource("TextSecondaryBrush"));
+                        break;
+                    case TurnProbeKind.Reachable:
+                        SetTurnStatusUi(isMain, result.Message ?? "Reachable", (Brush)FindResource("AccentGreenBrush"));
+                        break;
+                    default:
+                        SetTurnStatusUi(isMain, result.Message ?? "Unreachable", (Brush)FindResource("AccentRedBrush"));
+                        break;
+                }
+            });
+        }
+
+        private void SetTurnStatusUi(bool isMain, string text, Brush color)
+        {
+            if (isMain)
+            {
+                if (MainTurnStatusTextBlock != null) MainTurnStatusTextBlock.Text = text;
+                if (MainTurnStatusTextBlock != null) MainTurnStatusTextBlock.Foreground = color;
+                if (MainTurnStatusDot != null) MainTurnStatusDot.Fill = color;
+            }
+        }
+
+        private enum TurnProbeKind { NotConfigured, Reachable, Unreachable }
+
+        private sealed class TurnProbeResult
+        {
+            public TurnProbeKind Kind { get; init; }
+            public string? Message { get; init; }
+        }
+
+        private static TurnProbeResult NotConfigured() => new TurnProbeResult { Kind = TurnProbeKind.NotConfigured };
+        private static TurnProbeResult Reachable(string? message = null) => new TurnProbeResult { Kind = TurnProbeKind.Reachable, Message = message };
+        private static TurnProbeResult Unreachable(string message) => new TurnProbeResult { Kind = TurnProbeKind.Unreachable, Message = message };
+
+        private async Task<TurnProbeResult> ProbeTurnAsync(string? turnUri, CancellationToken ct)
+        {
+            if (string.IsNullOrWhiteSpace(turnUri))
+                return NotConfigured();
+
+            var parsed = ParseTurnLike(turnUri);
+            if (string.IsNullOrWhiteSpace(parsed.Host))
+                return Unreachable("Invalid URL");
+
+            bool tls = parsed.Scheme == "turns";
+            int port = parsed.Port ?? (tls ? 5349 : 3478);
+            string transport = parsed.Transport ?? "";
+
+            bool tcpProbe = tls || transport == "tcp" || transport == "";
+
+            // DNS resolve (common failure mode)
+            try
+            {
+                var addresses = await Dns.GetHostAddressesAsync(parsed.Host);
+                if (addresses == null || addresses.Length == 0)
+                    return Unreachable("DNS failed");
+            }
+            catch
+            {
+                return Unreachable("DNS failed");
+            }
+
+            if (!tcpProbe && transport == "udp")
+            {
+                // UDP probing would require a TURN/STUN handshake; keep it best-effort.
+                return Reachable("Configured (UDP)");
+            }
+
+            try
+            {
+                using var client = new TcpClient();
+                var connectTask = client.ConnectAsync(parsed.Host, port);
+                var completed = await Task.WhenAny(connectTask, Task.Delay(TimeSpan.FromSeconds(2.5), ct));
+                if (completed != connectTask)
+                    return Unreachable("Timeout");
+
+                await connectTask; // propagate exception if any
+                return Reachable("Reachable");
+            }
+            catch (OperationCanceledException)
+            {
+                return Unreachable("Cancelled");
+            }
+            catch
+            {
+                return Unreachable("Unreachable");
+            }
+        }
+
+        private void ApplyTurnUiFromStoredUri(bool isMain, string? storedUri)
+        {
+            if (!isMain) return;
+            if (string.IsNullOrWhiteSpace(storedUri))
+                return;
+
+            var parsed = ParseTurnLike(storedUri);
+
+            // Port
+            int port = parsed.Port ?? (parsed.Scheme == "turns" ? 5349 : 3478);
+            var portBox = MainTurnPortTextBox;
+            if (portBox != null) portBox.Text = port.ToString();
+
+            // Transport query
+            string transport = parsed.Transport ?? "udp";
+
+            var combo = MainTurnTransportComboBox;
+            if (combo != null)
+            {
+                // turns: implies TLS-over-TCP
+                bool tcp = transport == "tcp" || parsed.Scheme == "turns";
+                combo.SelectedIndex = tcp ? 1 : 0;
+            }
+
+            // TLS scheme
+            var tlsCb = MainTurnTlsCheckBox;
+            if (tlsCb != null)
+            {
+                tlsCb.IsChecked = parsed.Scheme == "turns";
+            }
         }
 
         private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
         {
             UpdateConnectionStatus();
             UpdateConnection2Status(); // Обновляем статус второго подключения при загрузке
-            
-            // Подписываемся на события статуса из MainWindow после установки Owner
-            if (Owner is MainWindow mainWindow)
+
+            // Owner часто не задан (немодальный Show без Owner) — берём главное приложения
+            if (TryGetMainWindow() is MainWindow mainWindow)
             {
                 mainWindow.OnConnectionStatusChanged += UpdateConnectionStatusFromMainWindow;
-                
+
                 // Подписываемся на события WebRTC для динамического обновления статуса
-                if (WebRtcService.Instance != null)
+                if (WebRtcService.Main != null)
                 {
-                    WebRtcService.Instance.Event += OnWebRtcEvent;
+                    WebRtcService.Main.Event += OnWebRtcEvent;
+                }
+                if (WebRtcService.Secondary != null)
+                {
+                    WebRtcService.Secondary.Event += OnWebRtcEvent;
                 }
             }
-            
+
             // Загружаем настройки после полной загрузки окна
             // Это гарантирует, что все UI элементы инициализированы
             LoadSettings();
+
+            // Gateway Kommo status is prefetched on app startup — apply cache so Connection source
+            // is visible on Integrations without waiting for a manual tab refresh.
+            SyncKommoGatewayModuleFromMain();
+        }
+
+        /// <summary>
+        /// Главное окно: <see cref="OpenSettingsWindow"/> открывает настройки немодально и не задаёт <see cref="Window.Owner"/>,
+        /// поэтому ориентироваться только на Owner нельзя — статус и подписки «молча» ломались.
+        /// </summary>
+        private MainWindow? TryGetMainWindow()
+        {
+            if (Owner is MainWindow owned)
+                return owned;
+            if (Application.Current?.MainWindow is MainWindow appMain)
+                return appMain;
+            return Application.Current?.Windows.OfType<MainWindow>().FirstOrDefault();
         }
         
         private void SettingsWindow_Activated(object? sender, EventArgs e)
@@ -200,6 +631,7 @@ namespace Softphone
             {
                 // Обновляем статус в Connection tab (синхронизируется с MainWindow)
                 UpdateConnectionStatus();
+                UpdateConnection2Status();
                 
                 // Обновляем статус в Advanced tab (WebRTC Status) при важных событиях
                 if (dto.Type == "registered" || dto.Type == "ua_registered" || 
@@ -219,114 +651,172 @@ namespace Softphone
 
         private void UpdateConnectionStatus()
         {
-            if (Owner is MainWindow mainWindow)
+            if (TryGetMainWindow() is MainWindow mainWindow)
             {
-                // ВАЖНО: Используем ту же логику, что и в MainWindow.UpdateConnectionStatus()
-                // Это гарантирует синхронизацию статусов между главным окном и настройками
-                bool useWebRtc = false;
-                try
-                {
-                    string settingsFilePath = AppDataHelper.GetSettingsFilePath();
-                    if (File.Exists(settingsFilePath))
-                    {
-                        string json = File.ReadAllText(settingsFilePath);
-                        var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                        useWebRtc = settings?.UseWebRtcAudio ?? false;
-                    }
-                }
-                catch { }
-                
                 bool isConnected = mainWindow.IsConnected;
-                
-                // Получаем текущий статус из MainWindow для точной синхронизации
-                string mainWindowStatus = mainWindow.ConnectionStatus;
-                
-                // Если MainWindow имеет конкретный статус, используем его для синхронизации
-                if (!string.IsNullOrEmpty(mainWindowStatus))
-                {
-                    // Синхронизируем статус с главным окном
-                    if (useWebRtc)
-                    {
-                        // Проверяем статус более гибко (может содержать дополнительные символы)
-                        if (mainWindowStatus.Contains("Connected with WebRTC") || (isConnected && mainWindowStatus.Contains("Connected")))
-                        {
-                            ConnectionStatusTextBlock.Text = "Connected (WebRTC)";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
-                        }
-                        else if (mainWindowStatus.Contains("Connecting") || mainWindowStatus.Contains("Initializing"))
-                        {
-                            ConnectionStatusTextBlock.Text = "Connecting...";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
-                        }
-                        else
-                        {
-                            ConnectionStatusTextBlock.Text = "Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
-                        }
-                    }
-                    else
-                    {
-                        if (mainWindowStatus == "Connected with SIP")
-                        {
-                            ConnectionStatusTextBlock.Text = "Connected (SIP)";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
-                        }
-                        else if (mainWindowStatus.Contains("Connecting") || mainWindowStatus.Contains("Initializing"))
-                        {
-                            ConnectionStatusTextBlock.Text = "Connecting...";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
-                        }
-                        else
-                        {
-                            ConnectionStatusTextBlock.Text = "Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
-                        }
-                    }
-                }
-                else
-                {
-                    // Fallback: используем старую логику, если статус из MainWindow недоступен
-                    if (useWebRtc)
-                    {
-                        if (isConnected)
-                        {
-                            ConnectionStatusTextBlock.Text = "Connected (WebRTC)";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
-                        }
-                        else
-                        {
-                            ConnectionStatusTextBlock.Text = "Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
-                        }
-                    }
-                    else
-                    {
-                        if (isConnected)
-                        {
-                            ConnectionStatusTextBlock.Text = "Connected (SIP)";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
-                        }
-                        else
-                        {
-                            ConnectionStatusTextBlock.Text = "Not connected";
-                            ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
-                        }
-                    }
-                }
+                string mainWindowStatus = mainWindow.ConnectionStatus ?? "";
+                TryExtractPrimaryConnectionIssue(mainWindowStatus, isConnected, out string? issueDetail);
+                ApplyPrimaryConnectionStatusUi(isConnected, issueDetail);
             }
             else
             {
-                ConnectionStatusTextBlock.Text = "Not connected";
-                ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                if (ConnectionStatusTextBlock != null)
+                {
+                    ConnectionStatusTextBlock.Text = "Disconnected";
+                    ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                }
+                if (PrimaryConnectionStatusPill != null)
+                    PrimaryConnectionStatusPill.Background = (System.Windows.Media.Brush)FindResource("ConnStatusPillIdleBrush");
+                if (PrimaryConnectionStatusDot != null)
+                    PrimaryConnectionStatusDot.Fill = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                if (PrimaryConnectionIssueButton != null)
+                    PrimaryConnectionIssueButton.Visibility = Visibility.Collapsed;
+                _primaryConnectionIssueDetail = null;
             }
+        }
+
+        private void ApplyPrimaryConnectionStatusUi(bool isConnected, string? issueDetail)
+        {
+            _primaryConnectionIssueDetail = issueDetail;
+            if (ConnectionStatusTextBlock == null)
+                return;
+
+            Brush okPill = (Brush)FindResource("ConnStatusPillOkBrush");
+            Brush idlePill = (Brush)FindResource("ConnStatusPillIdleBrush");
+            Brush green = (Brush)FindResource("AccentGreenBrush");
+            Brush dim = (Brush)FindResource("TextSecondaryBrush");
+
+            if (isConnected)
+            {
+                ConnectionStatusTextBlock.Text = "Connected";
+                ConnectionStatusTextBlock.Foreground = green;
+                if (PrimaryConnectionStatusPill != null)
+                    PrimaryConnectionStatusPill.Background = okPill;
+                if (PrimaryConnectionStatusDot != null)
+                    PrimaryConnectionStatusDot.Fill = green;
+                if (PrimaryConnectionIssueButton != null)
+                    PrimaryConnectionIssueButton.Visibility = Visibility.Collapsed;
+            }
+            else
+            {
+                ConnectionStatusTextBlock.Text = "Disconnected";
+                ConnectionStatusTextBlock.Foreground = dim;
+                if (PrimaryConnectionStatusPill != null)
+                    PrimaryConnectionStatusPill.Background = idlePill;
+                if (PrimaryConnectionStatusDot != null)
+                    PrimaryConnectionStatusDot.Fill = dim;
+                if (PrimaryConnectionIssueButton != null)
+                {
+                    PrimaryConnectionIssueButton.Visibility = string.IsNullOrEmpty(_primaryConnectionIssueDetail)
+                        ? Visibility.Collapsed
+                        : Visibility.Visible;
+                }
+            }
+        }
+
+        private static bool IsTransientMainDisconnectedStatus(string status)
+        {
+            if (string.IsNullOrWhiteSpace(status)) return true;
+            var t = status.Trim();
+            if (t.Contains("Initializing", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Contains("Connecting", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.StartsWith("Connected to WebRTC", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Contains("Reconnecting", StringComparison.OrdinalIgnoreCase)) return true;
+            if (t.Contains("Settings saved", StringComparison.OrdinalIgnoreCase) &&
+                t.Contains("call ends", StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        private static bool LooksLikePrimaryConnectionIssue(string status)
+        {
+            var t = status.ToLowerInvariant();
+            return t.Contains("registration failed")
+                || t.Contains("authentication")
+                || t.Contains("forbidden")
+                || t.Contains("connection error:")
+                || t.Contains("unauthorized")
+                || t.Contains("invalid credential")
+                || t.Contains("403 forbidden")
+                || t.Contains(" 403")
+                || t.Contains("401 ")
+                || t.Contains("service unavailable")
+                || t.Contains("could not resolve");
+        }
+
+        private static void TryExtractPrimaryConnectionIssue(string mainWindowStatus, bool isConnected, out string? issueDetail)
+        {
+            issueDetail = null;
+            if (isConnected)
+                return;
+            if (string.IsNullOrWhiteSpace(mainWindowStatus))
+                return;
+            var s = mainWindowStatus.Trim();
+            if (IsTransientMainDisconnectedStatus(s))
+                return;
+            if (string.Equals(s, "Not connected", StringComparison.OrdinalIgnoreCase))
+                return;
+            if (string.Equals(s, "Disconnected", StringComparison.OrdinalIgnoreCase))
+                return;
+            if (LooksLikePrimaryConnectionIssue(s))
+            {
+                issueDetail = s;
+                return;
+            }
+        }
+
+        private static bool SecondaryLineIndicatesSuccess(string msg)
+        {
+            var t = msg.ToLowerInvariant();
+            if (t.Contains("registration successful")) return true;
+            if (t.Contains("sip transport listening") || t.Contains("listening on")) return true;
+            if (t.Contains("registered") && !t.Contains("fail") && !t.Contains("unregistered")) return true;
+            return false;
+        }
+
+        private static bool SecondaryLineIndicatesProblem(string msg)
+        {
+            if (SecondaryLineIndicatesSuccess(msg))
+                return false;
+            var t = msg.ToLowerInvariant();
+            return t.Contains("fail") || t.Contains("403") || t.Contains("401") || t.Contains("forbidden")
+                || t.Contains("denied") || t.Contains("timeout")
+                || t.Contains("could not resolve");
+        }
+
+        private void PrimaryConnectionIssueButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (PrimaryConnectionIssueDetailText != null)
+            {
+                PrimaryConnectionIssueDetailText.Text = string.IsNullOrWhiteSpace(_primaryConnectionIssueDetail)
+                    ? "No additional details."
+                    : _primaryConnectionIssueDetail;
+            }
+            PrimaryConnectionIssuePopup.IsOpen = true;
+        }
+
+        private void SecondaryConnectionIssueButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (SecondaryConnectionIssueDetailText != null)
+            {
+                SecondaryConnectionIssueDetailText.Text = string.IsNullOrWhiteSpace(_secondaryConnectionIssueDetail)
+                    ? "No additional details."
+                    : _secondaryConnectionIssueDetail;
+            }
+            SecondaryConnectionIssuePopup.IsOpen = true;
         }
 
         private void UpdateConnectionStatusFromMainWindow(string status)
         {
             Dispatcher.Invoke(() =>
             {
-                // Всегда обновляем статус подключения для синхронизации с MainWindow
-                // Это гарантирует, что статус в настройках всегда соответствует статусу в главном окне
+                if (!string.IsNullOrEmpty(status) && status.StartsWith("[Connection2]", StringComparison.OrdinalIgnoreCase))
+                {
+                    var msg = status.Substring("[Connection2]".Length).Trim();
+                    if (SecondaryLineIndicatesSuccess(msg))
+                        _secondaryConnectionIssueDetail = null;
+                    else if (SecondaryLineIndicatesProblem(msg))
+                        _secondaryConnectionIssueDetail = msg;
+                }
                 UpdateConnectionStatus();
                 UpdateConnection2Status();
             });
@@ -453,26 +943,35 @@ namespace Softphone
         
         private void UpdateButtonSelection(Button selectedButton)
         {
+            // FindResource бросает исключение, если ресурс не успел инициализироваться (например, при открытии About/Updates).
+            // TryFindResource позволяет отрисовать окно даже при проблемах со словарями темы.
+            var textSecondary = TryFindResource("TextSecondaryBrush") as System.Windows.Media.Brush
+                                ?? Application.Current?.TryFindResource("TextSecondaryBrush") as System.Windows.Media.Brush
+                                ?? System.Windows.Media.Brushes.Gray;
+            var accentBlue = TryFindResource("AccentBlueBrush") as System.Windows.Media.Brush
+                              ?? Application.Current?.TryFindResource("AccentBlueBrush") as System.Windows.Media.Brush
+                              ?? System.Windows.Media.Brushes.DodgerBlue;
+
             // Сбрасываем выделение всех кнопок
             ConnectionButton.Background = System.Windows.Media.Brushes.Transparent;
-            ConnectionButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            ConnectionButton.Foreground = textSecondary;
             AudioButton.Background = System.Windows.Media.Brushes.Transparent;
-            AudioButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            AudioButton.Foreground = textSecondary;
             GeneralButton.Background = System.Windows.Media.Brushes.Transparent;
-            GeneralButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            GeneralButton.Foreground = textSecondary;
             AppearanceButton.Background = System.Windows.Media.Brushes.Transparent;
-            AppearanceButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            AppearanceButton.Foreground = textSecondary;
             AdvancedButton.Background = System.Windows.Media.Brushes.Transparent;
-            AdvancedButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            AdvancedButton.Foreground = textSecondary;
             IntegrationsButton.Background = System.Windows.Media.Brushes.Transparent;
-            IntegrationsButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            IntegrationsButton.Foreground = textSecondary;
             AboutButton.Background = System.Windows.Media.Brushes.Transparent;
-            AboutButton.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+            AboutButton.Foreground = textSecondary;
 
             // Выделяем выбранную кнопку
             if (selectedButton != null)
             {
-                selectedButton.Background = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
+                selectedButton.Background = accentBlue;
                 selectedButton.Foreground = System.Windows.Media.Brushes.White;
             }
         }
@@ -543,6 +1042,8 @@ namespace Softphone
         {
             try
             {
+                SyncKommoGatewayModuleFromMain(refreshFromGateway: false);
+
                 if (File.Exists(AppDataHelper.GetSettingsFilePath()))
                 {
                     string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
@@ -630,7 +1131,7 @@ namespace Softphone
                             });
                         }, TaskContinuationOptions.OnlyOnRanToCompletion);
 
-                        // MikoPBX CDR settings
+                        // Callspire PBX Gateway settings
                         if (EnableMikoPbxCdrCheckBox != null)
                         {
                             EnableMikoPbxCdrCheckBox.IsChecked = settings.EnableMikoPbxCdr;
@@ -652,6 +1153,8 @@ namespace Softphone
                                 CheckMikoPbxCdrConnectionStatus();
                             });
                         }, TaskContinuationOptions.OnlyOnRanToCompletion);
+
+                        _ = RefreshKommoGatewayModuleStatusAsync();
                     }
                 }
             }
@@ -751,6 +1254,15 @@ namespace Softphone
         /// </summary>
         public void UpdateAmoCrmStatus(string statusText, bool isConnected)
         {
+            if (IsKommoGatewaySourceSelected())
+            {
+                if (AmoCrmOAuthStatusPanel != null)
+                    AmoCrmOAuthStatusPanel.Visibility = Visibility.Collapsed;
+                if (AmoCrmManualTokenStatusPanel != null)
+                    AmoCrmManualTokenStatusPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
             // Определяем текущий режим аутентификации из настроек (более надежно, чем из Tag кнопок)
             bool isOAuth = false;
             try
@@ -870,15 +1382,219 @@ namespace Softphone
         
         private void UpdateAmoCrmSettingsVisibility(bool isEnabled)
         {
-            if (AmoCrmSettingsPanel != null)
+            if (AmoCrmConnectionSourcePanel != null)
             {
-                AmoCrmSettingsPanel.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+                AmoCrmConnectionSourcePanel.Visibility =
+                    isEnabled && _gatewayKommoModuleActive ? Visibility.Visible : Visibility.Collapsed;
             }
+
             if (AmoCrmLeadSelectionGrid != null)
             {
                 AmoCrmLeadSelectionGrid.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
             }
-            // ...удалено: AmoCrmShowFirstLeadGrid...
+
+            if (!isEnabled)
+            {
+                if (AmoCrmSettingsPanel != null)
+                    AmoCrmSettingsPanel.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            ApplyKommoConnectionSourcePanels();
+        }
+
+        private string GetSelectedKommoConnectionSource()
+        {
+            if (AmoCrmConnectionSourceGatewayButton?.Tag is string g && g == "gateway_selected")
+                return "gateway";
+            if (AmoCrmConnectionSourceLocalButton?.Tag is string l && l == "local_selected")
+                return "local";
+            return AppDataHelper.LoadSettingsOrNew().AmoCrmConnectionSource?.Trim().ToLowerInvariant() ?? "local";
+        }
+
+        private bool IsKommoGatewaySourceSelected()
+        {
+            return _gatewayKommoModuleActive && GetSelectedKommoConnectionSource() == "gateway";
+        }
+
+        private void SetKommoConnectionSourceUi(string source, bool persistAndReinit)
+        {
+            source = (source ?? "").Trim().ToLowerInvariant();
+            if (source is not ("gateway" or "local"))
+                source = _gatewayKommoModuleActive ? "gateway" : "local";
+
+            _suppressKommoSourceUiEvents = true;
+            try
+            {
+                var accentBlueBrush = (Brush)FindResource("AccentBlueBrush");
+                var textPrimaryBrush = (Brush)FindResource("TextPrimaryBrush");
+                bool isGateway = source == "gateway";
+
+                if (AmoCrmConnectionSourceGatewayButton != null)
+                {
+                    AmoCrmConnectionSourceGatewayButton.Tag = isGateway ? "gateway_selected" : "gateway";
+                    AmoCrmConnectionSourceGatewayButton.Background = isGateway ? accentBlueBrush : Brushes.Transparent;
+                    AmoCrmConnectionSourceGatewayButton.Foreground = isGateway ? Brushes.White : textPrimaryBrush;
+                }
+
+                if (AmoCrmConnectionSourceLocalButton != null)
+                {
+                    AmoCrmConnectionSourceLocalButton.Tag = isGateway ? "local" : "local_selected";
+                    AmoCrmConnectionSourceLocalButton.Background = isGateway ? Brushes.Transparent : accentBlueBrush;
+                    AmoCrmConnectionSourceLocalButton.Foreground = isGateway ? textPrimaryBrush : Brushes.White;
+                }
+            }
+            finally
+            {
+                _suppressKommoSourceUiEvents = false;
+            }
+
+            ApplyKommoConnectionSourcePanels();
+
+            if (!persistAndReinit)
+                return;
+
+            AppDataHelper.SetKommoConnectionSource(source);
+
+            var mainWindow = Application.Current.MainWindow as MainWindow;
+            if (mainWindow != null && EnableAmoCrmIntegrationCheckBox?.IsChecked == true)
+            {
+                mainWindow.InitializeAmoCrmService(AppDataHelper.LoadSettingsOrNew());
+                _ = Task.Delay(1500).ContinueWith(_ =>
+                {
+                    Dispatcher.Invoke(CheckAmoCrmConnectionStatus);
+                }, TaskContinuationOptions.OnlyOnRanToCompletion);
+            }
+        }
+
+        private void ApplyKommoConnectionSourcePanels()
+        {
+            bool integrationEnabled = EnableAmoCrmIntegrationCheckBox?.IsChecked == true;
+            if (!integrationEnabled)
+                return;
+
+            bool useGateway = IsKommoGatewaySourceSelected();
+
+            if (AmoCrmSettingsPanel != null)
+                AmoCrmSettingsPanel.Visibility = useGateway ? Visibility.Collapsed : Visibility.Visible;
+        }
+
+        private void AmoCrmConnectionSourceButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_suppressKommoSourceUiEvents)
+                return;
+
+            if (sender is not Button button || button.Tag is not string tag)
+                return;
+
+            string source = tag.StartsWith("gateway", StringComparison.Ordinal) ? "gateway" : "local";
+            SetKommoConnectionSourceUi(source, persistAndReinit: true);
+        }
+
+        private static bool ComputeKommoGatewayModuleActive(KommoGatewayStatus? status, bool currentActive)
+        {
+            if (status == null)
+                return currentActive;
+
+            if (status.Excluded)
+                return false;
+
+            if (status.OfferGateway || status.Enabled)
+                return true;
+
+            return false;
+        }
+
+        private void ApplyKommoGatewayModuleUi(KommoGatewayStatus? kommoStatus)
+        {
+            _gatewayKommoModuleActive = ComputeKommoGatewayModuleActive(kommoStatus, _gatewayKommoModuleActive);
+
+            bool integrationEnabled = EnableAmoCrmIntegrationCheckBox?.IsChecked == true;
+            if (AmoCrmConnectionSourcePanel != null)
+            {
+                AmoCrmConnectionSourcePanel.Visibility =
+                    integrationEnabled && _gatewayKommoModuleActive ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            if (_gatewayKommoModuleActive)
+            {
+                var saved = AppDataHelper.LoadSettingsOrNew().AmoCrmConnectionSource?.Trim().ToLowerInvariant();
+                string source = saved is "gateway" or "local" ? saved : "gateway";
+                SetKommoConnectionSourceUi(source, persistAndReinit: false);
+            }
+            else
+            {
+                ApplyKommoConnectionSourcePanels();
+                if (AmoCrmSettingsPanel != null && integrationEnabled)
+                    AmoCrmSettingsPanel.Visibility = Visibility.Visible;
+            }
+        }
+
+        /// <summary>
+        /// Applies gateway Kommo module status cached by MainWindow at startup (if available).
+        /// </summary>
+        public void SyncKommoGatewayModuleFromMain(bool refreshFromGateway = true)
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(() => SyncKommoGatewayModuleFromMain(refreshFromGateway));
+                return;
+            }
+
+            var status = TryGetMainWindow()?.GetCachedKommoGatewayStatus();
+            if (status != null)
+                ApplyKommoGatewayModuleUi(status);
+
+            if (refreshFromGateway)
+                _ = RefreshKommoGatewayModuleStatusAsync();
+        }
+
+        private async Task RefreshKommoGatewayModuleStatusAsync()
+        {
+            KommoGatewayStatus? kommoStatus = null;
+
+            try
+            {
+                var settings = AppDataHelper.LoadSettingsOrNew();
+                if (settings.EnableMikoPbxCdr
+                    && !string.IsNullOrWhiteSpace(settings.MikoPbxCdrServiceUrl)
+                    && !string.IsNullOrWhiteSpace(settings.MikoPbxExtension)
+                    && !string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted))
+                {
+                    string tokenPlain = TokenEncryption.Decrypt(settings.MikoPbxCdrTokenEncrypted);
+                    if (!string.IsNullOrEmpty(tokenPlain))
+                    {
+                        using var svc = new MikoPbxCdrService(
+                            settings.MikoPbxCdrServiceUrl,
+                            tokenPlain,
+                            settings.MikoPbxExtension);
+                        kommoStatus = await svc.GetKommoStatusAsync().ConfigureAwait(false);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] RefreshKommoGatewayModuleStatus error: {ex.Message}");
+            }
+
+            await Dispatcher.InvokeAsync(() => ApplyKommoGatewayModuleUi(kommoStatus));
+        }
+
+        private void PersistKommoConnectionSourceFromUi(AppSettings settings)
+        {
+            if (!settings.EnableAmoCrmIntegration)
+                return;
+
+            if (_gatewayKommoModuleActive)
+            {
+                string source = GetSelectedKommoConnectionSource();
+                if (source is "gateway" or "local")
+                    settings.AmoCrmConnectionSource = source;
+            }
+            else
+            {
+                settings.AmoCrmConnectionSource = "local";
+            }
         }
         
         private void EnableAmoCrmIntegrationCheckBox_Checked(object sender, RoutedEventArgs e)
@@ -920,6 +1636,7 @@ namespace Softphone
                 
                 // Сохраняем состояние интеграции
                 settings.EnableAmoCrmIntegration = EnableAmoCrmIntegrationCheckBox?.IsChecked ?? false;
+                PersistKommoConnectionSourceFromUi(settings);
                 // ВАЖНО: не сбрасываем настройку выбора лида, если чекбокс ещё не создан (другая вкладка / ранний вызов)
                 if (EnableAmoCrmLeadSelectionCheckBox != null)
                 {
@@ -927,55 +1644,51 @@ namespace Softphone
                 }
                 // ...удалено: ShowFirstLeadAfterCallCheckBox/ShowFirstLeadAfterCall...
                 
-                // Если интеграция выключена, только отключаем сервис (НЕ стираем токен и домен)
+                // Сохраняем настройки (токен и домен остаются в файле)
+                AppDataHelper.SaveSettings(settings);
+                
+                MainWindow.Log($"[SettingsWindow] Kommo integration toggle saved: {settings.EnableAmoCrmIntegration}, source={settings.AmoCrmConnectionSource ?? "auto"}");
+
+                var freshSettings = AppDataHelper.LoadSettingsOrNew();
+                var mainWindowForInit = Application.Current.MainWindow as MainWindow;
+
+                // Если интеграция выключена, отключаем сервис (НЕ стираем токен и домен)
                 if (!settings.EnableAmoCrmIntegration)
                 {
-                    // Отключаем сервис в MainWindow
-                    var mainWindow = Application.Current.MainWindow as MainWindow;
-                    if (mainWindow != null)
-                    {
-                        mainWindow.InitializeAmoCrmService(settings);
-                    }
+                    if (mainWindowForInit != null)
+                        mainWindowForInit.DisconnectAmoCrmService();
                     
-                    // Обновляем статус
                     UpdateAmoCrmStatus("Not connected", false);
                 }
                 else
                 {
                     // Если интеграция включена, проверяем наличие необходимых данных для подключения
-                    // Проверяем оба режима аутентификации: manual token и OAuth
-                    string authMode = settings.AmoCrmAuthMode ?? "manual";
-                    bool hasManualToken = !string.IsNullOrEmpty(settings.AmoCrmSubdomain) && 
-                                         !string.IsNullOrEmpty(settings.AmoCrmAccessTokenEncrypted);
+                    string authMode = freshSettings.AmoCrmAuthMode ?? "manual";
+                    bool hasManualToken = !string.IsNullOrEmpty(freshSettings.AmoCrmSubdomain) && 
+                                         !string.IsNullOrEmpty(freshSettings.AmoCrmAccessTokenEncrypted);
                     bool hasOAuth = authMode == "oauth" && 
-                                   !string.IsNullOrEmpty(settings.AmoCrmSubdomain) &&
-                                   !string.IsNullOrEmpty(settings.AmoCrmClientId) &&
-                                   !string.IsNullOrEmpty(settings.AmoCrmClientSecretEncrypted) &&
-                                   (!string.IsNullOrEmpty(settings.AmoCrmOAuthAccessTokenEncrypted) || 
-                                    !string.IsNullOrEmpty(settings.AmoCrmOAuthRefreshTokenEncrypted));
+                                   !string.IsNullOrEmpty(freshSettings.AmoCrmSubdomain) &&
+                                   !string.IsNullOrEmpty(freshSettings.AmoCrmClientId) &&
+                                   !string.IsNullOrEmpty(freshSettings.AmoCrmClientSecretEncrypted) &&
+                                   (!string.IsNullOrEmpty(freshSettings.AmoCrmOAuthAccessTokenEncrypted) || 
+                                    !string.IsNullOrEmpty(freshSettings.AmoCrmOAuthRefreshTokenEncrypted));
                     
-                    // Если есть домен и хотя бы один из токенов (manual или OAuth), пытаемся подключиться
-                    if (!string.IsNullOrEmpty(settings.AmoCrmSubdomain) && (hasManualToken || hasOAuth))
+                    if (!string.IsNullOrEmpty(freshSettings.AmoCrmSubdomain) && (hasManualToken || hasOAuth))
                     {
-                        var mainWindow = Application.Current.MainWindow as MainWindow;
-                        if (mainWindow != null)
+                        if (mainWindowForInit != null)
                         {
-                            MainWindow.Log($"[SettingsWindow] Initializing AmoCRM service (authMode={authMode}, hasManualToken={hasManualToken}, hasOAuth={hasOAuth})");
-                            mainWindow.InitializeAmoCrmService(settings);
+                            MainWindow.Log($"[SettingsWindow] Initializing AmoCRM service (authMode={authMode}, hasManualToken={hasManualToken}, hasOAuth={hasOAuth}, source=local)");
+                            mainWindowForInit.InitializeAmoCrmService(freshSettings);
                         }
                     }
                     else
                     {
-                        MainWindow.Log($"[SettingsWindow] Cannot initialize AmoCRM: missing required credentials (subdomain={!string.IsNullOrEmpty(settings.AmoCrmSubdomain)}, manualToken={hasManualToken}, oauth={hasOAuth})");
+                        MainWindow.Log($"[SettingsWindow] Cannot initialize AmoCRM: missing required credentials (subdomain={!string.IsNullOrEmpty(freshSettings.AmoCrmSubdomain)}, manualToken={hasManualToken}, oauth={hasOAuth})");
                         UpdateAmoCrmStatus("Not configured", false);
                     }
                 }
                 
-                // Сохраняем настройки (токен и домен остаются в файле)
-                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
-                File.WriteAllText(settingsPath, updatedJson);
-                
-                MainWindow.Log($"[SettingsWindow] Kommo integration toggle saved: {settings.EnableAmoCrmIntegration}");
+                return;
             }
             catch (Exception ex)
             {
@@ -1301,8 +2014,9 @@ namespace Softphone
                     settings = new AppSettings();
                 }
                 
-                // КРИТИЧНО: Убеждаемся, что интеграция включена
+                // КРИТИЧНО: Убеждаемся, что интеграция включена; OAuth всегда локальный режим
                 settings.EnableAmoCrmIntegration = true;
+                settings.AmoCrmConnectionSource = "local";
                 settings.AmoCrmSubdomain = subdomainToSave;
                 settings.AmoCrmAuthMode = "oauth";
                 settings.AmoCrmClientId = clientIdToSave;
@@ -1320,8 +2034,7 @@ namespace Softphone
                 {
                     try
                     {
-                        string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
-                        File.WriteAllText(settingsPath, updatedJson);
+                        AppDataHelper.SaveSettings(settings);
                         MainWindow.Log($"[SettingsWindow] OAuth tokens saved to file: {settingsPath}");
                         MainWindow.Log($"[SettingsWindow] Access token encrypted: {!string.IsNullOrEmpty(settings.AmoCrmOAuthAccessTokenEncrypted)}");
                         MainWindow.Log($"[SettingsWindow] Refresh token encrypted: {!string.IsNullOrEmpty(settings.AmoCrmOAuthRefreshTokenEncrypted)}");
@@ -1339,7 +2052,7 @@ namespace Softphone
                 // Обновляем UI в UI потоке асинхронно, не блокируя
                 await Dispatcher.InvokeAsync(() =>
                 {
-                    // Обновляем статус OAuth (через UpdateAmoCrmStatus для правильного отображения)
+                    SetKommoConnectionSourceUi("local", persistAndReinit: false);
                     UpdateAmoCrmStatus("Connected", true);
                     
                     if (AmoCrmAuthorizeButton != null)
@@ -1353,9 +2066,10 @@ namespace Softphone
                 await Dispatcher.InvokeAsync(() =>
                 {
                     var mainWindow = Application.Current.MainWindow as MainWindow;
-                    if (mainWindow != null && settings != null)
+                    if (mainWindow != null)
                     {
-                        mainWindow.InitializeAmoCrmService(settings);
+                        var freshSettings = AppDataHelper.LoadSettingsOrNew();
+                        mainWindow.InitializeAmoCrmService(freshSettings);
                     }
                 });
                 
@@ -1451,6 +2165,7 @@ namespace Softphone
                     }
                 }
                 settings.AmoCrmAuthMode = isOAuth ? "oauth" : "manual";
+                PersistKommoConnectionSourceFromUi(settings);
                 
                 if (isOAuth)
                 {
@@ -1479,8 +2194,7 @@ namespace Softphone
                 }
                 
                 // Сохраняем настройки
-                string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
-                File.WriteAllText(settingsPath, updatedJson);
+                AppDataHelper.SaveSettings(settings);
                 
                 MainWindow.Log("[SettingsWindow] Kommo settings saved successfully");
                 
@@ -1488,12 +2202,11 @@ namespace Softphone
                 UpdateAmoCrmStatus("Connecting...", false);
                 
                 // Переинициализируем Kommo сервис в MainWindow (асинхронно, не блокирует UI)
-                // Получаем ссылку на MainWindow через Application
                 var mainWindow = Application.Current.MainWindow as MainWindow;
                 if (mainWindow != null)
                 {
-                    // Инициализация выполняется асинхронно в фоне, не блокирует UI
-                    mainWindow.InitializeAmoCrmService(settings);
+                    var freshSettings = AppDataHelper.LoadSettingsOrNew();
+                    mainWindow.InitializeAmoCrmService(freshSettings);
                     
                     // Проверяем статус через небольшую задержку (после начала инициализации)
                     _ = Task.Delay(2000).ContinueWith(_ =>
@@ -1874,8 +2587,9 @@ namespace Softphone
             UpdateButtonSelection(IntegrationsButton);
             ShowView(IntegrationsSettingsView);
             LoadIntegrationsSettings();
+            _ = RefreshKommoGatewayModuleStatusAsync();
             
-            // Проверяем статус с задержками, чтобы дать время сервису инициализироваться
+            // Проверяем статус с задержками
             // (если окно открывается сразу после запуска приложения)
             // Первая проверка через 500мс
             _ = Task.Delay(500).ContinueWith(_ =>
@@ -1884,6 +2598,7 @@ namespace Softphone
                 {
                     MainWindow.Log("[SettingsWindow] IntegrationsButton_Click: First status check (500ms delay)");
                     CheckAmoCrmConnectionStatus();
+                    CheckMikoPbxCdrConnectionStatus();
                 });
             }, TaskContinuationOptions.OnlyOnRanToCompletion);
             
@@ -1894,6 +2609,7 @@ namespace Softphone
                 {
                     MainWindow.Log("[SettingsWindow] IntegrationsButton_Click: Second status check (2000ms delay)");
                     CheckAmoCrmConnectionStatus();
+                    CheckMikoPbxCdrConnectionStatus();
                 });
             }, TaskContinuationOptions.OnlyOnRanToCompletion);
         }
@@ -1925,11 +2641,33 @@ namespace Softphone
                 {
                     // Новая версия доступна
                     string currentVersion = UpdateService.GetCurrentVersion();
+
+                    // If already open, bring to front (do not block Settings/Main windows).
+                    var existing = Application.Current?.Windows.OfType<UpdateAvailableWindow>().FirstOrDefault();
+                    if (existing != null)
+                    {
+                        try
+                        {
+                            if (existing.WindowState == WindowState.Minimized)
+                                existing.WindowState = WindowState.Normal;
+                            existing.Activate();
+                            existing.Focus();
+                        }
+                        catch { }
+                        return;
+                    }
+
                     var updateWindow = new UpdateAvailableWindow(updateInfo, currentVersion)
                     {
                         Owner = this
                     };
-                    updateWindow.ShowDialog();
+                    updateWindow.Show();
+                    try
+                    {
+                        updateWindow.Activate();
+                        updateWindow.Focus();
+                    }
+                    catch { }
                 }
                 else
                 {
@@ -1977,6 +2715,7 @@ namespace Softphone
                             {
                                 wsUri = "wss://" + wsUri;
                             }
+                            wsUri = SipEndpointHelper.NormalizeWebRtcWsUri(wsUri);
                             WebRtcWsUriTextBox.Text = wsUri;
                             System.Diagnostics.Debug.WriteLine($"LoadGeneralSettings: Loaded WebRtcWsUri from file: '{settings.WebRtcWsUri}' -> '{wsUri}'");
                         }
@@ -1986,21 +2725,7 @@ namespace Softphone
                             System.Diagnostics.Debug.WriteLine("LoadGeneralSettings: WebRtcWsUri was empty in file, prefilled with 'wss://'");
                         }
                         System.Diagnostics.Debug.WriteLine($"LoadGeneralSettings: UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri='{settings.WebRtcWsUri}'");
-                        
-                        // Загружаем TURN‑сервер (если задан)
-                        if (WebRtcTurnUriTextBox != null)
-                        {
-                            WebRtcTurnUriTextBox.Text = settings.WebRtcTurnUri ?? "";
-                        }
-                        if (WebRtcTurnUsernameTextBox != null)
-                        {
-                            WebRtcTurnUsernameTextBox.Text = settings.WebRtcTurnUsername ?? "";
-                        }
-                        if (WebRtcTurnPasswordBox != null)
-                        {
-                            WebRtcTurnPasswordBox.Password = settings.WebRtcTurnPassword ?? "";
-                        }
-                        
+
                         // Обновляем состояние кнопки тестирования
                         if (TestWebRtcConnectionButton != null)
                         {
@@ -2106,12 +2831,13 @@ namespace Softphone
                 // Включаем кнопку тестирования если WebRTC включен и настроен
                 if (TestWebRtcConnectionButton != null)
                 {
-                    string? sipPassword = settings != null ? SipPasswordProvider.GetPassword(settings) : null;
+                    string? rtcPass = settings != null ? SipPasswordProvider.GetMainWebRtcPassword(settings) : null;
+                    string? rtcUser = settings != null ? AppSettings.EffectiveMainWebRtcUsername(settings) : null;
                     bool canTest = !string.IsNullOrWhiteSpace(wsUri) && 
                                    wsUri != "wss://pbx.example.com:8089/ws" &&
                                    settings != null && 
-                                   !string.IsNullOrWhiteSpace(settings.SipUsername) && 
-                                   !string.IsNullOrWhiteSpace(sipPassword);
+                                   !string.IsNullOrWhiteSpace(rtcUser) && 
+                                   !string.IsNullOrWhiteSpace(rtcPass);
                     TestWebRtcConnectionButton.IsEnabled = canTest;
                 }
                 
@@ -2131,10 +2857,11 @@ namespace Softphone
                     return;
                 }
                 
-                string? sipPasswordForConfig = settings != null ? SipPasswordProvider.GetPassword(settings) : null;
-                if (settings == null || string.IsNullOrWhiteSpace(settings.SipUsername) || string.IsNullOrWhiteSpace(sipPasswordForConfig))
+                string? sipPasswordForConfig = settings != null ? SipPasswordProvider.GetMainWebRtcPassword(settings) : null;
+                string? rtcUserForConfig = settings != null ? AppSettings.EffectiveMainWebRtcUsername(settings) : null;
+                if (settings == null || string.IsNullOrWhiteSpace(rtcUserForConfig) || string.IsNullOrWhiteSpace(sipPasswordForConfig))
                 {
-                    WebRtcStatusTextBlock.Text = "WebRTC Status: Not configured (SIP credentials missing)";
+                    WebRtcStatusTextBlock.Text = "WebRTC Status: Not configured (WebRTC credentials missing)";
                     WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
                     StopWebRtcStatusCheck();
                     // НЕ удаляем общий сервис здесь, только отписываемся
@@ -2167,9 +2894,11 @@ namespace Softphone
                         }
                         if (string.IsNullOrEmpty(pbxAddress))
                         {
-                            pbxAddress = settings.SipServer?.Split(':')[0] ?? "";
+                            pbxAddress = SipEndpointHelper.GetHostOnly(settings.SipServer);
                         }
-                        string expectedSipUri = $"sip:{settings.SipUsername}@{pbxAddress}";
+                        string rtcUser = AppSettings.EffectiveMainWebRtcUsername(settings) ?? "";
+                        string wsAor = rtcUser.EndsWith("-WS", StringComparison.OrdinalIgnoreCase) ? rtcUser : $"{rtcUser}-WS";
+                        string expectedSipUri = $"sip:{wsAor}@{pbxAddress}";
                         
                         // Если конфигурация не изменилась, просто восстанавливаем статус и подписываемся на события
                         if (currentWsUri == wsUri && currentSipUri == expectedSipUri)
@@ -2200,7 +2929,7 @@ namespace Softphone
                 {
                     UseWebRtcAudio = true,
                     WebRtcWsUri = wsUri,
-                    SipUsername = settings.SipUsername,
+                    SipUsername = rtcUserForConfig,
                     SipPassword = sipPasswordForConfig,
                     SipServer = settings.SipServer
                 };
@@ -2225,8 +2954,8 @@ namespace Softphone
         {
             try
             {
-                // Проверяем, не инициализирован ли уже WebRTC сервис в MainWindow
-                var isReady = WebRtcService.Instance.IsReadyForCalls;
+                // Проверяем, не инициализирован ли уже WebRTC сервис в MainWindow (main slot)
+                var isReady = WebRtcService.Main.IsReadyForCalls;
                 MainWindow.Log($"[WebRTC] Checking WebRTC service status: IsReadyForCalls={isReady}");
                 
                 if (isReady)
@@ -2257,7 +2986,7 @@ namespace Softphone
                 }
                 if (string.IsNullOrEmpty(pbxAddress))
                 {
-                    pbxAddress = settings.SipServer?.Split(':')[0] ?? "";
+                    pbxAddress = SipEndpointHelper.GetHostOnly(settings.SipServer);
                 }
                 if (string.IsNullOrEmpty(pbxAddress))
                 {
@@ -2266,23 +2995,28 @@ namespace Softphone
                     return;
                 }
                 string username = settings.SipUsername ?? "";
-                // Формируем SIP URI: sip:username@pbx_address
-                string sipUri = $"sip:{username}@{pbxAddress}";
+                string wsAor = username.EndsWith("-WS", StringComparison.OrdinalIgnoreCase) ? username : $"{username}-WS";
+                string sipUri = $"sip:{wsAor}@{pbxAddress}";
                 string wsUri = settings.WebRtcWsUri ?? "";
                 
-                // Используем общий сервис (он уже создан в конструкторе)
-                if (_sharedWebRtcStatusService == null)
+                WebRtcStatusService shared;
+                try
                 {
-                    MainWindow.Log("[WebRTC] ERROR: Shared WebRtcStatusService is null");
+                    shared = GetOrCreateSharedWebRtcService();
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[WebRTC] ERROR: Could not initialize WebRtcStatusService: {ex.Message}");
                     WebRtcStatusTextBlock.Text = "WebRTC Status: Error (service not initialized)";
                     WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+                    SyncMainWebRtcStatusLabelFromLegacy();
                     return;
                 }
                 
                 // Отписываемся от старого обработчика
                 StopWebRtcStatusCheck();
                 
-                _webRtcStatusService = _sharedWebRtcStatusService;
+                _webRtcStatusService = shared;
                 _webRtcStatusService.OnStatusChanged += (status) =>
                 {
                     Dispatcher.Invoke(() => UpdateWebRtcStatusDisplay(status));
@@ -2292,7 +3026,7 @@ namespace Softphone
                 {
                     WsUri = wsUri,
                     SipUri = sipUri,
-                    Password = SipPasswordProvider.GetPassword(settings) ?? "",
+                    Password = settings.SipPassword ?? SipPasswordProvider.GetPassword(settings) ?? "",
                     // Используем тот же флаг, что и основное приложение
                     EnableDebug = settings?.EnableWebRtcDebug ?? true
                 };
@@ -2395,6 +3129,23 @@ namespace Softphone
                     WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
                     break;
             }
+            SyncMainWebRtcStatusLabelFromLegacy();
+        }
+
+        /// <summary>Mirrors legacy WebRtcStatusTextBlock into the visible primary-connection WebRTC line when WebRTC transport is selected.</summary>
+        private void SyncMainWebRtcStatusLabelFromLegacy()
+        {
+            try
+            {
+                if (MainWebRtcStatusTextBlock == null || WebRtcStatusTextBlock == null) return;
+                if (MainTransportWebRtcRadio?.IsChecked != true) return;
+                MainWebRtcStatusTextBlock.Text = WebRtcStatusTextBlock.Text;
+                MainWebRtcStatusTextBlock.Foreground = WebRtcStatusTextBlock.Foreground;
+            }
+            catch
+            {
+                // best-effort
+            }
         }
         
         private void SaveGeneralSettingsButton_Click(object sender, RoutedEventArgs e)
@@ -2415,10 +3166,8 @@ namespace Softphone
 
                 // Сохраняем WebRTC настройки
                 settings.UseWebRtcAudio = UseWebRtcCheckBox.IsChecked ?? false;
-                settings.WebRtcWsUri = WebRtcWsUriTextBox.Text.Trim();
-                settings.WebRtcTurnUri = WebRtcTurnUriTextBox?.Text.Trim();
-                settings.WebRtcTurnUsername = WebRtcTurnUsernameTextBox?.Text.Trim();
-                settings.WebRtcTurnPassword = WebRtcTurnPasswordBox?.Password;
+                settings.WebRtcWsUri = SipEndpointHelper.NormalizeWebRtcWsUri(WebRtcWsUriTextBox.Text.Trim());
+                // TURN is stored per-connection (see SaveConnectionSettings_Click / SaveConnection2Settings_Click)
 
                 // IMPORTANT: Recording is available only in WebRTC mode.
                 // When WebRTC is disabled, ensure recording is disabled and the UI toggle is reset.
@@ -2455,7 +3204,7 @@ namespace Softphone
                     UpdateWebRtcStatus();
                     
                     // Обновляем индикатор WebRTC в главном окне
-                    if (Owner is MainWindow mainWindow)
+                    if (TryGetMainWindow() is MainWindow mainWindow)
                     {
                         mainWindow.UpdateWebRtcIndicator();
                         
@@ -2520,62 +3269,85 @@ namespace Softphone
                 // best-effort; ignore
             }
         }
-        
+
+        private void SetWebRtcTestButtonsState(bool enabled, string label)
+        {
+            if (MainTestWebRtcButton != null)
+            {
+                MainTestWebRtcButton.IsEnabled = enabled;
+                MainTestWebRtcButton.Content = label;
+            }
+            if (TestWebRtcConnectionButton != null)
+            {
+                TestWebRtcConnectionButton.IsEnabled = enabled;
+                TestWebRtcConnectionButton.Content = label;
+            }
+        }
+
         private async void TestWebRtcConnectionButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                TestWebRtcConnectionButton.IsEnabled = false;
-                TestWebRtcConnectionButton.Content = "Testing...";
+                SetWebRtcTestButtonsState(false, "Testing...");
                 
                 MainWindow.Log("[WebRTC] ===== Manual connection test initiated =====");
                 
                 // Останавливаем предыдущую проверку
                 StopWebRtcStatusCheck();
                 
-                // Проверяем настройки перед тестированием
-                bool useWebRtc = UseWebRtcCheckBox.IsChecked ?? false;
-                string wsUri = WebRtcWsUriTextBox?.Text?.Trim() ?? "";
+                // Primary connection: use visible transport toggle + WebSocket field (legacy hidden checkboxes are not synced).
+                bool useWebRtc = MainTransportWebRtcRadio?.IsChecked == true;
+                string wsUri = MainWsUriTextBox?.Text?.Trim() ?? "";
                 
                 if (!useWebRtc)
                 {
-                    CustomMessageBox.Show("Please enable 'Use WebRTC for audio' first.", "WebRTC Test", 
+                    CustomMessageBox.Show(
+                        "Select WebRTC (not SIP) with the transport toggle on this connection, then try again.",
+                        "WebRTC Test",
                         MessageBoxButton.OK, MessageBoxImage.Information, this);
-                    TestWebRtcConnectionButton.IsEnabled = true;
-                    TestWebRtcConnectionButton.Content = "Test Connection";
+                    SetWebRtcTestButtonsState(true, "Test Connection");
                     return;
                 }
                 
-                if (string.IsNullOrWhiteSpace(wsUri) || wsUri == "wss://pbx.example.com:8089/ws")
+                if (string.IsNullOrWhiteSpace(wsUri) || wsUri == "wss://" || wsUri == "wss://pbx.example.com:8089/ws")
                 {
                     CustomMessageBox.Show("Please enter a valid WebSocket URI.", "WebRTC Test", 
                         MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    TestWebRtcConnectionButton.IsEnabled = true;
-                    TestWebRtcConnectionButton.Content = "Test Connection";
+                    SetWebRtcTestButtonsState(true, "Test Connection");
                     return;
                 }
                 
-                // Загружаем настройки для получения SIP credentials
+                // Загружаем настройки для TURN и резервных учётных данных
                 AppSettings? settings = null;
                 if (File.Exists(AppDataHelper.GetSettingsFilePath()))
                 {
                     string json = File.ReadAllText(AppDataHelper.GetSettingsFilePath());
                     settings = JsonConvert.DeserializeObject<AppSettings>(json);
                 }
+                settings ??= new AppSettings();
                 
-                string? sipPassword = SipPasswordProvider.GetPassword(settings);
-                if (settings == null || string.IsNullOrWhiteSpace(settings.SipUsername) || string.IsNullOrWhiteSpace(sipPassword))
+                string? rtcUser = MainWebRtcUsernameTextBox?.Text?.Trim();
+                if (string.IsNullOrWhiteSpace(rtcUser))
+                    rtcUser = AppSettings.EffectiveMainWebRtcUsername(settings);
+
+                string? sipPassword = MainWebRtcPasswordBox?.Password;
+                if (string.IsNullOrWhiteSpace(sipPassword))
+                    sipPassword = SipPasswordProvider.GetMainWebRtcPassword(settings);
+
+                if (string.IsNullOrWhiteSpace(rtcUser) || string.IsNullOrWhiteSpace(sipPassword))
                 {
-                    CustomMessageBox.Show("Please configure SIP credentials in the 'Connection' tab first.", "WebRTC Test", 
+                    CustomMessageBox.Show("Please configure WebRTC username and password in the Connection tab (WebRTC section) first.", "WebRTC Test", 
                         MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    TestWebRtcConnectionButton.IsEnabled = true;
-                    TestWebRtcConnectionButton.Content = "Test Connection";
+                    SetWebRtcTestButtonsState(true, "Test Connection");
                     return;
                 }
+
+                wsUri = SipEndpointHelper.NormalizeWebRtcWsUri(wsUri);
                 
                 // Показываем начальный статус
                 WebRtcStatusTextBlock.Text = "WebRTC Status: Testing connection...";
                 WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
+                SyncMainWebRtcStatusLabelFromLegacy();
                 
                 // Формируем конфиг
                 // Извлекаем адрес PBX из WebSocket URI или используем SipServer
@@ -2594,38 +3366,71 @@ namespace Softphone
                 }
                 if (string.IsNullOrEmpty(pbxAddress))
                 {
-                    pbxAddress = settings.SipServer?.Split(':')[0] ?? "";
+                    pbxAddress = SipEndpointHelper.GetHostOnly(settings.SipServer);
                 }
-                string username = settings.SipUsername ?? "";
-                // Формируем SIP URI: sip:username@pbx_address
-                string sipUri = $"sip:{username}@{pbxAddress}";
+                string username = rtcUser ?? "";
+                // For WebRTC, register as "<EXT>-WS" AoR (auth user remains "<EXT>").
+                string wsAor = username.EndsWith("-WS", StringComparison.OrdinalIgnoreCase)
+                    ? username
+                    : $"{username}-WS";
+                // Формируем SIP URI: sip:username-WS@pbx_address
+                string sipUri = $"sip:{wsAor}@{pbxAddress}";
                 
                 MainWindow.Log($"[WebRTC] Test config:");
                 MainWindow.Log($"[WebRTC]   WebSocket URI: {wsUri}");
                 MainWindow.Log($"[WebRTC]   SIP URI: {sipUri}");
                 MainWindow.Log($"[WebRTC]   PBX Address: {pbxAddress}");
-                MainWindow.Log($"[WebRTC]   Username: {settings.SipUsername} -> {username}");
+                MainWindow.Log($"[WebRTC]   Username: {rtcUser} -> AoR={wsAor}");
+                
+                if (WebRtcService.Main.IsReadyForCalls &&
+                    WebRtcService.Main.MatchesActiveRegistration(wsUri, sipUri, rtcUser ?? "", sipPassword ?? ""))
+                {
+                    MainWindow.Log("[WebRTC] Test skipped: main slot already registered with identical WebRTC config (second REGISTER often gets 401 from PBX).");
+                    UpdateWebRtcStatusDisplay(WebRtcConnectionStatus.Registered);
+                    SyncMainWebRtcStatusLabelFromLegacy();
+                    CustomMessageBox.Show(
+                        "The softphone is already connected with WebRTC using these exact settings.\n\n" +
+                        "Running \"Test\" starts a second, separate SIP registration for the same extension. Many PBXs reject that with 401 Unauthorized even though the password is correct.\n\n" +
+                        "Because your WebSocket URI, SIP identity, username, and password match the live client, the configuration is valid.",
+                        "WebRTC Test Result",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Information,
+                        this);
+                    SetWebRtcTestButtonsState(true, "Test Connection");
+                    return;
+                }
                 
                 var config = new WebRtcConfig
                 {
                     WsUri = wsUri,
                     SipUri = sipUri,
                     Password = sipPassword ?? "",
-                    TurnServer = settings.WebRtcTurnUri,
-                    TurnUsername = settings.WebRtcTurnUsername,
-                    TurnPassword = settings.WebRtcTurnPassword
+                    TurnServer = settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri,
+                    TurnUsername = settings.MainWebRtcTurnUsername ?? settings.WebRtcTurnUsername,
+                    TurnPassword = TurnPasswordProvider.GetMainTurnPassword(settings)
                 };
                 
-                // Используем общий сервис для тестирования (он уже создан в конструкторе)
-                if (_sharedWebRtcStatusService == null)
+                WebRtcStatusService testService;
+                try
                 {
-                    MainWindow.Log("[WebRTC] ERROR: Shared WebRtcStatusService is null");
-                    TestWebRtcConnectionButton.IsEnabled = true;
-                    TestWebRtcConnectionButton.Content = "Test Connection";
+                    testService = GetOrCreateSharedWebRtcService();
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[WebRTC] ERROR: Could not initialize WebRtcStatusService: {ex.Message}");
+                    CustomMessageBox.Show(
+                        "Could not start the WebRTC connection test. Open Settings → Advanced once, then try again.\n\n" +
+                        ex.Message,
+                        "WebRTC Test",
+                        MessageBoxButton.OK,
+                        MessageBoxImage.Error,
+                        this);
+                    WebRtcStatusTextBlock.Text = "WebRTC Status: Error (could not start test)";
+                    WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+                    SyncMainWebRtcStatusLabelFromLegacy();
+                    SetWebRtcTestButtonsState(true, "Test Connection");
                     return;
                 }
-                
-                var testService = _sharedWebRtcStatusService;
                 bool testCompleted = false;
                 WebRtcConnectionStatus finalStatus = WebRtcConnectionStatus.NotConnected;
                 
@@ -2676,7 +3481,8 @@ namespace Softphone
                                                    $"Please check:\n" +
                                                    $"• SIP username and password\n" +
                                                    $"• WebSocket URI is correct\n" +
-                                                   $"• Server supports WebRTC endpoints";
+                                                   $"• Server supports WebRTC endpoints\n" +
+                                                   $"• If the main window is already registered as this user, the PBX may reject a second test registration (try testing before connecting, or ignore if calls work).";
                                     icon = MessageBoxImage.Warning;
                                     break;
                                 case WebRtcConnectionStatus.Error:
@@ -2711,6 +3517,7 @@ namespace Softphone
                                             WebRtcStatusTextBlock.Text = status == WebRtcConnectionStatus.Registered 
                                                 ? "WebRTC Status: Test successful ✓" 
                                                 : "WebRTC Status: Test failed ✗";
+                                            SyncMainWebRtcStatusLabelFromLegacy();
                                         }
                                     }), System.Windows.Threading.DispatcherPriority.Normal);
                                 }
@@ -2721,6 +3528,7 @@ namespace Softphone
                                     WebRtcStatusTextBlock.Text = status == WebRtcConnectionStatus.Registered 
                                         ? "WebRTC Status: Test successful ✓" 
                                         : "WebRTC Status: Test failed ✗";
+                                    SyncMainWebRtcStatusLabelFromLegacy();
                                 }
                             }
                             else
@@ -2729,8 +3537,7 @@ namespace Softphone
                             }
                             
                             // НЕ удаляем сервис - он общий и может использоваться дальше
-                            TestWebRtcConnectionButton.IsEnabled = true;
-                            TestWebRtcConnectionButton.Content = "Test Connection";
+                            SetWebRtcTestButtonsState(true, "Test Connection");
                         }
                     });
                 };
@@ -2752,18 +3559,9 @@ namespace Softphone
                     }
                     WebRtcStatusTextBlock.Text = "WebRTC Status: Test timeout (check connection)";
                     WebRtcStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+                    SyncMainWebRtcStatusLabelFromLegacy();
                     
-                    CustomMessageBox.Show("WebRTC test timed out after 15 seconds.\n\n" +
-                                         "This might indicate:\n" +
-                                         "• WebSocket server is not accessible\n" +
-                                         "• Network connectivity issues\n" +
-                                         "• Server is not responding\n\n" +
-                                         "Check Debug Output for detailed logs.", 
-                                         "WebRTC Test Timeout", 
-                                         MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    
-                    TestWebRtcConnectionButton.IsEnabled = true;
-                    TestWebRtcConnectionButton.Content = "Test Connection";
+                    SetWebRtcTestButtonsState(true, "Test Connection");
                 }
             }
             catch (Exception ex)
@@ -2775,8 +3573,7 @@ namespace Softphone
                     "WebRTC Test Error", 
                     MessageBoxButton.OK, MessageBoxImage.Error, this);
                 
-                TestWebRtcConnectionButton.IsEnabled = true;
-                TestWebRtcConnectionButton.Content = "Test Connection";
+                SetWebRtcTestButtonsState(true, "Test Connection");
             }
         }
 
@@ -2796,20 +3593,16 @@ namespace Softphone
                     
                     if (settings != null)
                     {
-                        // Migrate legacy plaintext password to encrypted (best-effort)
+                        // Migrate legacy plaintext secrets to encrypted (best-effort)
                         SipPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsPath, settings);
+                        TurnPasswordProvider.MigratePlaintextToEncryptedIfNeeded(settingsPath, settings);
+                        SipPasswordProvider.MigrateEncryptedToDpapiIfNeeded(settingsPath, settings);
+                        TurnPasswordProvider.MigrateEncryptedToDpapiIfNeeded(settingsPath, settings);
                         
                         MainWindow.Log($"[SettingsWindow] LoadSettings: Settings loaded - SipServer='{settings.SipServer}', SipUsername='{settings.SipUsername}', SipPasswordEncrypted={(string.IsNullOrEmpty(settings.SipPasswordEncrypted) ? "empty" : "set")}");
                         
-                        // Парсим server:port если есть
-                        string server = settings.SipServer ?? "";
-                        string port = "5060";
-                        if (server.Contains(":"))
-                        {
-                            var parts = server.Split(':');
-                            server = parts[0];
-                            if (parts.Length > 1) port = parts[1];
-                        }
+                        SipEndpointHelper.ParseStoredSipServer(settings.SipServer, out string server, out int portNum);
+                        string port = portNum.ToString(CultureInfo.InvariantCulture);
                         
                         MainWindow.Log($"[SettingsWindow] LoadSettings: Parsed - server='{server}', port='{port}'");
                         
@@ -2859,24 +3652,75 @@ namespace Softphone
                         {
                             MainWindow.Log($"[SettingsWindow] LoadSettings: ERROR - SipPasswordBox is null!");
                         }
+
+                        if (MainWebRtcUsernameTextBox != null)
+                        {
+                            string u = settings.WebRtcUsername ?? "";
+                            if (string.IsNullOrWhiteSpace(u)) u = settings.SipUsername ?? "";
+                            MainWebRtcUsernameTextBox.Text = u;
+                        }
+                        if (MainWebRtcPasswordBox != null)
+                        {
+                            MainWebRtcPasswordBox.Password = ResolveWebRtcPasswordForUi(settings) ?? "";
+                        }
                         
                         if (MainConnectionNameTextBox != null)
                         {
                             MainConnectionNameTextBox.Text = settings.MainConnectionName ?? "";
                         }
 
-                        // Загружаем настройки второго подключения
-                        if (!string.IsNullOrEmpty(settings.SipServer2) || !string.IsNullOrEmpty(settings.SipUsername2))
+                        if (SipTlsCheckBox != null)
                         {
-                            // Парсим server:port для второго подключения
-                            string server2 = settings.SipServer2 ?? "";
-                            string port2 = "5060";
-                            if (server2.Contains(":"))
+                            SipTlsCheckBox.IsChecked = settings.SipUseTls;
+                        }
+                        if (SipSrtpCheckBox != null)
+                        {
+                            SipSrtpCheckBox.IsChecked = settings.SipUseSrtp;
+                        }
+
+                        // Transport toggle for primary connection. Legacy UseWebRtcAudio is honored
+                        // when MainConnectionTransport is unset (first-run migration).
+                        bool mainUsesWebRtc;
+                        if (!string.IsNullOrWhiteSpace(settings.MainConnectionTransport))
+                        {
+                            mainUsesWebRtc = string.Equals(settings.MainConnectionTransport, "WebRtc", StringComparison.OrdinalIgnoreCase);
+                        }
+                        else
+                        {
+                            mainUsesWebRtc = settings.UseWebRtcAudio;
+                        }
+                        if (MainTransportSipRadio != null) MainTransportSipRadio.IsChecked = !mainUsesWebRtc;
+                        if (MainTransportWebRtcRadio != null) MainTransportWebRtcRadio.IsChecked = mainUsesWebRtc;
+                        if (MainWsUriTextBox != null)
+                        {
+                            string ws = settings.WebRtcWsUri ?? "";
+                            MainWsUriTextBox.Text = string.IsNullOrEmpty(ws) ? "wss://" : ws;
+                        }
+                        ApplyMainTransportVisibility(mainUsesWebRtc);
+                        UpdateMainWebRtcStatusText();
+
+                        // Per-connection TURN (main). Fallback to legacy WebRtcTurn* for migration.
+                        if (MainTurnUriTextBox != null)
+                            MainTurnUriTextBox.Text = settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri ?? "";
+                        if (MainTurnUsernameTextBox != null)
+                            MainTurnUsernameTextBox.Text = settings.MainWebRtcTurnUsername ?? settings.WebRtcTurnUsername ?? "";
+                        if (MainTurnPasswordBox != null)
+                            MainTurnPasswordBox.Password = TurnPasswordProvider.GetMainTurnPassword(settings) ?? "";
+                        ApplyTurnUiFromStoredUri(isMain: true, storedUri: settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri);
+                        // Run an explicit status refresh after fields are fully populated from disk.
+                        ScheduleTurnStatusCheck(isMain: true);
+
+                        // Загружаем настройки второго подключения
+                        if (!string.IsNullOrEmpty(settings.SipServer2) || !string.IsNullOrEmpty(settings.SipUsername2) ||
+                            AppSettings.HasMeaningfulWebRtcWsUri(settings.WebRtcWsUri2) ||
+                            !string.IsNullOrEmpty(settings.WebRtcUsername2))
+                        {
+                            _suppressSecondaryTransportPersist = true;
+                            try
                             {
-                                var parts2 = server2.Split(':');
-                                server2 = parts2[0];
-                                if (parts2.Length > 1) port2 = parts2[1];
-                            }
+                            // Парсим server:port для второго подключения
+                            SipEndpointHelper.ParseStoredSipServer(settings.SipServer2, out string server2, out int portNum2);
+                            string port2 = portNum2.ToString(CultureInfo.InvariantCulture);
 
                             if (SipServer2TextBox != null)
                             {
@@ -2907,11 +3751,59 @@ namespace Softphone
                                 SecondaryConnectionNameTextBox.Text = settings.SecondaryConnectionName ?? "";
                             }
 
+                            if (SipTls2CheckBox != null)
+                            {
+                                SipTls2CheckBox.IsChecked = settings.SipUseTls2;
+                            }
+                            if (SipSrtp2CheckBox != null)
+                            {
+                                SipSrtp2CheckBox.IsChecked = settings.SipUseSrtp2;
+                            }
+
+                            // Secondary transport toggle (disk flag + WebRTC-only legacy inference)
+                            bool secondaryUsesWebRtc = AppSettings.SecondaryLineUsesWebRtc(settings);
+                            if (SecondaryTransportSipRadio != null) SecondaryTransportSipRadio.IsChecked = !secondaryUsesWebRtc;
+                            if (SecondaryTransportWebRtcRadio != null) SecondaryTransportWebRtcRadio.IsChecked = secondaryUsesWebRtc;
+                            if (SecondaryWsUriTextBox != null)
+                            {
+                                string ws2 = settings.WebRtcWsUri2 ?? "";
+                                SecondaryWsUriTextBox.Text = string.IsNullOrEmpty(ws2) ? "wss://" : ws2;
+                            }
+                            if (SecondaryWebRtcUsername2TextBox != null)
+                            {
+                                string u2 = settings.WebRtcUsername2 ?? "";
+                                if (string.IsNullOrWhiteSpace(u2)) u2 = settings.SipUsername2 ?? "";
+                                SecondaryWebRtcUsername2TextBox.Text = u2;
+                            }
+                            if (SecondaryWebRtcPassword2Box != null)
+                            {
+                                SecondaryWebRtcPassword2Box.Password = "";
+                                string? encW2 = settings.WebRtcPasswordEncrypted2;
+                                if (string.IsNullOrWhiteSpace(encW2)) encW2 = settings.SipPasswordEncrypted2;
+                                if (!string.IsNullOrEmpty(encW2))
+                                {
+                                    try
+                                    {
+                                        SecondaryWebRtcPassword2Box.Password = TokenEncryption.Decrypt(encW2);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        MainWindow.Log($"[SettingsWindow] LoadSettings: Error decrypting WebRTC password2: {ex.Message}");
+                                    }
+                                }
+                            }
+                            ApplySecondaryTransportVisibility(secondaryUsesWebRtc);
+
                             // Показываем секцию второго подключения и скрываем кнопку "Add"
                             if (SecondConnectionGrid != null)
                             {
                                 SecondConnectionGrid.Visibility = Visibility.Visible;
                                 AddAnotherConnectionButton.Visibility = Visibility.Collapsed;
+                            }
+                            }
+                            finally
+                            {
+                                _suppressSecondaryTransportPersist = false;
                             }
                         }
                     }
@@ -2968,30 +3860,183 @@ namespace Softphone
             }
         }
 
+        /// <summary>Обработчик переключения транспорта основного подключения (SIP/WebRTC).</summary>
+        private void MainTransportRadio_Changed(object sender, RoutedEventArgs e)
+        {
+            bool webRtc = MainTransportWebRtcRadio?.IsChecked == true;
+            ApplyMainTransportVisibility(webRtc);
+            UpdateMainWebRtcStatusText();
+        }
+
+        /// <summary>Обработчик переключения транспорта второго подключения (SIP/WebRTC).</summary>
+        private async void SecondaryTransportRadio_Changed(object sender, RoutedEventArgs e)
+        {
+            bool webRtc = SecondaryTransportWebRtcRadio?.IsChecked == true;
+            if (_suppressSecondaryTransportPersist)
+                return;
+
+            ApplySecondaryTransportVisibility(webRtc);
+            _secondaryConnectionIssueDetail = null;
+            if (SecondaryConnectionIssueButton != null)
+                SecondaryConnectionIssueButton.Visibility = Visibility.Collapsed;
+
+            // Debounce: rapid SIP/WebRTC toggles used to queue many full teardown/rebuild cycles and could wedge the UI.
+            try
+            {
+                _secondaryTransportReinitCts?.Cancel();
+                _secondaryTransportReinitCts?.Dispose();
+            }
+            catch { }
+            _secondaryTransportReinitCts = new CancellationTokenSource();
+            var token = _secondaryTransportReinitCts.Token;
+
+            try
+            {
+                await Task.Delay(450, token).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            if (token.IsCancellationRequested)
+                return;
+
+            try
+            {
+                string path = AppDataHelper.GetSettingsFilePath();
+                AppSettings settings;
+                if (File.Exists(path))
+                {
+                    string json = File.ReadAllText(path);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+                }
+                else
+                    settings = new AppSettings();
+
+                bool finalWebRtc = SecondaryTransportWebRtcRadio?.IsChecked == true;
+                settings.SecondaryConnectionTransport = finalWebRtc ? "WebRtc" : "Sip";
+                File.WriteAllText(path, JsonConvert.SerializeObject(settings, Formatting.Indented));
+
+                if (TryGetMainWindow() is MainWindow mainWindow)
+                    await mainWindow.InitializeSecondConnectionAsync().ConfigureAwait(true);
+
+                UpdateConnection2Status();
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] SecondaryTransportRadio_Changed: {ex.Message}");
+            }
+        }
+
+        private void ApplyMainTransportVisibility(bool webRtc)
+        {
+            if (MainSipFields != null)
+                MainSipFields.Visibility = webRtc ? Visibility.Collapsed : Visibility.Visible;
+            if (MainWebRtcFields != null)
+                MainWebRtcFields.Visibility = webRtc ? Visibility.Visible : Visibility.Collapsed;
+            // TURN expander is only meaningful for WebRTC.
+            if (MainTurnSettingsExpander != null)
+                MainTurnSettingsExpander.Visibility = webRtc ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        private void ApplySecondaryTransportVisibility(bool webRtc)
+        {
+            if (SecondarySipFields != null)
+                SecondarySipFields.Visibility = webRtc ? Visibility.Collapsed : Visibility.Visible;
+            if (SecondaryWebRtcFields != null)
+                SecondaryWebRtcFields.Visibility = webRtc ? Visibility.Visible : Visibility.Collapsed;
+            if (SecondaryTransportBadgeText != null)
+                SecondaryTransportBadgeText.Text = webRtc ? "WebRTC" : "SIP";
+        }
+
+        private void UpdateMainWebRtcStatusText()
+        {
+            if (MainWebRtcStatusTextBlock == null || MainWsUriTextBox == null || MainTestWebRtcButton == null)
+                return;
+
+            string wsUri = MainWsUriTextBox.Text?.Trim() ?? "";
+            bool webRtcSelected = MainTransportWebRtcRadio?.IsChecked == true;
+            bool hasUri = !string.IsNullOrEmpty(wsUri) && wsUri != "wss://";
+            if (!webRtcSelected)
+            {
+                MainWebRtcStatusTextBlock.Text = "WebRTC Status: SIP transport selected";
+                MainTestWebRtcButton.IsEnabled = false;
+            }
+            else if (!hasUri)
+            {
+                MainWebRtcStatusTextBlock.Text = "WebRTC Status: Not configured";
+                MainTestWebRtcButton.IsEnabled = false;
+            }
+            else
+            {
+                MainWebRtcStatusTextBlock.Text = "WebRTC Status: Ready to test";
+                MainTestWebRtcButton.IsEnabled = true;
+            }
+        }
+
+        private static string? ResolveWebRtcPasswordForUi(AppSettings settings)
+        {
+            return SipPasswordProvider.GetMainWebRtcPassword(settings);
+        }
+
         private async void SaveConnectionSettings_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                string server = SipServerTextBox.Text.Trim();
+                bool useWebRtc = MainTransportWebRtcRadio?.IsChecked == true;
                 string username = SipUsernameTextBox.Text.Trim();
                 string password = SipPasswordBox.Password;
+                string rawServer = SipServerTextBox?.Text?.Trim() ?? "";
+                string server = SipEndpointHelper.NormalizeServerInput(rawServer, out int? portFromUrl);
+                bool pastedUrl = rawServer.Contains("://", StringComparison.Ordinal);
                 string port = SipPortTextBox?.Text?.Trim() ?? "5060";
+                string wsUriRaw = MainWsUriTextBox?.Text?.Trim() ?? "";
 
-                if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+                if (useWebRtc)
                 {
-                    CustomMessageBox.Show("Please fill in all SIP connection fields.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    return;
+                    string wUser = MainWebRtcUsernameTextBox?.Text?.Trim() ?? "";
+                    string wPass = MainWebRtcPasswordBox?.Password ?? "";
+                    if (string.IsNullOrEmpty(wUser) || string.IsNullOrEmpty(wPass))
+                    {
+                        CustomMessageBox.Show("Please enter WebRTC username and password.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
+                    if (string.IsNullOrEmpty(wsUriRaw) || wsUriRaw == "wss://")
+                    {
+                        CustomMessageBox.Show("Please enter a valid WebSocket URI (wss://...).", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
+                }
+                else
+                {
+                    if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+                    {
+                        CustomMessageBox.Show("Please enter SIP username and password.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
+                    if (string.IsNullOrEmpty(server))
+                    {
+                        CustomMessageBox.Show("Please enter the SIP server address.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
                 }
 
-                if (!int.TryParse(port, out int portNum) || portNum < 1 || portNum > 65535)
+                int portNum = SipEndpointHelper.DefaultSipPort;
+                if (!useWebRtc)
                 {
-                    CustomMessageBox.Show("Invalid port number. Using default port 5060.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    portNum = 5060;
+                    if (pastedUrl && portFromUrl.HasValue)
+                        portNum = portFromUrl.Value;
+                    else if (int.TryParse(port, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedPort) && parsedPort >= 1 && parsedPort <= 65535)
+                        portNum = parsedPort;
+                    else if (portFromUrl.HasValue)
+                        portNum = portFromUrl.Value;
+                    else
+                    {
+                        CustomMessageBox.Show("Invalid port number. Using default port 5060.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    }
                 }
 
-                string serverWithPort = $"{server}:{portNum}";
-                
-                // Загружаем существующие настройки, чтобы сохранить аудиоустройства
                 AppSettings settings;
                 if (File.Exists(AppDataHelper.GetSettingsFilePath()))
                 {
@@ -3003,12 +4048,46 @@ namespace Softphone
                     settings = new AppSettings();
                 }
 
-                // Обновляем настройки подключения
-                settings.SipServer = serverWithPort;
-                settings.SipUsername = username;
-                settings.SipPasswordEncrypted = TokenEncryption.Encrypt(password);
-                settings.SipPassword = null; // do not persist plaintext
+                // Transport selection (also keep legacy UseWebRtcAudio synced for compat).
+                settings.MainConnectionTransport = useWebRtc ? "WebRtc" : "Sip";
+                settings.UseWebRtcAudio = useWebRtc;
+
+                if (useWebRtc)
+                {
+                    settings.WebRtcWsUri = SipEndpointHelper.NormalizeWebRtcWsUri(wsUriRaw);
+                    string rtcUser = MainWebRtcUsernameTextBox?.Text?.Trim() ?? "";
+                    // MikoPBX auth uses bare extension; AoR gets -WS appended in GetWebRtcConfigForConnection.
+                    if (rtcUser.EndsWith("-WS", StringComparison.OrdinalIgnoreCase))
+                        rtcUser = rtcUser[..^3];
+                    settings.WebRtcUsername = rtcUser;
+                    string rtcPass = (MainWebRtcPasswordBox?.Password ?? "").Trim();
+                    settings.WebRtcPasswordEncrypted = TokenEncryption.Encrypt(rtcPass);
+                    // Keep SIP password in sync (UI says same creds for both transports).
+                    settings.SipPasswordEncrypted = TokenEncryption.Encrypt(rtcPass);
+                    settings.SipPassword = null;
+                    if (!string.IsNullOrEmpty(rtcUser))
+                        settings.SipUsername = rtcUser;
+                }
+                else
+                {
+                    settings.SipServer = $"{server}:{portNum}";
+                    settings.SipUseTls = SipTlsCheckBox?.IsChecked ?? false;
+                    settings.SipUseSrtp = SipSrtpCheckBox?.IsChecked ?? false;
+                    settings.SipUsername = username;
+                    string sipPass = password.Trim();
+                    settings.SipPasswordEncrypted = TokenEncryption.Encrypt(sipPass);
+                    settings.SipPassword = null;
+                    // Keep WebRTC password in sync so switching transport does not reuse a stale secret.
+                    settings.WebRtcPasswordEncrypted = TokenEncryption.Encrypt(sipPass);
+                    if (!string.IsNullOrEmpty(username))
+                        settings.WebRtcUsername = username.EndsWith("-WS", StringComparison.OrdinalIgnoreCase)
+                            ? username[..^3]
+                            : username;
+                }
+
                 settings.MainConnectionName = MainConnectionNameTextBox?.Text?.Trim();
+
+                // TURN is saved via the dedicated TURN button in Turn settings.
                 
                 // Сохраняем настройку выбора лида AmoCRM
                 if (EnableAmoCrmLeadSelectionCheckBox != null)
@@ -3019,18 +4098,12 @@ namespace Softphone
                 string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), json);
 
-                // Отключаем кнопку во время подключения
                 SaveAndConnectButton.IsEnabled = false;
-                ConnectionStatusTextBlock.Text = "Saving...";
-                ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                UpdateConnectionStatus();
 
                 // Уведомляем главное окно о необходимости переподключения
-                if (Owner is MainWindow mainWindow)
+                if (TryGetMainWindow() is MainWindow mainWindow)
                 {
-                    ConnectionStatusTextBlock.Text = "Connecting...";
-                    ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
-                    
-                    // Подписка уже есть в конструкторе, просто вызываем переподключение
                     await mainWindow.ReconnectFromSettingsAsync();
                     
                     // Обновляем статус после переподключения
@@ -3039,6 +4112,10 @@ namespace Softphone
                     // Обновляем названия в сплит-кнопке
                     mainWindow.UpdateCallButtonMode();
                 }
+                else
+                {
+                    UpdateConnectionStatus();
+                }
 
                 SaveAndConnectButton.IsEnabled = true;
             }
@@ -3046,8 +4123,63 @@ namespace Softphone
             {
                 ConnectionStatusTextBlock.Text = $"Error: {ex.Message}";
                 ConnectionStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+                if (PrimaryConnectionStatusPill != null)
+                    PrimaryConnectionStatusPill.Background = (System.Windows.Media.Brush)FindResource("ConnStatusPillErrBrush");
+                if (PrimaryConnectionStatusDot != null)
+                    PrimaryConnectionStatusDot.Fill = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
                 SaveAndConnectButton.IsEnabled = true;
                 CustomMessageBox.Show($"Error saving settings: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+        }
+
+        private async void SaveTurnSettings_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (SaveAndConnectTurnButton != null)
+                    SaveAndConnectTurnButton.IsEnabled = false;
+
+                // Load existing settings and update ONLY main TURN fields.
+                var settingsPath = AppDataHelper.GetSettingsFilePath();
+                AppSettings settings;
+                if (File.Exists(settingsPath))
+                {
+                    string existingJson = File.ReadAllText(settingsPath);
+                    settings = JsonConvert.DeserializeObject<AppSettings>(existingJson) ?? new AppSettings();
+                }
+                else
+                {
+                    settings = new AppSettings();
+                }
+
+                settings.MainWebRtcTurnUri = BuildTurnUriFromUi(isMain: true);
+                settings.MainWebRtcTurnUsername = MainTurnUsernameTextBox?.Text?.Trim();
+                TurnPasswordProvider.SetMainTurnPassword(settings, MainTurnPasswordBox?.Password);
+
+                // Keep legacy TURN cleared to avoid split-brain configs.
+                settings.WebRtcTurnUri = null;
+                settings.WebRtcTurnUsername = null;
+                settings.WebRtcTurnPassword = null;
+
+                string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                File.WriteAllText(settingsPath, json);
+
+                // Refresh status in UI and reconnect to apply new TURN immediately.
+                ScheduleTurnStatusCheck(isMain: true);
+
+                if (TryGetMainWindow() is MainWindow mainWindow)
+                {
+                    await mainWindow.ReconnectFromSettingsAsync();
+                }
+            }
+            catch (Exception ex)
+            {
+                CustomMessageBox.Show($"Error saving TURN settings: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
+            }
+            finally
+            {
+                if (SaveAndConnectTurnButton != null)
+                    SaveAndConnectTurnButton.IsEnabled = true;
             }
         }
 
@@ -3066,53 +4198,89 @@ namespace Softphone
         {
             try
             {
-                string server = SipServer2TextBox.Text.Trim();
-                string username = SipUsername2TextBox.Text.Trim();
-                string password = SipPassword2Box.Password;
+                bool useWebRtc = SecondaryTransportWebRtcRadio?.IsChecked == true;
+                string sipUsername2 = SipUsername2TextBox?.Text?.Trim() ?? "";
+                string sipPassword2 = SipPassword2Box.Password;
+                string webRtcUser2 = SecondaryWebRtcUsername2TextBox?.Text?.Trim() ?? "";
+                string webRtcPass2 = SecondaryWebRtcPassword2Box.Password;
+                string rawServer2 = SipServer2TextBox?.Text?.Trim() ?? "";
+                string server = SipEndpointHelper.NormalizeServerInput(rawServer2, out int? portFromUrl2);
+                bool pastedUrl2 = rawServer2.Contains("://", StringComparison.Ordinal);
                 string port = SipPort2TextBox?.Text?.Trim() ?? "5060";
+                string wsUriRaw = SecondaryWsUriTextBox?.Text?.Trim() ?? "";
 
-                if (string.IsNullOrEmpty(server) || string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password))
+                if (useWebRtc)
                 {
-                    CustomMessageBox.Show("Please fill in all SIP connection fields.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    return;
-                }
-
-                if (!int.TryParse(port, out int portNum) || portNum < 1 || portNum > 65535)
-                {
-                    CustomMessageBox.Show("Invalid port number. Using default port 5060.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning, this);
-                    portNum = 5060;
-                }
-
-                string serverWithPort = $"{server}:{portNum}";
-                
-                // Проверяем, не используются ли те же учетные данные, что и для основного подключения
-                string mainServer = SipServerTextBox?.Text?.Trim() ?? "";
-                string mainPort = SipPortTextBox?.Text?.Trim() ?? "5060";
-                string mainServerWithPort = $"{mainServer}:{mainPort}";
-                string mainUsername = SipUsernameTextBox?.Text?.Trim() ?? "";
-                
-                if (serverWithPort.Equals(mainServerWithPort, StringComparison.OrdinalIgnoreCase) && 
-                    username.Equals(mainUsername, StringComparison.OrdinalIgnoreCase))
-                {
-                    var result = CustomMessageBox.Show(
-                        "Warning: You are using the same server and username as the main connection.\n\n" +
-                        "This may cause registration conflicts (403 Forbidden error).\n\n" +
-                        "For the second connection, you should use:\n" +
-                        "• A different username on the same server, OR\n" +
-                        "• A different server\n\n" +
-                        "Do you want to continue anyway?",
-                        "Registration Conflict Warning",
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Warning,
-                        this);
-                    
-                    if (result == MessageBoxResult.No)
+                    if (string.IsNullOrEmpty(webRtcUser2) || string.IsNullOrEmpty(webRtcPass2))
                     {
+                        CustomMessageBox.Show("Please enter WebRTC username and password for the secondary connection.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
+                    if (string.IsNullOrEmpty(wsUriRaw) || wsUriRaw == "wss://")
+                    {
+                        CustomMessageBox.Show("Please enter a valid WebSocket URI (wss://...) for the secondary connection.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
                         return;
                     }
                 }
-                
-                // Загружаем существующие настройки
+                else
+                {
+                    if (string.IsNullOrEmpty(sipUsername2) || string.IsNullOrEmpty(sipPassword2))
+                    {
+                        CustomMessageBox.Show("Please enter SIP username and password for the secondary connection.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
+                    if (string.IsNullOrEmpty(server))
+                    {
+                        CustomMessageBox.Show("Please enter the SIP server address for the secondary connection.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                        return;
+                    }
+                }
+
+                int portNum = SipEndpointHelper.DefaultSipPort;
+                string serverWithPort = "";
+                if (!useWebRtc)
+                {
+                    if (pastedUrl2 && portFromUrl2.HasValue)
+                        portNum = portFromUrl2.Value;
+                    else if (int.TryParse(port, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedPort2) && parsedPort2 >= 1 && parsedPort2 <= 65535)
+                        portNum = parsedPort2;
+                    else if (portFromUrl2.HasValue)
+                        portNum = portFromUrl2.Value;
+                    else
+                    {
+                        CustomMessageBox.Show("Invalid port number. Using default port 5060.", "Warning", MessageBoxButton.OK, MessageBoxImage.Warning, this);
+                    }
+                    serverWithPort = $"{server}:{portNum}";
+
+                    // Conflict check is only meaningful for SIP-SIP combinations.
+                    string mainServer = SipServerTextBox?.Text?.Trim() ?? "";
+                    string mainPort = SipPortTextBox?.Text?.Trim() ?? "5060";
+                    string mainServerWithPort = $"{mainServer}:{mainPort}";
+                    string mainUsername = SipUsernameTextBox?.Text?.Trim() ?? "";
+                    bool mainIsSip = MainTransportSipRadio?.IsChecked == true;
+
+                    if (mainIsSip && serverWithPort.Equals(mainServerWithPort, StringComparison.OrdinalIgnoreCase) &&
+                        sipUsername2.Equals(mainUsername, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var result = CustomMessageBox.Show(
+                            "Warning: You are using the same server and username as the main connection.\n\n" +
+                            "This may cause registration conflicts (403 Forbidden error).\n\n" +
+                            "For the second connection, you should use:\n" +
+                            "• A different username on the same server, OR\n" +
+                            "• A different server\n\n" +
+                            "Do you want to continue anyway?",
+                            "Registration Conflict Warning",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Warning,
+                            this);
+
+                        if (result == MessageBoxResult.No)
+                        {
+                            return;
+                        }
+                    }
+                }
+
                 AppSettings settings;
                 if (File.Exists(AppDataHelper.GetSettingsFilePath()))
                 {
@@ -3124,27 +4292,41 @@ namespace Softphone
                     settings = new AppSettings();
                 }
 
-                // Обновляем настройки второго подключения
-                settings.SipServer2 = serverWithPort;
-                settings.SipUsername2 = username; // Сохраняем как есть (может содержать '@' для некоторых провайдеров)
-                settings.SipPasswordEncrypted2 = TokenEncryption.Encrypt(password);
+                settings.SecondaryConnectionTransport = useWebRtc ? "WebRtc" : "Sip";
+
+                if (useWebRtc)
+                {
+                    settings.WebRtcWsUri2 = SipEndpointHelper.NormalizeWebRtcWsUri(wsUriRaw);
+                    settings.SipServer2 = null;
+                    settings.RtpServer2 = null;
+                    settings.WebRtcUsername2 = webRtcUser2;
+                    settings.WebRtcPasswordEncrypted2 = TokenEncryption.Encrypt(webRtcPass2);
+                }
+                else
+                {
+                    settings.SipServer2 = serverWithPort;
+                    settings.SipUseTls2 = SipTls2CheckBox?.IsChecked ?? false;
+                    settings.SipUseSrtp2 = SipSrtp2CheckBox?.IsChecked ?? false;
+                    settings.WebRtcWsUri2 = null;
+                    settings.WebRtcUsername2 = null;
+                    settings.WebRtcPasswordEncrypted2 = null;
+                    settings.SecondaryWebRtcTurnUri = null;
+                    settings.SecondaryWebRtcTurnUsername = null;
+                    TurnPasswordProvider.ClearSecondaryTurnPassword(settings);
+                    settings.SipUsername2 = sipUsername2;
+                    settings.SipPasswordEncrypted2 = TokenEncryption.Encrypt(sipPassword2);
+                }
                 settings.SecondaryConnectionName = SecondaryConnectionNameTextBox?.Text?.Trim();
 
                 string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
                 File.WriteAllText(AppDataHelper.GetSettingsFilePath(), json);
 
-                // Отключаем кнопку во время подключения
                 SaveAndConnect2Button.IsEnabled = false;
-                Connection2StatusTextBlock.Text = "Saving...";
-                Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                UpdateConnection2Status();
 
                 // Уведомляем главное окно о необходимости переподключения
-                if (Owner is MainWindow mainWindow)
+                if (TryGetMainWindow() is MainWindow mainWindow)
                 {
-                    Connection2StatusTextBlock.Text = "Connecting...";
-                    Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentBlueBrush");
-                    
-                    // Инициализируем второе подключение
                     await mainWindow.InitializeSecondConnectionAsync();
                     
                     // Обновляем статус после переподключения
@@ -3153,6 +4335,10 @@ namespace Softphone
                     // Обновляем названия в сплит-кнопке
                     mainWindow.UpdateCallButtonMode();
                 }
+                else
+                {
+                    UpdateConnection2Status();
+                }
 
                 SaveAndConnect2Button.IsEnabled = true;
             }
@@ -3160,6 +4346,10 @@ namespace Softphone
             {
                 Connection2StatusTextBlock.Text = $"Error: {ex.Message}";
                 Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+                if (SecondaryConnectionStatusPill != null)
+                    SecondaryConnectionStatusPill.Background = (System.Windows.Media.Brush)FindResource("ConnStatusPillErrBrush");
+                if (SecondaryConnectionStatusDot != null)
+                    SecondaryConnectionStatusDot.Fill = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
                 SaveAndConnect2Button.IsEnabled = true;
                 CustomMessageBox.Show($"Error saving settings: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error, this);
             }
@@ -3169,19 +4359,37 @@ namespace Softphone
         {
             try
             {
-                if (Owner is MainWindow mainWindow)
+                if (TryGetMainWindow() is MainWindow mainWindow)
                 {
-                    // Проверяем статус второго подключения
                     bool isConnected2 = mainWindow.IsSecondConnectionConnected();
+                    if (Connection2StatusTextBlock == null)
+                        return;
                     if (isConnected2)
                     {
                         Connection2StatusTextBlock.Text = "Connected";
                         Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
+                        if (SecondaryConnectionStatusPill != null)
+                            SecondaryConnectionStatusPill.Background = (System.Windows.Media.Brush)FindResource("ConnStatusPillOkBrush");
+                        if (SecondaryConnectionStatusDot != null)
+                            SecondaryConnectionStatusDot.Fill = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
+                        if (SecondaryConnectionIssueButton != null)
+                            SecondaryConnectionIssueButton.Visibility = Visibility.Collapsed;
+                        _secondaryConnectionIssueDetail = null;
                     }
                     else
                     {
-                        Connection2StatusTextBlock.Text = "Not connected";
+                        Connection2StatusTextBlock.Text = "Disconnected";
                         Connection2StatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                        if (SecondaryConnectionStatusPill != null)
+                            SecondaryConnectionStatusPill.Background = (System.Windows.Media.Brush)FindResource("ConnStatusPillIdleBrush");
+                        if (SecondaryConnectionStatusDot != null)
+                            SecondaryConnectionStatusDot.Fill = (System.Windows.Media.Brush)FindResource("TextSecondaryBrush");
+                        if (SecondaryConnectionIssueButton != null)
+                        {
+                            SecondaryConnectionIssueButton.Visibility = string.IsNullOrEmpty(_secondaryConnectionIssueDetail)
+                                ? Visibility.Collapsed
+                                : Visibility.Visible;
+                        }
                     }
                 }
             }
@@ -3206,7 +4414,7 @@ namespace Softphone
                     return;
 
                 // 1. Disconnect second SIP service on MainWindow
-                if (Owner is MainWindow mainWindow)
+                if (TryGetMainWindow() is MainWindow mainWindow)
                 {
                     mainWindow.DisconnectSecondConnection();
                     // Обновляем названия в сплит-кнопке
@@ -3224,7 +4432,15 @@ namespace Softphone
                     settings.SipUsername2 = null;
                     settings.SipPasswordEncrypted2 = null;
                     settings.RtpServer2 = null;
+                    settings.WebRtcUsername2 = null;
+                    settings.WebRtcPasswordEncrypted2 = null;
+                    settings.WebRtcWsUri2 = null;
                     settings.SecondaryConnectionName = null;
+                    settings.SecondaryWebRtcTurnUri = null;
+                    settings.SecondaryWebRtcTurnUsername = null;
+                    TurnPasswordProvider.ClearSecondaryTurnPassword(settings);
+                    settings.SecondaryConnectionTransport = "Sip";
+                    // Legacy cleanup from older builds that stored TURN for Secondary.
 
                     string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                     File.WriteAllText(settingsPath, updatedJson);
@@ -3236,7 +4452,12 @@ namespace Softphone
                 if (SipServer2TextBox != null) SipServer2TextBox.Text = "";
                 if (SipUsername2TextBox != null) SipUsername2TextBox.Text = "";
                 if (SipPassword2Box != null) SipPassword2Box.Password = "";
-                if (SecondaryConnectionNameTextBox != null) SecondaryConnectionNameTextBox.Text = "";
+                if (SecondaryWebRtcUsername2TextBox != null) SecondaryWebRtcUsername2TextBox.Text = "";
+                if (SecondaryWebRtcPassword2Box != null) SecondaryWebRtcPassword2Box.Password = "";
+                if (SecondaryWsUriTextBox != null) SecondaryWsUriTextBox.Text = "wss://";
+                if (SecondaryTransportSipRadio != null) SecondaryTransportSipRadio.IsChecked = true;
+                if (SecondaryTransportWebRtcRadio != null) SecondaryTransportWebRtcRadio.IsChecked = false;
+                ApplySecondaryTransportVisibility(webRtc: false);
 
                 // 4. Collapse the card & show "Add" button again
                 if (SecondConnectionGrid != null)
@@ -3645,8 +4866,16 @@ namespace Softphone
 
         protected override void OnClosed(EventArgs e)
         {
+            try
+            {
+                _secondaryTransportReinitCts?.Cancel();
+                _secondaryTransportReinitCts?.Dispose();
+                _secondaryTransportReinitCts = null;
+            }
+            catch { }
+
             // Отписываемся от событий при закрытии окна
-            if (Owner is MainWindow mainWindow)
+            if (TryGetMainWindow() is MainWindow mainWindow)
             {
                 mainWindow.OnConnectionStatusChanged -= UpdateConnectionStatusFromMainWindow;
                 
@@ -3726,7 +4955,7 @@ namespace Softphone
                 string callbackUri = "callspire://cdr-auth";
                 string loginUrl = $"{serviceUrl.TrimEnd('/')}/login?callback={Uri.EscapeDataString(callbackUri)}";
 
-                MainWindow.Log($"[MikoPBX CDR] Opening browser for authorization: {loginUrl}");
+                MainWindow.Log($"[PBX Gateway] Opening browser for authorization: {loginUrl}");
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = loginUrl,
@@ -3735,7 +4964,7 @@ namespace Softphone
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] Authorize error: {ex.Message}");
+                MainWindow.Log($"[PBX Gateway] Authorize error: {ex.Message}");
                 CustomMessageBox.Show(
                     $"Failed to open browser: {ex.Message}",
                     "MikoPBX gateway",
@@ -3783,11 +5012,11 @@ namespace Softphone
                 mainWindow?.DisableMikoPbxCdrService();
 
                 UpdateMikoPbxCdrStatus("Not connected", false);
-                MainWindow.Log("[MikoPBX CDR] Settings cleared");
+                MainWindow.Log("[PBX Gateway] Settings cleared");
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] Clear settings error: {ex.Message}");
+                MainWindow.Log($"[PBX Gateway] Clear settings error: {ex.Message}");
             }
         }
 
@@ -3821,47 +5050,85 @@ namespace Softphone
                     var mainWindow = Application.Current.MainWindow as MainWindow;
                     mainWindow?.InitializeMikoPbxCdrService(settings);
                 }
+
+                CheckMikoPbxCdrConnectionStatus();
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] Save settings error: {ex.Message}");
+                MainWindow.Log($"[PBX Gateway] Save settings error: {ex.Message}");
             }
         }
 
+        /// <summary>
+        /// Re-checks gateway URL + JWT against the proxy (HTTP). Safe to call from any thread.
+        /// </summary>
         private void CheckMikoPbxCdrConnectionStatus()
+        {
+            _ = RunMikoPbxCdrConnectionCheckAsync();
+        }
+
+        private async Task RunMikoPbxCdrConnectionCheckAsync()
         {
             try
             {
                 string settingsPath = AppDataHelper.GetSettingsFilePath();
                 if (!File.Exists(settingsPath))
                 {
-                    UpdateMikoPbxCdrStatus("Not connected", false);
+                    await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus("Not connected", false));
                     return;
                 }
+
                 string json = File.ReadAllText(settingsPath);
                 var settings = JsonConvert.DeserializeObject<AppSettings>(json);
                 if (settings == null || !settings.EnableMikoPbxCdr)
                 {
-                    UpdateMikoPbxCdrStatus("Not connected", false);
+                    await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus("Not connected", false));
                     return;
                 }
 
-                bool hasToken = !string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted);
-                bool hasUrl = !string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl);
-                bool hasExt = !string.IsNullOrEmpty(settings.MikoPbxExtension);
+                bool hasUrl = !string.IsNullOrEmpty(settings.MikoPbxCdrServiceUrl?.Trim());
+                bool hasExt = !string.IsNullOrEmpty(settings.MikoPbxExtension?.Trim());
+                if (!hasUrl || !hasExt)
+                {
+                    await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus("Not configured", false));
+                    return;
+                }
 
-                if (hasToken && hasUrl && hasExt)
-                    UpdateMikoPbxCdrStatus("Connected", true);
-                else if (hasUrl && !hasToken)
-                    UpdateMikoPbxCdrStatus("Not authorized", false);
-                else
-                    UpdateMikoPbxCdrStatus("Not configured", false);
+                string? tokenPlain = null;
+                try
+                {
+                    if (!string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted))
+                        tokenPlain = TokenEncryption.Decrypt(settings.MikoPbxCdrTokenEncrypted);
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[PBX Gateway] Token decrypt failed: {ex.Message}");
+                    await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus("Not connected", false));
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(tokenPlain))
+                {
+                    await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus("Not authorized", false));
+                    return;
+                }
+
+                var (text, ok) = await MikoPbxCdrService.ProbeGatewayAsync(settings.MikoPbxCdrServiceUrl, tokenPlain)
+                    .ConfigureAwait(false);
+                await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus(text, ok));
+                await RefreshKommoGatewayModuleStatusAsync().ConfigureAwait(false);
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] Check status error: {ex.Message}");
-                UpdateMikoPbxCdrStatus("Error", false);
+                MainWindow.Log($"[PBX Gateway] Check status error: {ex.Message}");
+                await Dispatcher.InvokeAsync(() => UpdateMikoPbxCdrStatus("Error", false));
             }
+        }
+
+        /// <summary>After OAuth callback or manual refresh — probes /health + JWT API.</summary>
+        public void RefreshMikoGatewayConnectionStatus()
+        {
+            CheckMikoPbxCdrConnectionStatus();
         }
 
         public void UpdateMikoPbxCdrStatus(string statusText, bool isConnected)
@@ -3900,16 +5167,15 @@ namespace Softphone
                     string updatedJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                     File.WriteAllText(settingsPath, updatedJson);
 
-                    UpdateMikoPbxCdrStatus("Connected", true);
-
                     var mainWindow = Application.Current.MainWindow as MainWindow;
                     mainWindow?.InitializeMikoPbxCdrService(settings);
+                    RefreshMikoGatewayConnectionStatus();
 
-                    MainWindow.Log("[MikoPBX CDR] Token received and saved");
+                    MainWindow.Log("[PBX Gateway] Token received and saved");
                 }
                 catch (Exception ex)
                 {
-                    MainWindow.Log($"[MikoPBX CDR] Token save error: {ex.Message}");
+                    MainWindow.Log($"[PBX Gateway] Token save error: {ex.Message}");
                     UpdateMikoPbxCdrStatus("Token save failed", false);
                 }
             });

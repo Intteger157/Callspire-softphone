@@ -1,27 +1,29 @@
 using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Diagnostics;
 
 namespace Softphone
 {
     /// <summary>
-    /// Управляет single-instance поведением приложения
-    /// Если приложение уже запущено, передает параметры в существующий экземпляр
+    /// Single-instance: one Callspire process. Secondary launches forward callspire:// to the primary via pipe.
     /// </summary>
     public static class SingleInstanceManager
     {
         private const string MutexName = "CallspireSoftphone_SingleInstance_Mutex";
         private const string PipeName = "CallspireSoftphone_SingleInstance_Pipe";
-        private static Mutex? _mutex;
-        private static bool _isFirstInstance = false;
+        private const int MaxPipeServerInstances = 10;
+        private static readonly TimeSpan DefaultForwardTimeout = TimeSpan.FromSeconds(45);
 
-        /// <summary>
-        /// Проверяет, является ли этот экземпляр первым (единственным)
-        /// </summary>
+        private static Mutex? _mutex;
+        private static bool _isFirstInstance;
+        private static MainWindow? _registeredMainWindow;
+        private static readonly ConcurrentQueue<string> _pendingMessages = new();
+
         public static bool IsFirstInstance()
         {
             try
@@ -31,145 +33,202 @@ namespace Softphone
             }
             catch
             {
+                _isFirstInstance = false;
                 return false;
             }
         }
 
+        /// <summary>True when another process already holds the app mutex.</summary>
+        public static bool AnotherInstanceIsRunning()
+        {
+            if (_isFirstInstance)
+                return false;
+
+            try
+            {
+                using var probe = Mutex.OpenExisting(MutexName);
+                return true;
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                return false;
+            }
+            catch
+            {
+                return !_isFirstInstance;
+            }
+        }
+
+        public static void RegisterMainWindow(MainWindow mainWindow)
+        {
+            _registeredMainWindow = mainWindow;
+            while (_pendingMessages.TryDequeue(out var queued))
+                DeliverMessage(queued);
+        }
+
+        public static void UnregisterMainWindow(MainWindow mainWindow)
+        {
+            if (ReferenceEquals(_registeredMainWindow, mainWindow))
+                _registeredMainWindow = null;
+        }
+
         /// <summary>
-        /// Запускает сервер для приема сообщений от других экземпляров
+        /// Start pipe server immediately on the primary instance (before MainWindow exists).
         /// </summary>
         public static void StartServer()
         {
             if (!_isFirstInstance)
                 return;
 
-            Task.Run(() =>
-            {
-                try
-                {
-                    while (_isFirstInstance)
-                    {
-                        try
-                        {
-                            using (var pipeServer = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous))
-                            {
-                                pipeServer.WaitForConnection();
-
-                                using (var reader = new StreamReader(pipeServer))
-                                {
-                                    string message = reader.ReadToEnd();
-                                    if (!string.IsNullOrEmpty(message))
-                                    {
-                                        // Передаем сообщение в UI поток
-                                        Application.Current?.Dispatcher.InvokeAsync(() =>
-                                        {
-                                            HandleIncomingMessage(message);
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            // Игнорируем ошибки при закрытии сервера
-                            if (_isFirstInstance)
-                            {
-                                Debug.WriteLine($"[SingleInstanceManager] Error in pipe server: {ex.Message}");
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                    // Игнорируем ошибки
-                }
-            });
+            Task.Run(ServerLoop);
         }
 
         /// <summary>
-        /// Отправляет сообщение в существующий экземпляр приложения
+        /// Forward a protocol URL to the running instance. Blocks up to <paramref name="timeout"/>.
+        /// Secondary instances with a callspire:// URL must call this and then exit — never start UI.
         /// </summary>
+        public static bool WaitAndForwardToExistingInstance(string message, TimeSpan? timeout = null)
+        {
+            var limit = timeout ?? DefaultForwardTimeout;
+            var deadline = DateTime.UtcNow + limit;
+            var attempt = 0;
+
+            Log($"[SingleInstance] Forwarding protocol message to primary instance (timeout={limit.TotalSeconds:0}s)...");
+
+            while (DateTime.UtcNow < deadline)
+            {
+                var remainingMs = (int)Math.Max(250, (deadline - DateTime.UtcNow).TotalMilliseconds);
+                var connectMs = Math.Min(2000, remainingMs);
+
+                if (TrySendOnce(message, connectMs))
+                {
+                    Log("[SingleInstance] Protocol message forwarded successfully");
+                    return true;
+                }
+
+                Thread.Sleep(Math.Min(400, 150 + attempt * 50));
+                attempt++;
+            }
+
+            Log("[SingleInstance] Failed to forward protocol message — primary instance did not accept pipe connection in time");
+            return false;
+        }
+
         public static bool SendMessageToExistingInstance(string message)
+            => WaitAndForwardToExistingInstance(message, TimeSpan.FromSeconds(8));
+
+        private static void ServerLoop()
         {
             try
             {
-                using (var pipeClient = new NamedPipeClientStream(".", PipeName, PipeDirection.Out))
+                while (_isFirstInstance)
                 {
-                    pipeClient.Connect(1000); // Таймаут 1 секунда
-                    
-                    using (var writer = new StreamWriter(pipeClient))
+                    try
                     {
-                        writer.Write(message);
-                        writer.Flush();
+                        using var pipeServer = new NamedPipeServerStream(
+                            PipeName,
+                            PipeDirection.In,
+                            MaxPipeServerInstances,
+                            PipeTransmissionMode.Byte,
+                            PipeOptions.Asynchronous);
+
+                        pipeServer.WaitForConnection();
+
+                        using var reader = new StreamReader(pipeServer);
+                        string message = reader.ReadToEnd();
+                        if (!string.IsNullOrEmpty(message))
+                            DeliverMessage(message);
                     }
-                    
-                    return true;
+                    catch (Exception ex)
+                    {
+                        if (_isFirstInstance)
+                            Log($"[SingleInstance] Pipe server error: {ex.Message}");
+                    }
                 }
+            }
+            catch
+            {
+                // shutdown
+            }
+        }
+
+        private static bool TrySendOnce(string message, int connectTimeoutMs)
+        {
+            try
+            {
+                using var pipeClient = new NamedPipeClientStream(".", PipeName, PipeDirection.Out);
+                pipeClient.Connect(Math.Max(250, connectTimeoutMs));
+
+                using var writer = new StreamWriter(pipeClient) { AutoFlush = true };
+                writer.Write(message);
+                return true;
             }
             catch (TimeoutException)
             {
-                // Сервер не отвечает - возможно, приложение закрылось
                 return false;
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SingleInstanceManager] Error sending message: {ex.Message}");
+                Debug.WriteLine($"[SingleInstanceManager] Send attempt failed: {ex.Message}");
                 return false;
             }
         }
 
-        /// <summary>
-        /// Обрабатывает входящее сообщение от другого экземпляра
-        /// </summary>
-        private static void HandleIncomingMessage(string message)
+        private static void DeliverMessage(string message)
         {
             try
             {
-                Debug.WriteLine($"[SingleInstanceManager] Received message: {message}");
+                Log($"[SingleInstance] Received forwarded message: {LogSanitizer.RedactUrlWithToken(message)}");
 
-                // Активируем главное окно
-                var mainWindow = Application.Current?.MainWindow as MainWindow;
-                if (mainWindow != null)
+                void Dispatch()
                 {
-                    // Восстанавливаем окно если оно свернуто
-                    if (mainWindow.WindowState == WindowState.Minimized)
+                    var mainWindow = _registeredMainWindow ?? Application.Current?.MainWindow as MainWindow;
+                    if (mainWindow == null)
                     {
-                        mainWindow.WindowState = WindowState.Normal;
+                        _pendingMessages.Enqueue(message);
+                        Log("[SingleInstance] MainWindow not ready — message queued");
+                        return;
                     }
-                    
-                    // Активируем окно
-                    mainWindow.Activate();
-                    mainWindow.BringIntoView();
-                    mainWindow.Focus();
 
-                    // Обрабатываем протокол callspire://
+                    WindowForegroundHelper.RequestUserAttention(mainWindow);
+
                     if (message.StartsWith("callspire://", StringComparison.OrdinalIgnoreCase))
-                    {
                         mainWindow.HandleProtocolMessage(message);
-                    }
                 }
+
+                var dispatcher = Application.Current?.Dispatcher;
+                if (dispatcher != null && !dispatcher.CheckAccess())
+                    dispatcher.BeginInvoke(new Action(Dispatch));
+                else
+                    Dispatch();
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SingleInstanceManager] Error handling message: {ex.Message}");
+                Log($"[SingleInstance] Error delivering message: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Освобождает ресурсы при закрытии приложения
-        /// </summary>
         public static void Cleanup()
         {
             try
             {
                 _isFirstInstance = false;
+                _registeredMainWindow = null;
+                while (_pendingMessages.TryDequeue(out _)) { }
                 _mutex?.ReleaseMutex();
                 _mutex?.Dispose();
+                _mutex = null;
             }
             catch
             {
-                // Игнорируем ошибки при очистке
+                // ignore
             }
+        }
+
+        private static void Log(string message)
+        {
+            Debug.WriteLine(message);
+            try { FileLogService.Instance.Enqueue(message); } catch { }
         }
     }
 }

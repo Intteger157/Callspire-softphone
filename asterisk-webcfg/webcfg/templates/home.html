@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>asterisk-webcfg</title>
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; margin: 24px; max-width: 980px; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
+      a { color: #0b63ce; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      code { background: #f5f5f5; padding: 2px 6px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h2>asterisk-webcfg</h2>
+    <p>
+      Контейнер: <code>{{ container }}</code><br/>
+      PJSIP users: <code>{{ pjsip_users_dir }}</code><br/>
+      Dialplan fragments: <code>{{ ext_dir }}</code>
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>PJSIP Users</h3>
+        <p>Создание/редактирование пользователей (endpoint/auth/aor) через include‑файлы.</p>
+        <p><a href="/users">Открыть</a></p>
+        <form method="post" action="/apply/pjsip">
+          <button type="submit">Apply: pjsip reload</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>Dialplan</h3>
+        <p>Редактор фрагментов dialplan (файлы в extensions.d).</p>
+        <p><a href="/dialplan">Открыть</a></p>
+        <form method="post" action="/apply/dialplan">
+          <button type="submit">Apply: dialplan reload</button>
+        </form>
+      </div>
+    </div>
+  </body>
+</html>
+

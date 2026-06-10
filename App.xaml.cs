@@ -24,9 +24,51 @@ namespace Softphone
             // Flush logs on exit (best effort).
             this.Exit += (_, __) =>
             {
+                // Best-effort: end any active calls on exit so they don't "continue" on PBX.
+                try
+                {
+                    if (this.MainWindow is Softphone.MainWindow mw)
+                    {
+                        mw.ShutdownTelephonyBestEffort();
+                    }
+                }
+                catch { }
                 try { FileLogService.Instance.Shutdown(); } catch { }
                 SingleInstanceManager.Cleanup();
             };
+
+            // Also attempt cleanup on OS session end / process exit.
+            try
+            {
+                AppDomain.CurrentDomain.ProcessExit += (_, __) =>
+                {
+                    try
+                    {
+                        if (this.MainWindow is Softphone.MainWindow mw)
+                        {
+                            mw.ShutdownTelephonyBestEffort();
+                        }
+                    }
+                    catch { }
+                };
+            }
+            catch { }
+
+            try
+            {
+                this.SessionEnding += (_, __) =>
+                {
+                    try
+                    {
+                        if (this.MainWindow is Softphone.MainWindow mw)
+                        {
+                            mw.ShutdownTelephonyBestEffort();
+                        }
+                    }
+                    catch { }
+                };
+            }
+            catch { }
             
             // Обработка необработанных исключений в UI потоке
             this.DispatcherUnhandledException += App_DispatcherUnhandledException;
@@ -48,43 +90,33 @@ namespace Softphone
                 protocolArg = e.Args[0];
                 if (protocolArg.StartsWith("callspire://", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!isFirstInstance)
+                    if (!isFirstInstance || SingleInstanceManager.AnotherInstanceIsRunning())
                     {
-                        // Приложение уже запущено - отправляем сообщение в существующий экземпляр
-                        Debug.WriteLine($"[App] Application already running, sending protocol message to existing instance");
-                        bool sent = SingleInstanceManager.SendMessageToExistingInstance(protocolArg);
-                        if (sent)
-                        {
-                            Debug.WriteLine("[App] Message sent successfully, shutting down this instance");
-                            Shutdown();
-                            return;
-                        }
-                        else
-                        {
-                            Debug.WriteLine("[App] Failed to send message, continuing with new instance");
-                            // Если не удалось отправить сообщение, продолжаем как первый экземпляр
-                            isFirstInstance = true;
-                            _pendingProtocolCall = protocolArg;
-                        }
+                        // Никогда не поднимаем второй UI для click-to-call — только передаём в primary.
+                        SingleInstanceManager.WaitAndForwardToExistingInstance(protocolArg);
+                        Shutdown();
+                        return;
                     }
-                    else
-                    {
-                        // Это первый экземпляр - сохраняем для обработки после создания MainWindow
-                        _pendingProtocolCall = protocolArg;
-                    }
+
+                    // Primary instance: обработаем после создания MainWindow
+                    _pendingProtocolCall = protocolArg;
                 }
             }
             
-            // Если это первый экземпляр, запускаем сервер для приема сообщений
+            // Pipe server стартует сразу, чтобы secondary успел подключиться во время cold start.
             if (isFirstInstance)
             {
                 SingleInstanceManager.StartServer();
             }
             else if (protocolArg == null)
             {
-                // Приложение уже запущено и нет протокола - закрываем этот экземпляр
-                // (но только если это не первый запуск без аргументов)
                 Debug.WriteLine("[App] Application already running without protocol args, shutting down this instance");
+                Shutdown();
+                return;
+            }
+            else
+            {
+                // callspire:// но мы не primary — уже обработано выше; на всякий случай выходим.
                 Shutdown();
                 return;
             }
@@ -98,7 +130,7 @@ namespace Softphone
         {
             try
             {
-                Debug.WriteLine($"[App] Handling callspire protocol: {protocolUrl}");
+                Debug.WriteLine($"[App] Handling callspire protocol: {LogSanitizer.RedactUrlWithToken(protocolUrl)}");
                 
                 // Парсим URL
                 if (!Uri.TryCreate(protocolUrl, UriKind.Absolute, out Uri? uri))
@@ -121,6 +153,29 @@ namespace Softphone
                     {
                         Debug.WriteLine("[App] CDR auth token received via protocol");
                         (this.MainWindow as MainWindow)?.HandleCdrAuthToken(token);
+                    }
+                    return;
+                }
+
+                if (uri.Host == "provision")
+                {
+                    var provParams = ParseQueryString(uri.Query);
+                    string? tokenId = provParams.ContainsKey("token") ? provParams["token"] : null;
+                    string? proxy = provParams.ContainsKey("proxy") ? provParams["proxy"] : null;
+                    if (string.IsNullOrEmpty(tokenId) || string.IsNullOrEmpty(proxy))
+                    {
+                        Debug.WriteLine("[App] provision URL missing token or proxy parameter");
+                        return;
+                    }
+                    Debug.WriteLine($"[App] Provision token received (proxy={proxy})");
+                    var mw = this.MainWindow as MainWindow;
+                    if (mw != null)
+                    {
+                        _ = mw.HandleProvisionTokenAsync(tokenId!, proxy!);
+                    }
+                    else
+                    {
+                        _pendingProvision = (tokenId!, proxy!);
                     }
                     return;
                 }
@@ -171,7 +226,10 @@ namespace Softphone
         // Временное хранилище для звонка из браузера, если MainWindow еще не создан
         private (string phoneNumber, long? leadId)? _pendingBrowserCall = null;
         private string? _pendingProtocolCall = null;
-        
+        // Pending provisioning request that arrived via ``callspire://provision``
+        // before MainWindow existed. Consumed by GetPendingProvision.
+        private (string tokenId, string proxy)? _pendingProvision = null;
+
         /// <summary>
         /// Вызывается MainWindow после создания для обработки отложенного звонка из браузера
         /// </summary>
@@ -187,6 +245,18 @@ namespace Softphone
             var call = _pendingBrowserCall;
             _pendingBrowserCall = null; // Очищаем после получения
             return call;
+        }
+
+        /// <summary>
+        /// Retrieves a pending provisioning request that arrived before MainWindow
+        /// was created. MainWindow should call this on startup and run the
+        /// returned (token, proxy) pair through <c>HandleProvisionTokenAsync</c>.
+        /// </summary>
+        public (string tokenId, string proxy)? GetPendingProvision()
+        {
+            var p = _pendingProvision;
+            _pendingProvision = null;
+            return p;
         }
         
         /// <summary>
@@ -242,7 +312,9 @@ namespace Softphone
                     var mainWin = MainWindow as Softphone.MainWindow;
                     if (mainWin != null)
                     {
-                        Softphone.MainWindow.Log($"[App] Unhandled UI thread exception: {e.Exception.Message}");
+                        Softphone.MainWindow.Log($"[App] Unhandled UI thread exception: {e.Exception.GetType().Name}: {e.Exception.Message}");
+                        if (!string.IsNullOrEmpty(e.Exception.StackTrace))
+                            Softphone.MainWindow.Log($"[App] Stack trace: {e.Exception.StackTrace}");
                     }
                 }
                 catch
@@ -284,10 +356,14 @@ namespace Softphone
                     // Пытаемся логировать в MainWindow, если он доступен
                     try
                     {
-                        var mainWin = MainWindow as Softphone.MainWindow;
-                        if (mainWin != null)
+                        // IMPORTANT: this can be called from a non-UI thread; marshal to Dispatcher to avoid WPF cross-thread exceptions.
+                        var dispatcher = Application.Current?.Dispatcher;
+                        if (dispatcher != null)
                         {
-                            Softphone.MainWindow.Log($"[App] Unhandled domain exception: {ex.Message}");
+                            dispatcher.BeginInvoke(new Action(() =>
+                            {
+                                try { Softphone.MainWindow.Log($"[App] Unhandled domain exception: {ex.Message}"); } catch { }
+                            }));
                         }
                     }
                     catch
@@ -320,10 +396,16 @@ namespace Softphone
                 // Пытаемся логировать в MainWindow, если он доступен
                 try
                 {
-                    var mainWin = MainWindow as Softphone.MainWindow;
-                    if (mainWin != null)
+                    // IMPORTANT: UnobservedTaskException can be raised on the finalizer thread.
+                    // Never touch WPF-bound logging directly here; marshal to Dispatcher.
+                    var dispatcher = Application.Current?.Dispatcher;
+                    if (dispatcher != null)
                     {
-                        Softphone.MainWindow.Log($"[App] Unobserved task exception: {e.Exception.Message}");
+                        var msg = e.Exception.Message;
+                        dispatcher.BeginInvoke(new Action(() =>
+                        {
+                            try { Softphone.MainWindow.Log($"[App] Unobserved task exception: {msg}"); } catch { }
+                        }));
                     }
                 }
                 catch

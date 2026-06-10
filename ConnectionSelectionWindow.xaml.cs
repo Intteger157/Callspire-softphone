@@ -19,8 +19,8 @@ namespace Softphone
 
         public enum ConnectionType
         {
-            Main,      // Основное подключение (WebRTC или SIP)
-            Secondary  // Второе подключение (только SIP)
+            Main,      // Основное подключение (SIP или WebRTC)
+            Secondary  // Второе подключение (SIP или WebRTC)
         }
 
         public ConnectionType? SelectedConnection { get; private set; }
@@ -37,7 +37,9 @@ namespace Softphone
         public ConnectionSelectionWindow(bool hasMainConnection, bool isMainWebRtc, string? mainConnectionStatus,
             bool hasSecondaryConnection, string? secondaryConnectionStatus,
             string? mainConnectionName = null, string? secondaryConnectionName = null,
-            List<CallerIdItem>? mainCallerIdItems = null, string? selectedMainCallerId = null)
+            List<CallerIdItem>? mainCallerIdItems = null, string? selectedMainCallerId = null,
+            bool forceShowForSingleConnection = false,
+            bool isSecondaryWebRtc = false)
         {
             InitializeComponent();
 
@@ -95,8 +97,8 @@ namespace Softphone
                 // Используем пользовательское название или стандартное
                 string secondaryName = !string.IsNullOrWhiteSpace(secondaryConnectionName)
                     ? secondaryConnectionName
-                    : "Additional Connection (SIP Only)";
-                
+                    : (isSecondaryWebRtc ? "Additional Connection (WebRTC)" : "Additional Connection (SIP)");
+
                 connections.Add(new ConnectionInfo
                 {
                     Type = ConnectionType.Secondary,
@@ -115,8 +117,9 @@ namespace Softphone
                 return;
             }
 
-            // Если только одно подключение, автоматически выбираем его
-            if (connections.Count == 1)
+            // Если только одно подключение, обычно выбираем его автоматически.
+            // Но при forceShowForSingleConnection показываем окно (нужно для явного выбора Caller ID).
+            if (connections.Count == 1 && !forceShowForSingleConnection)
             {
                 SelectedConnection = connections[0].Type;
                 if (SelectedConnection == ConnectionType.Main && _mainCallerIdItems.Count > 0)

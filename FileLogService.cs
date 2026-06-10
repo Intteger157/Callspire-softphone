@@ -201,6 +201,20 @@ namespace Softphone
             return Path.Combine(local, "Callspire", "Logs");
         }
 
+        /// <summary>
+        /// Returns the path of today's log file (may not exist yet if nothing was logged).
+        /// </summary>
+        public string GetCurrentLogFilePath()
+        {
+            var logsDir = GetLogsDirectoryNoLog();
+            return Path.Combine(logsDir, $"softphone_{DateTime.Now:yyyyMMdd}.log");
+        }
+
+        /// <summary>
+        /// Returns the logs directory path.
+        /// </summary>
+        public string GetLogsDirectory() => GetLogsDirectoryNoLog();
+
         public void Shutdown()
         {
             try

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Authentication;
@@ -29,7 +30,7 @@ namespace Softphone
                 // Это устраняет ошибки компиляции с Tls10/Tls11 и снижает риск "SSL connection could not be established".
                 SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
             };
-            // На некоторых сетях запросы к CDR proxy могут выполняться дольше 30 секунд
+            // На некоторых сетях запросы к PBX Gateway могут выполняться дольше 30 секунд
             // (очереди/задержки на стороне PBX/Nginx/DB lock),
             // особенно когда мы делаем сразу несколько попыток подряд.
             // Увеличиваем таймаут, чтобы CallerID и скачивание записей не срывались.
@@ -39,7 +40,7 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Queries the CDR proxy for records matching the given criteria.
+        /// Queries Callspire PBX Gateway for CDR records matching the given criteria.
         /// </summary>
         public async Task<List<CdrRecord>> GetCdrAsync(
             DateTime from,
@@ -71,7 +72,7 @@ namespace Softphone
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] GetCdrAsync error: {ex}");
+                MainWindow.Log($"[PBX Gateway] GetCdrAsync error: {ex}");
                 return new List<CdrRecord>();
             }
         }
@@ -87,17 +88,17 @@ namespace Softphone
                 var from = callTime.AddMinutes(-5);
                 var to = callTime.AddMinutes(5);
 
-                MainWindow.Log($"[MikoPBX CDR] Querying CDR: url={_baseUrl}, ext={_extension}, dst={calledNumber}, from={from:yyyy-MM-ddTHH:mm:ss}, to={to:yyyy-MM-ddTHH:mm:ss}");
+                MainWindow.Log($"[PBX Gateway] Querying CDR: url={_baseUrl}, ext={_extension}, dst={calledNumber}, from={from:yyyy-MM-ddTHH:mm:ss}, to={to:yyyy-MM-ddTHH:mm:ss}");
 
                 var records = await GetCdrAsync(from, to, dst: calledNumber, limit: 10);
 
-                MainWindow.Log($"[MikoPBX CDR] Got {records.Count} CDR record(s)");
+                MainWindow.Log($"[PBX Gateway] Got {records.Count} CDR record(s)");
 
                 CdrRecord? best = null;
                 double bestDiff = double.MaxValue;
                 foreach (var r in records)
                 {
-                    MainWindow.Log($"[MikoPBX CDR]   record: src={r.SrcNum}, dst={r.DstNum}, callerId={r.CallerId}, start={r.Start}");
+                    MainWindow.Log($"[PBX Gateway]   record: src={r.SrcNum}, dst={r.DstNum}, callerId={r.CallerId}, start={r.Start}");
                     if (DateTime.TryParse(r.Start, out var recTime))
                     {
                         double diff = Math.Abs((recTime - callTime).TotalSeconds);
@@ -116,7 +117,7 @@ namespace Softphone
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] GetCallCallerIdAsync error: {ex}");
+                MainWindow.Log($"[PBX Gateway] GetCallCallerIdAsync error: {ex}");
                 return null;
             }
         }
@@ -130,13 +131,13 @@ namespace Softphone
             try
             {
                 string url = $"{_baseUrl}/api/recording?linkedid={Uri.EscapeDataString(linkedId)}";
-                MainWindow.Log($"[MikoPBX CDR] Downloading recording: linkedId={linkedId}");
+                MainWindow.Log($"[PBX Gateway] Downloading recording: linkedId={linkedId}");
 
                 var resp = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
 
                 if (resp.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    MainWindow.Log($"[MikoPBX CDR] No recording found on server for linkedId={linkedId}");
+                    MainWindow.Log($"[PBX Gateway] No recording found on server for linkedId={linkedId}");
                     return null;
                 }
 
@@ -156,12 +157,12 @@ namespace Softphone
                 }
 
                 var fileSize = new FileInfo(localPath).Length;
-                MainWindow.Log($"[MikoPBX CDR] Recording downloaded: {localPath} ({fileSize} bytes)");
+                MainWindow.Log($"[PBX Gateway] Recording downloaded: {localPath} ({fileSize} bytes)");
                 return localPath;
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] DownloadRecordingAsync error: {ex}");
+                MainWindow.Log($"[PBX Gateway] DownloadRecordingAsync error: {ex}");
                 return null;
             }
         }
@@ -190,7 +191,7 @@ namespace Softphone
             try
             {
                 string url = $"{_baseUrl}/api/my-callerids";
-                MainWindow.Log($"[MikoPBX CDR] Fetching CallerIDs for extension {_extension}");
+                MainWindow.Log($"[PBX Gateway] Fetching CallerIDs for extension {_extension}");
                 var resp = await _http.GetAsync(url).ConfigureAwait(false);
                 resp.EnsureSuccessStatusCode();
 
@@ -202,27 +203,33 @@ namespace Softphone
                     return new List<string>();
 
                 var list = data.ToObject<List<string>>() ?? new List<string>();
-                MainWindow.Log($"[MikoPBX CDR] Got {list.Count} CallerID(s): {string.Join(", ", list)}");
+                MainWindow.Log($"[PBX Gateway] Got {list.Count} CallerID(s): {string.Join(", ", list)}");
                 return list;
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] GetMyCallerIdsAsync error: {ex.Message}");
+                MainWindow.Log($"[PBX Gateway] GetMyCallerIdsAsync error: {ex.Message}");
                 return new List<string>();
             }
         }
 
         /// <summary>
         /// Fetches CallerIDs with display names assigned to this user.
+        /// Returns <c>RequestSucceeded == false</c> when the HTTP request failed or the body could not be read (network, TLS, 401/5xx, etc.).
+        /// When <c>RequestSucceeded == true</c>, <c>Items</c> may still be empty if none are configured on the PBX.
         /// </summary>
-        public async Task<List<CallerIdItem>> GetMyCallerIdItemsAsync()
+        public async Task<(List<CallerIdItem> Items, bool RequestSucceeded)> GetMyCallerIdItemsAsync()
         {
             try
             {
                 string url = $"{_baseUrl}/api/my-callerids";
-                MainWindow.Log($"[MikoPBX CDR] Fetching CallerIDs for extension {_extension}");
+                MainWindow.Log($"[PBX Gateway] Fetching CallerIDs for extension {_extension}");
                 var resp = await _http.GetAsync(url).ConfigureAwait(false);
-                resp.EnsureSuccessStatusCode();
+                if (!resp.IsSuccessStatusCode)
+                {
+                    MainWindow.Log($"[PBX Gateway] GetMyCallerIdItemsAsync HTTP {(int)resp.StatusCode} {resp.ReasonPhrase}");
+                    return (new List<CallerIdItem>(), false);
+                }
 
                 string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
                 var envelope = JsonConvert.DeserializeObject<JObject>(json);
@@ -248,13 +255,57 @@ namespace Softphone
                             items.Add(new CallerIdItem(s, ""));
                 }
 
-                MainWindow.Log($"[MikoPBX CDR] Got {items.Count} CallerID(s): {string.Join(", ", items.Select(i => i.DisplayText))}");
-                return items;
+                MainWindow.Log($"[PBX Gateway] Got {items.Count} CallerID(s): {string.Join(", ", items.Select(i => i.DisplayText))}");
+                return (items, true);
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] GetMyCallerIdItemsAsync error: {ex.Message}");
-                return new List<CallerIdItem>();
+                MainWindow.Log($"[PBX Gateway] GetMyCallerIdItemsAsync error: {ex.Message}");
+                return (new List<CallerIdItem>(), false);
+            }
+        }
+
+        /// <summary>
+        /// Fetches MikoPBX's recent SIP auth-failure stats for this user's extension.
+        ///
+        /// The proxy (<c>/api/sip-auth-failures</c>) proxies MikoPBX's
+        /// <c>/sip:getSipAuthFailureStats</c> endpoint and filters the failures
+        /// to just this extension. We use it to warn the user that someone is
+        /// hammering the SIP password from another IP — usually an old desktop
+        /// or a misconfigured phone — before MikoPBX's Fail2Ban bans the source.
+        /// </summary>
+        public async Task<SipAuthFailureStats> GetSipAuthFailuresAsync()
+        {
+            try
+            {
+                string url = $"{_baseUrl}/api/sip-auth-failures?ext={Uri.EscapeDataString(_extension)}";
+                var resp = await _http.GetAsync(url).ConfigureAwait(false);
+                if (resp.StatusCode == HttpStatusCode.NotImplemented)
+                {
+                    // Proxy has REST API disabled — feature simply not available
+                    // on this PBX. Quiet "not supported" result, no log spam.
+                    return new SipAuthFailureStats { Supported = false };
+                }
+                if (!resp.IsSuccessStatusCode)
+                {
+                    MainWindow.Log($"[PBX Gateway] GetSipAuthFailuresAsync HTTP {(int)resp.StatusCode}");
+                    return new SipAuthFailureStats { Supported = false };
+                }
+                string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                var envelope = JsonConvert.DeserializeObject<JObject>(json);
+                int failureCount = envelope?["failure_count"]?.Value<int?>() ?? 0;
+                int totalFailures = envelope?["total_failures"]?.Value<int?>() ?? 0;
+                return new SipAuthFailureStats
+                {
+                    Supported = true,
+                    FailuresForExtension = failureCount,
+                    TotalFailuresAllPeers = totalFailures,
+                };
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[PBX Gateway] GetSipAuthFailuresAsync error: {ex.Message}");
+                return new SipAuthFailureStats { Supported = false };
             }
         }
 
@@ -262,12 +313,12 @@ namespace Softphone
         /// Initiates an outbound call via PBX AMI Originate with the specified CallerID.
         /// The PBX will ring the user's extension first, then bridge to the destination.
         /// </summary>
-        public async Task<OriginateResult> OriginateCallAsync(string destination, string callerId)
+        public async Task<OriginateResult> OriginateCallAsync(string destination, string callerId, string? ringExtension = null)
         {
             try
             {
                 string url = $"{_baseUrl}/api/originate";
-                MainWindow.Log($"[MikoPBX CDR] Originate: dst={destination}, callerId={callerId}");
+                MainWindow.Log($"[PBX Gateway] Originate: dst={destination}, callerId={callerId}, ringExt={(string.IsNullOrWhiteSpace(ringExtension) ? "<jwt>" : ringExtension)}");
 
                 var body = new { destination, callerid = callerId };
                 var content = new StringContent(
@@ -280,18 +331,140 @@ namespace Softphone
 
                 if (!resp.IsSuccessStatusCode)
                 {
-                    MainWindow.Log($"[MikoPBX CDR] Originate failed ({resp.StatusCode}): {json}");
+                    MainWindow.Log($"[PBX Gateway] Originate failed ({resp.StatusCode}): {json}");
                     return new OriginateResult { Success = false, Error = json };
                 }
 
                 var result = JsonConvert.DeserializeObject<OriginateResult>(json) ?? new OriginateResult();
-                MainWindow.Log($"[MikoPBX CDR] Originate result: success={result.Success}, originateId={result.OriginateId}");
+                MainWindow.Log($"[PBX Gateway] Originate result: success={result.Success}, originateId={result.OriginateId}");
                 return result;
             }
             catch (Exception ex)
             {
-                MainWindow.Log($"[MikoPBX CDR] OriginateCallAsync error: {ex.Message}");
+                MainWindow.Log($"[PBX Gateway] OriginateCallAsync error: {ex.Message}");
                 return new OriginateResult { Success = false, Error = ex.Message };
+            }
+        }
+
+        /// <summary>
+        /// Settings UI / diagnostics: verifies the configured base URL reaches the proxy (<c>GET /health</c>)
+        /// and the JWT still works (<c>GET /api/my-callerids</c>). Avoids showing "Connected" when the URL or token is stale.
+        /// </summary>
+        public static async Task<(string StatusText, bool IsConnected)> ProbeGatewayAsync(string? serviceUrl, string? bearerToken)
+        {
+            if (string.IsNullOrWhiteSpace(serviceUrl))
+                return ("Not configured", false);
+
+            string baseUrl = serviceUrl.Trim().TrimEnd('/');
+
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13
+            };
+            using var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
+
+            HttpResponseMessage healthResp;
+            try
+            {
+                healthResp = await http.GetAsync($"{baseUrl}/health").ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[PBX Gateway] Probe: /health failed: {ex.Message}");
+                return ("Unreachable", false);
+            }
+
+            if (healthResp.StatusCode == HttpStatusCode.NotFound)
+                return ("Wrong URL", false);
+
+            if (!healthResp.IsSuccessStatusCode)
+                return ($"HTTP {(int)healthResp.StatusCode}", false);
+
+            if (string.IsNullOrEmpty(bearerToken))
+                return ("Not authorized", false);
+
+            http.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", bearerToken.Trim());
+
+            HttpResponseMessage apiResp;
+            try
+            {
+                apiResp = await http.GetAsync($"{baseUrl}/api/my-callerids").ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[PBX Gateway] Probe: /api/my-callerids failed: {ex.Message}");
+                return ("Unreachable", false);
+            }
+
+            if (apiResp.StatusCode == HttpStatusCode.Unauthorized)
+                return ("Session expired", false);
+
+            if (!apiResp.IsSuccessStatusCode)
+                return ($"API {(int)apiResp.StatusCode}", false);
+
+            return ("Connected", true);
+        }
+
+        public async Task<KommoGatewayStatus?> GetKommoStatusAsync()
+        {
+            try
+            {
+                var resp = await _http.GetAsync($"{_baseUrl}/api/kommo/status").ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                    return null;
+                string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return JsonConvert.DeserializeObject<KommoGatewayStatus>(json);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[PBX Gateway] GetKommoStatusAsync error: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<(KommoGatewaySession? Session, string? Error)> GetKommoSessionAsync(bool forceRefresh = false)
+        {
+            try
+            {
+                string url = $"{_baseUrl}/api/kommo/session";
+                if (forceRefresh)
+                    url += "?force_refresh=true";
+
+                var resp = await _http.GetAsync(url).ConfigureAwait(false);
+                string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    string? detail = TryExtractApiErrorDetail(json);
+                    string message = detail ?? $"HTTP {(int)resp.StatusCode}";
+                    MainWindow.Log($"[PBX Gateway] GetKommoSessionAsync failed: {message}");
+                    return (null, message);
+                }
+                var session = JsonConvert.DeserializeObject<KommoGatewaySession>(json);
+                if (session == null || string.IsNullOrWhiteSpace(session.AccessToken))
+                    return (null, "Gateway returned an empty Kommo session");
+                return (session, null);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[PBX Gateway] GetKommoSessionAsync error: {ex.Message}");
+                return (null, ex.Message);
+            }
+        }
+
+        private static string? TryExtractApiErrorDetail(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+            try
+            {
+                var envelope = JsonConvert.DeserializeObject<JObject>(json);
+                return envelope?["detail"]?.ToString();
+            }
+            catch
+            {
+                return null;
             }
         }
 
@@ -299,6 +472,19 @@ namespace Softphone
         {
             _http.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Compact view of MikoPBX's SIP auth-failure counters for this extension.
+    /// <c>Supported</c> is false when the proxy's REST integration is disabled
+    /// or the call simply failed — callers should check that before reading
+    /// the counters, otherwise zero is indistinguishable from "unknown".
+    /// </summary>
+    public class SipAuthFailureStats
+    {
+        public bool Supported { get; set; }
+        public int FailuresForExtension { get; set; }
+        public int TotalFailuresAllPeers { get; set; }
     }
 
     public class CallerIdItem
@@ -326,6 +512,62 @@ namespace Softphone
 
         [JsonProperty("error")]
         public string? Error { get; set; }
+    }
+
+    public class KommoGatewayStatus
+    {
+        [JsonProperty("available")]
+        public bool Available { get; set; }
+
+        [JsonProperty("enabled")]
+        public bool Enabled { get; set; }
+
+        [JsonProperty("configured")]
+        public bool Configured { get; set; }
+
+        [JsonProperty("authorized")]
+        public bool Authorized { get; set; }
+
+        [JsonProperty("subdomain")]
+        public string Subdomain { get; set; } = "";
+
+        [JsonProperty("token_expires_at")]
+        public string? TokenExpiresAt { get; set; }
+
+        [JsonProperty("token_expired")]
+        public bool TokenExpired { get; set; }
+
+        /// <summary>True when this extension is excluded from gateway Kommo in admin.</summary>
+        [JsonProperty("excluded")]
+        public bool Excluded { get; set; }
+
+        /// <summary>True when gateway Kommo should be offered to this client (enabled and not excluded).</summary>
+        [JsonProperty("offer_gateway")]
+        public bool OfferGateway { get; set; }
+    }
+
+    public class KommoGatewaySession
+    {
+        [JsonProperty("subdomain")]
+        public string Subdomain { get; set; } = "";
+
+        [JsonProperty("access_token")]
+        public string AccessToken { get; set; } = "";
+
+        [JsonProperty("expires_at")]
+        public string? ExpiresAt { get; set; }
+
+        [JsonProperty("account_base_url")]
+        public string? AccountBaseUrl { get; set; }
+
+        [JsonProperty("kommo_user_id")]
+        public long? KommoUserId { get; set; }
+
+        [JsonProperty("kommo_user_name")]
+        public string? KommoUserName { get; set; }
+
+        [JsonProperty("kommo_user_id_source")]
+        public string? KommoUserIdSource { get; set; }
     }
 
     public class CdrRecord

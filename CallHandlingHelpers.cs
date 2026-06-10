@@ -18,16 +18,32 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Проверяет, активен ли WebRTC звонок (для блокировки SIP входящих)
+        /// Returns the first open CallWindow opened for an outbound call (including Originate before Show()).
         /// </summary>
-        public static bool IsWebRtcCallActive()
+        public static CallWindow? FindExistingOutgoingCallWindow()
+        {
+            return Application.Current.Windows.OfType<CallWindow>()
+                .FirstOrDefault(w => w.OpenedAsOutgoingCall && !w.IsClosing());
+        }
+
+        /// <summary>
+        /// Проверяет, активен ли звонок на указанном WebRTC-слоте. Если service не указан —
+        /// возвращает true при активности любого слота (используется для блокировки SIP-входящих).
+        /// </summary>
+        public static bool IsWebRtcCallActive(WebRtcService? service = null)
         {
             try
             {
-                var webRtcState = WebRtcService.Instance?.CurrentCallState ?? WebRtcCallState.Idle;
-                return webRtcState == WebRtcCallState.Ringing || 
-                       webRtcState == WebRtcCallState.Connected || 
-                       webRtcState == WebRtcCallState.Calling;
+                bool IsActive(WebRtcService? s)
+                {
+                    var st = s?.CurrentCallState ?? WebRtcCallState.Idle;
+                    return st == WebRtcCallState.Ringing ||
+                           st == WebRtcCallState.Connected ||
+                           st == WebRtcCallState.Calling;
+                }
+
+                if (service != null) return IsActive(service);
+                return IsActive(WebRtcService.Main) || IsActive(WebRtcService.Secondary);
             }
             catch
             {

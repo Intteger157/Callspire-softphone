@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dialplan fragments</title>
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; margin: 24px; max-width: 980px; }
+      table { border-collapse: collapse; width: 100%; }
+      th, td { border-bottom: 1px solid #eee; padding: 10px; text-align: left; }
+      a { color: #0b63ce; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .row { display: flex; gap: 10px; align-items: center; }
+      code { background: #f5f5f5; padding: 2px 6px; border-radius: 6px; }
+      .muted { color: #666; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <h2 style="margin:0;">Dialplan fragments</h2>
+      <a href="/">Home</a>
+      <a href="/dialplan/new">New fragment</a>
+    </div>
+
+    <p class="muted">Фрагменты = файлы <code>*.conf</code> в <code>extensions.d</code>.</p>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>File</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in frags %}
+        <tr>
+          <td><a href="/dialplan/{{ f.name }}">{{ f.name }}</a></td>
+          <td class="muted"><code>{{ f.path }}</code></td>
+          <td>
+            <form method="post" action="/dialplan/{{ f.name }}/delete" onsubmit="return confirm('Delete fragment {{ f.name }}?')">
+              <button type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        {% if frags|length == 0 %}
+        <tr><td colspan="3" class="muted">Нет фрагментов (ещё не создано ни одного файла).</td></tr>
+        {% endif %}
+      </tbody>
+    </table>
+
+    <form method="post" action="/apply/dialplan" style="margin-top:16px;">
+      <button type="submit">Apply: dialplan reload</button>
+    </form>
+  </body>
+</html>
+

@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dialplan editor</title>
+    <style>
+      body { font-family: system-ui, Arial, sans-serif; margin: 24px; max-width: 980px; }
+      label { display: block; margin-top: 10px; font-weight: 600; }
+      input { width: 520px; padding: 8px; }
+      textarea { width: 100%; min-height: 520px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; padding: 10px; }
+      .row { display: flex; gap: 10px; align-items: center; }
+      a { color: #0b63ce; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .muted { color: #666; }
+      code { background: #f5f5f5; padding: 2px 6px; border-radius: 6px; }
+      .hint { font-size: 12px; color: #666; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <h2 style="margin:0;">Dialplan fragment</h2>
+      <a href="/dialplan">Back</a>
+      <a href="/">Home</a>
+    </div>
+
+    <p class="muted">
+      Редактируется файл в <code>extensions.d</code>. После сохранения нажмите <b>Apply: dialplan reload</b>.
+    </p>
+
+    <form method="post" action="/dialplan/save">
+      <label>File name</label>
+      <input name="name" value="{{ frag.name if frag else '' }}" placeholder="example.conf" {% if frag %}readonly{% endif %} required />
+      <div class="hint">Без слешей. Если расширение не указано, будет добавлено <code>.conf</code>.</div>
+
+      <label>Contents</label>
+      <textarea name="raw" spellcheck="false">{% if frag %}{{ frag.raw }}{% else %}[from-internal]\n; example\nexten => 1000,1,NoOp(Hello)\n same => n,Hangup()\n{% endif %}</textarea>
+
+      <div style="margin-top:12px;" class="row">
+        <button type="submit">Save</button>
+      </div>
+    </form>
+
+    <form method="post" action="/apply/dialplan" style="margin-top:14px;">
+      <button type="submit">Apply: dialplan reload</button>
+    </form>
+  </body>
+</html>
+

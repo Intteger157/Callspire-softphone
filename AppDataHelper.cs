@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using Newtonsoft.Json;
 
 namespace Softphone
 {
@@ -12,6 +13,7 @@ namespace Softphone
     {
         private static string? _appDataPath;
         private static readonly object _lock = new object();
+        private static readonly object _settingsFileLock = new object();
         private static DateTime _lastCleanupCheck = DateTime.MinValue;
         private static readonly TimeSpan CleanupCheckInterval = TimeSpan.FromHours(24); // Проверяем раз в день
 
@@ -62,6 +64,57 @@ namespace Softphone
         public static string GetSettingsFilePath()
         {
             return Path.Combine(GetAppDataPath(), "settings.json");
+        }
+
+        /// <summary>Thread-safe load of settings.json (returns empty defaults if missing).</summary>
+        public static AppSettings LoadSettingsOrNew()
+        {
+            lock (_settingsFileLock)
+            {
+                string path = GetSettingsFilePath();
+                if (!File.Exists(path))
+                    return new AppSettings();
+
+                try
+                {
+                    string json = File.ReadAllText(path);
+                    return JsonConvert.DeserializeObject<AppSettings>(json) ?? new AppSettings();
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[AppDataHelper] Failed to load settings: {ex.Message}");
+                    return new AppSettings();
+                }
+            }
+        }
+
+        /// <summary>Thread-safe atomic write of settings.json.</summary>
+        public static void SaveSettings(AppSettings settings)
+        {
+            if (settings == null)
+                throw new ArgumentNullException(nameof(settings));
+
+            lock (_settingsFileLock)
+            {
+                string path = GetSettingsFilePath();
+                string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
+                string tempPath = path + ".tmp";
+                File.WriteAllText(tempPath, json);
+                File.Move(tempPath, path, overwrite: true);
+            }
+        }
+
+        /// <summary>Persist Kommo source choice: "local" or "gateway".</summary>
+        public static void SetKommoConnectionSource(string source)
+        {
+            var normalized = (source ?? "").Trim().ToLowerInvariant();
+            if (normalized is not ("local" or "gateway"))
+                return;
+
+            var settings = LoadSettingsOrNew();
+            settings.AmoCrmConnectionSource = normalized;
+            SaveSettings(settings);
+            MainWindow.Log($"[AppDataHelper] AmoCrmConnectionSource saved: {normalized}");
         }
 
         /// <summary>

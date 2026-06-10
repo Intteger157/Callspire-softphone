@@ -23,7 +23,7 @@
 		<!-- Application Version -->
 		<!-- Измените ТОЛЬКО это значение перед каждым релизом -->
 		<!-- Остальные версии (AssemblyVersion, FileVersion, InformationalVersion) вычисляются автоматически -->
-		<AppVersion>1.1.8</AppVersion>
+		<AppVersion>1.1.27</AppVersion>
 		
 		<!-- Автоматически вычисляемые версии на основе AppVersion -->
 		<Version>$(AppVersion)</Version>
@@ -58,9 +58,11 @@
 	</ItemGroup>
 
 	<ItemGroup>
+		<!-- WebView2 loads these from disk (virtual host). With PublishSingleFile they must stay outside the bundle. -->
 		<Content Include="WebRtcClient\**\*">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
 		</Content>
 	</ItemGroup>
 
@@ -69,6 +71,7 @@
 		<Content Include="ringtone\**\*.wav">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
 		</Content>
 	</ItemGroup>
 
@@ -77,6 +80,7 @@
 		<Content Include="tools\**\*">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
 		</Content>
 	</ItemGroup>
 

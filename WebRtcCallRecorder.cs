@@ -29,6 +29,8 @@ namespace Softphone
         private int? _expectedTotalSize;
         private int? _expectedTotalChunks;
         private string? _expectedHash;
+        /// <summary>JS stopRecording was requested; keep accepting chunks until recording_complete / SaveComplete.</summary>
+        private bool _stopRequested;
 
         public string? WebmFilePath => _webmFilePath; // Исходный WebM файл
 
@@ -43,6 +45,8 @@ namespace Softphone
                 {
                     return;
                 }
+
+                _stopRequested = false;
             }
 
             base.StartRecording(phoneNumber, callStartTime, recordingsDirectory);
@@ -56,6 +60,26 @@ namespace Softphone
                 _expectedTotalChunks = null;
                 _expectedHash = null;
             }
+        }
+
+        /// <summary>True while the JS recorder may still send chunk data (including after stopRecording until finalize).</summary>
+        public bool IsAcceptingRecordingChunks
+        {
+            get
+            {
+                lock (_lockObject)
+                {
+                    if (_isDisposed || _receivedChunksByIndex == null)
+                        return false;
+                    return _isRecording || _stopRequested;
+                }
+            }
+        }
+
+        private void EndRecordingSessionLocked()
+        {
+            _isRecording = false;
+            _stopRequested = false;
         }
 
         /// <summary>
@@ -91,6 +115,12 @@ namespace Softphone
                     return;
                 }
 
+                if (_stopRequested)
+                {
+                    MainWindow.Log("[WebRtcCallRecorder] Ignoring recording_start from JS (stop already requested — avoids wiping chunk buffer)");
+                    return;
+                }
+
                 _expectedTotalSize = totalSize;
                 _expectedTotalChunks = totalChunks;
                 _expectedHash = hash;
@@ -107,7 +137,13 @@ namespace Softphone
         {
             lock (_lockObject)
             {
-                if (!_isRecording || _isDisposed || _receivedChunksByIndex == null)
+                if (_isDisposed || _receivedChunksByIndex == null)
+                {
+                    return;
+                }
+
+                // After JS stopRecording(), chunks may still arrive; do not drop them (was causing 0-byte WebM + failed Amo upload).
+                if (!_isRecording && !_stopRequested)
                 {
                     return;
                 }
@@ -139,64 +175,64 @@ namespace Softphone
         /// </summary>
         public async Task SaveCompleteRecordingAsync(byte[] webmData, string? hash = null)
         {
-            // Если файл передавался чанками, собираем его
-            byte[] finalData = webmData;
-            
-            lock (_lockObject)
-            {
-                if (_receivedChunksByIndex != null && _receivedChunksByIndex.Count > 0)
-                {
-                    int chunkCount = _receivedChunksByIndex.Count;
-                    int? expectedChunks = _expectedTotalChunks;
-
-                    // Если знаем ожидаемое число чанков — проверяем, что все пришли
-                    if (expectedChunks.HasValue)
-                    {
-                        for (int i = 0; i < expectedChunks.Value; i++)
-                        {
-                            if (!_receivedChunksByIndex.ContainsKey(i))
-                            {
-                                MainWindow.Log($"[WebRtcCallRecorder] ❌ Missing chunk {i + 1}/{expectedChunks.Value}. Cannot assemble recording safely.");
-                                // Сбрасываем буфер, чтобы не использовать поврежденные данные
-                                _receivedChunksByIndex.Clear();
-                                return;
-                            }
-                        }
-                    }
-
-                    // Собираем строго по индексу (0..N-1). Если expectedChunks неизвестен — по возрастанию ключей.
-                    var orderedKeys = expectedChunks.HasValue
-                        ? Enumerable.Range(0, expectedChunks.Value)
-                        : _receivedChunksByIndex.Keys.OrderBy(k => k).ToArray();
-
-                    int totalSize = 0;
-                    foreach (var k in orderedKeys)
-                    {
-                        totalSize += _receivedChunksByIndex[k].Length;
-                    }
-
-                    finalData = new byte[totalSize];
-                    int writeOffset = 0;
-                    foreach (var k in orderedKeys)
-                    {
-                        var chunk = _receivedChunksByIndex[k];
-                        Buffer.BlockCopy(chunk, 0, finalData, writeOffset, chunk.Length);
-                        writeOffset += chunk.Length;
-                    }
-
-                    _receivedChunksByIndex.Clear();
-                    MainWindow.Log($"[WebRtcCallRecorder] Assembled {chunkCount} chunks (ordered): {totalSize / 1024} KB");
-                }
-            }
-
-            if (_isDisposed || string.IsNullOrEmpty(_webmFilePath) || string.IsNullOrEmpty(_recordingFilePath))
-            {
-                MainWindow.Log($"[WebRtcCallRecorder] Cannot save recording: disposed={_isDisposed}, webmPath={_webmFilePath}, wavPath={_recordingFilePath}");
-                return;
-            }
-
             try
             {
+                // Если файл передавался чанками, собираем его
+                byte[] finalData = webmData;
+
+                lock (_lockObject)
+                {
+                    if (_receivedChunksByIndex != null && _receivedChunksByIndex.Count > 0)
+                    {
+                        int chunkCount = _receivedChunksByIndex.Count;
+                        int? expectedChunks = _expectedTotalChunks;
+
+                        // Если знаем ожидаемое число чанков — проверяем, что все пришли
+                        if (expectedChunks.HasValue)
+                        {
+                            for (int i = 0; i < expectedChunks.Value; i++)
+                            {
+                                if (!_receivedChunksByIndex.ContainsKey(i))
+                                {
+                                    MainWindow.Log($"[WebRtcCallRecorder] ❌ Missing chunk {i + 1}/{expectedChunks.Value}. Cannot assemble recording safely.");
+                                    // Сбрасываем буфер, чтобы не использовать поврежденные данные
+                                    _receivedChunksByIndex.Clear();
+                                    return;
+                                }
+                            }
+                        }
+
+                        // Собираем строго по индексу (0..N-1). Если expectedChunks неизвестен — по возрастанию ключей.
+                        var orderedKeys = expectedChunks.HasValue
+                            ? Enumerable.Range(0, expectedChunks.Value)
+                            : _receivedChunksByIndex.Keys.OrderBy(k => k).ToArray();
+
+                        int totalSize = 0;
+                        foreach (var k in orderedKeys)
+                        {
+                            totalSize += _receivedChunksByIndex[k].Length;
+                        }
+
+                        finalData = new byte[totalSize];
+                        int writeOffset = 0;
+                        foreach (var k in orderedKeys)
+                        {
+                            var chunk = _receivedChunksByIndex[k];
+                            Buffer.BlockCopy(chunk, 0, finalData, writeOffset, chunk.Length);
+                            writeOffset += chunk.Length;
+                        }
+
+                        _receivedChunksByIndex.Clear();
+                        MainWindow.Log($"[WebRtcCallRecorder] Assembled {chunkCount} chunks (ordered): {totalSize / 1024} KB");
+                    }
+                }
+
+                if (_isDisposed || string.IsNullOrEmpty(_webmFilePath) || string.IsNullOrEmpty(_recordingFilePath))
+                {
+                    MainWindow.Log($"[WebRtcCallRecorder] Cannot save recording: disposed={_isDisposed}, webmPath={_webmFilePath}, wavPath={_recordingFilePath}");
+                    return;
+                }
+
                 // Проверяем целостность файла через SHA256
                 if (!string.IsNullOrEmpty(hash) || !string.IsNullOrEmpty(_expectedHash))
                 {
@@ -295,6 +331,13 @@ namespace Softphone
             {
                 MainWindow.Log($"[WebRtcCallRecorder] Error saving complete recording: {ex.Message}");
             }
+            finally
+            {
+                lock (_lockObject)
+                {
+                    EndRecordingSessionLocked();
+                }
+            }
         }
 
         /// <summary>
@@ -321,8 +364,13 @@ namespace Softphone
                     return Task.CompletedTask;
                 }
 
-                _isRecording = false;
-                MainWindow.Log($"[WebRtcCallRecorder] Recording stopped (waiting for complete file)");
+                if (_stopRequested)
+                {
+                    return Task.CompletedTask;
+                }
+
+                _stopRequested = true;
+                MainWindow.Log($"[WebRtcCallRecorder] Recording stop requested (still accepting chunks until recording_complete)");
             }
             
             return Task.CompletedTask;
@@ -398,7 +446,7 @@ namespace Softphone
                 }
 
                 _isDisposed = true;
-                StopRecording();
+                EndRecordingSessionLocked();
             }
         }
     }

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics.X86;
 
 namespace Softphone
 {
@@ -19,6 +20,14 @@ namespace Softphone
     {
         private const string DLL_NAME = "webrtc_apm.dll";
         private static bool _available = true;
+        private static bool _loggedCpuUnsupported;
+
+        /// <summary>
+        /// Native webrtc_apm.dll is built with MSVC /arch:AVX2 (see native-aec/CMakeLists.txt). Loading or
+        /// running it on CPUs without AVX2 causes STATUS_ILLEGAL_INSTRUCTION (0xC000001D). Do not P/Invoke
+        /// until this returns true.
+        /// </summary>
+        public static bool IsNativeAecRuntimeSupported => Avx2.IsSupported;
 
         [DllImport(DLL_NAME, CallingConvention = CallingConvention.Cdecl, EntryPoint = "apm_create")]
         private static extern IntPtr apm_create(int sampleRate, int channels, int frameMs);
@@ -35,6 +44,16 @@ namespace Softphone
         public static IntPtr Create(int sampleRate, int channels, int frameMs)
         {
             if (!_available) return IntPtr.Zero;
+
+            if (!Avx2.IsSupported)
+            {
+                if (!_loggedCpuUnsupported)
+                {
+                    _loggedCpuUnsupported = true;
+                    MainWindow.Log("[NativeAec] webrtc_apm.dll is built with AVX2; this CPU has no AVX2 — skipping native AEC (no illegal-instruction crash). SIP calls work with echo cancellation off.");
+                }
+                return IntPtr.Zero;
+            }
 
             try
             {

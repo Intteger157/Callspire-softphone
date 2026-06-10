@@ -81,6 +81,39 @@
                     </Setter.Value>
                 </Setter>
             </Style>
+            <!-- Primary CTA for AmoCRM upload (green stays on hover; ModernButtonStyle uses gray hover) -->
+            <Style x:Key="AmoUploadPrimaryButtonStyle" TargetType="Button">
+                <Setter Property="Background" Value="{DynamicResource AccentGreenBrush}"/>
+                <Setter Property="Foreground" Value="White"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="FontFamily" Value="Segoe UI"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="Bd"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="6"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  Margin="{TemplateBinding Padding}"/>
+                            </Border>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsMouseOver" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#1B8A4A"/>
+                                </Trigger>
+                                <Trigger Property="IsPressed" Value="True">
+                                    <Setter TargetName="Bd" Property="Background" Value="#167A40"/>
+                                </Trigger>
+                                <Trigger Property="IsEnabled" Value="False">
+                                    <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
         </ResourceDictionary>
     </Window.Resources>
 
@@ -145,27 +178,27 @@
                          VerticalScrollBarVisibility="Hidden" 
                          HorizontalScrollBarVisibility="Disabled"
                          PanningMode="VerticalOnly"
-                         Margin="16">
+                         Margin="12">
                 <StackPanel>
                     <!-- Call Information -->
                     <TextBlock Text="Call Information" 
-                              FontSize="18" FontWeight="SemiBold"
+                              FontSize="17" FontWeight="SemiBold"
                               Foreground="{DynamicResource TextPrimaryBrush}"
-                              Margin="0,0,0,12"/>
+                              Margin="0,0,0,8"/>
                     
                     <!-- Two-column layout: left = call info, right = timing info -->
-                    <Grid Margin="0,0,0,20">
+                    <Grid Margin="0,0,0,12">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="320" />
                         </Grid.ColumnDefinitions>
 
-                        <!-- Left: General call information + AmoCRM -->
+                        <!-- Left: General call information -->
                         <Border Grid.Column="0"
                                 Background="{DynamicResource BackgroundMediumBrush}"
                                 CornerRadius="8"
-                                Padding="16"
-                                Margin="0,0,12,0">
+                                Padding="12"
+                                Margin="0,0,8,0">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
@@ -176,20 +209,17 @@
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" MinWidth="150"/>
+                                    <ColumnDefinition Width="Auto" MinWidth="128"/>
                                     <ColumnDefinition Width="*"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
                                 <TextBlock Grid.Row="0" Grid.Column="0" Text="Phone Number:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
-                                <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,8,8">
+                                           Margin="0,0,12,5"/>
+                                <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,8,5">
                                     <TextBlock Name="PhoneNumberTextBlock"
                                                Foreground="{DynamicResource TextPrimaryBrush}" 
                                                FontWeight="SemiBold"
@@ -222,25 +252,25 @@
                                 <!-- Row 1: Outbound CallerID (P-Asserted-Identity) -->
                                 <TextBlock Grid.Row="1" Grid.Column="0" Name="OutboundCallerIdLabel" Text="Outbound CallerID:"
                                            Foreground="{DynamicResource TextSecondaryBrush}"
-                                           Margin="0,0,16,8"
+                                           Margin="0,0,12,5"
                                            Visibility="Collapsed"/>
                                 <TextBlock Grid.Row="1" Grid.Column="1" Name="OutboundCallerIdTextBlock"
                                            Foreground="{DynamicResource AccentGreenBrush}"
                                            FontWeight="SemiBold"
-                                           Margin="0,0,0,8"
+                                           Margin="0,0,0,5"
                                            Visibility="Collapsed"/>
 
                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Call Time:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
+                                           Margin="0,0,12,5"/>
                                 <TextBlock Grid.Row="2" Grid.Column="1" Name="CallTimeTextBlock"
                                            Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"/>
+                                           Margin="0,0,0,5"/>
 
                                 <TextBlock Grid.Row="3" Grid.Column="0" Text="Direction:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
-                                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
+                                           Margin="0,0,12,5"/>
+                                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,5">
                                     <TextBlock Name="DirectionTextBlock"
                                                Foreground="{DynamicResource TextPrimaryBrush}" 
                                                Margin="0,0,8,0"/>
@@ -258,73 +288,31 @@
 
                                 <TextBlock Grid.Row="4" Grid.Column="0" Text="Status:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
+                                           Margin="0,0,12,5"/>
                                 <TextBlock Grid.Row="4" Grid.Column="1" Name="StatusTextBlock"
                                            Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"/>
+                                           Margin="0,0,0,5"/>
 
                                 <TextBlock Grid.Row="5" Grid.Column="0" Text="Duration:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
+                                           Margin="0,0,12,5"/>
                                 <TextBlock Grid.Row="5" Grid.Column="1" Name="DurationTextBlock"
                                            Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"/>
+                                           Margin="0,0,0,5"/>
 
                                 <TextBlock Grid.Row="6" Grid.Column="0" Text="Was Answered:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
+                                           Margin="0,0,12,5"/>
                                 <TextBlock Grid.Row="6" Grid.Column="1" Name="WasAnsweredTextBlock"
                                            Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"/>
+                                           Margin="0,0,0,5"/>
 
                                 <TextBlock Grid.Row="7" Grid.Column="0" Text="Call Ended By:" 
                                            Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
+                                           Margin="0,0,12,0"/>
                                 <TextBlock Grid.Row="7" Grid.Column="1" Name="EndedByTextBlock"
                                            Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"/>
-
-                                <TextBlock Grid.Row="8" Grid.Column="0" Name="RecordAddedLabel" Text="Record added to:" 
-                                           Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
-                                <StackPanel Grid.Row="8" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Name="AmoCrmLeadTextBlock"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" 
-                                               VerticalAlignment="Center"
-                                               FontWeight="SemiBold"
-                                               Margin="0,0,8,0"/>
-                                    <Button Name="OpenAmoCrmLeadButton"
-                                            Content="Open lead"
-                                            Click="OpenAmoCrmLeadButton_Click"
-                                            Style="{DynamicResource ModernButtonStyle}"
-                                            Padding="8,4"
-                                            FontSize="11"
-                                            Visibility="Collapsed"
-                                            Margin="0,0,8,0"/>
-                                    <Button Name="OpenAmoCrmContactButton"
-                                            Content="Open Contact"
-                                            Click="OpenAmoCrmContactButton_Click"
-                                            Style="{DynamicResource ModernButtonStyle}"
-                                            Padding="8,4"
-                                            FontSize="11"
-                                            Visibility="Collapsed"/>
-                                </StackPanel>
-
-                                <TextBlock Grid.Row="9" Grid.Column="0" Name="AmoCrmContactNameLabel" Text="AmoCRM Contact Name:" 
-                                           Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
-                                <TextBlock Grid.Row="9" Grid.Column="1" Name="AmoCrmContactNameTextBlock"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"
-                                           Text="Loading..."/>
-
-                                <TextBlock Grid.Row="10" Grid.Column="0" Name="AmoCrmUploadStatusLabel" Text="Recording Upload Status:" 
-                                           Foreground="{DynamicResource TextSecondaryBrush}" 
-                                           Margin="0,0,16,8"/>
-                                <TextBlock Grid.Row="10" Grid.Column="1" Name="AmoCrmUploadStatusTextBlock"
-                                           Foreground="{DynamicResource TextPrimaryBrush}" 
-                                           Margin="0,0,0,8"
-                                           TextWrapping="Wrap"/>
+                                           Margin="0,0,0,0"/>
                             </Grid>
                         </Border>
 
@@ -332,14 +320,14 @@
                         <Border Grid.Column="1"
                                 Background="{DynamicResource BackgroundMediumBrush}"
                                 CornerRadius="8"
-                                Padding="16"
+                                Padding="12"
                                 Margin="0,0,0,0">
                             <StackPanel>
                                 <TextBlock Text="Timing Information"
-                                           FontSize="16"
+                                           FontSize="15"
                                            FontWeight="SemiBold"
                                            Foreground="{DynamicResource TextPrimaryBrush}"
-                                           Margin="0,0,0,12"/>
+                                           Margin="0,0,0,8"/>
 
                                 <Grid>
                                     <Grid.RowDefinitions>
@@ -354,17 +342,17 @@
 
                                     <TextBlock Grid.Row="0" Grid.Column="0" Text="Ringback Duration:" 
                                                Foreground="{DynamicResource TextSecondaryBrush}" 
-                                               Margin="0,0,12,8"/>
+                                               Margin="0,0,10,5"/>
                                     <TextBlock Grid.Row="0" Grid.Column="1" Name="RingbackDurationTextBlock"
                                                Foreground="{DynamicResource TextPrimaryBrush}" 
-                                               Margin="0,0,0,8"/>
+                                               Margin="0,0,0,5"/>
 
                                     <TextBlock Grid.Row="1" Grid.Column="0" Text="Ringback Start:" 
                                                Foreground="{DynamicResource TextSecondaryBrush}" 
-                                               Margin="0,0,12,8"/>
+                                               Margin="0,0,10,5"/>
                                     <TextBlock Grid.Row="1" Grid.Column="1" Name="RingbackStartTextBlock"
                                                Foreground="{DynamicResource TextPrimaryBrush}" 
-                                               Margin="0,0,0,8"/>
+                                               Margin="0,0,0,5"/>
 
                                     <TextBlock Grid.Row="2" Grid.Column="0" Text="Answer Time:" 
                                                Foreground="{DynamicResource TextSecondaryBrush}" 
@@ -378,15 +366,15 @@
                     </Grid>
 
                     <!-- Call Recording -->
-                    <TextBlock Text="Call Recording" 
-                              FontSize="18" FontWeight="SemiBold"
+                    <TextBlock Name="CallRecordingSectionTitle" Text="Call Recording" 
+                              FontSize="17" FontWeight="SemiBold"
                               Foreground="{DynamicResource TextPrimaryBrush}"
-                              Margin="0,20,0,12"/>
+                              Margin="0,12,0,8"/>
                     
                     <Border Background="{DynamicResource BackgroundMediumBrush}"
                            CornerRadius="4"
-                           Padding="12"
-                           Margin="0,0,0,20"
+                           Padding="10"
+                           Margin="0,0,0,12"
                            Name="RecordingBorder"
                            Visibility="Collapsed">
                         <StackPanel>
@@ -401,7 +389,7 @@
                                           Text="Call Recording:" 
                                           Foreground="{DynamicResource TextSecondaryBrush}" 
                                           VerticalAlignment="Center"
-                                          Margin="0,0,12,0"/>
+                                          Margin="0,0,10,0"/>
                                 
                                 <TextBlock Grid.Column="1" 
                                           Name="RecordingFilePathTextBlock"
@@ -411,65 +399,134 @@
                                 
                                 <StackPanel Grid.Column="2" 
                                            Orientation="Horizontal"
-                                           Margin="12,0,0,0"
+                                           Margin="10,0,0,0"
                                            HorizontalAlignment="Right">
                                     <Button Name="PlayRecordingButton"
                                            Content="Play" 
                                            Click="PlayRecordingButton_Click"
                                            Style="{DynamicResource ModernButtonStyle}"
-                                           Padding="12,6"
-                                           Margin="0,0,8,0"/>
+                                           Padding="10,5"
+                                           Margin="0,0,6,0"/>
                                     <Button Name="OpenFolderButton"
                                            Content="Open folder" 
                                            Click="OpenFolderButton_Click"
                                            Style="{DynamicResource ModernButtonStyle}"
-                                           Padding="12,6"/>
+                                           Padding="10,5"/>
                                 </StackPanel>
                             </Grid>
-                            
-                            <!-- Upload Recording Section -->
-                            <StackPanel Margin="0,12,0,0" Orientation="Vertical">
-                                <TextBlock Text="Fetch recording from PBX (if no local file) and upload to AmoCRM:"
-                                          Foreground="{DynamicResource TextSecondaryBrush}"
-                                          FontSize="12"
-                                          TextWrapping="Wrap"
-                                          Margin="0,0,0,6"/>
-                                <Button Name="UploadRecordingButton"
-                                       Content="Upload Recording" 
-                                       Click="UploadRecordingButton_Click"
-                                       Style="{DynamicResource ModernButtonStyle}"
-                                       Padding="12,6"
-                                       HorizontalAlignment="Left"
-                                       Visibility="Collapsed"/>
+                        </StackPanel>
+                    </Border>
 
-                                <TextBlock Name="UploadMissedCallTextBlock"
-                                           Text="If the call was rejected or not answered and you want to create a missed call card, click this button:"
-                                           Foreground="{DynamicResource TextSecondaryBrush}"
-                                           FontSize="12"
-                                           TextWrapping="Wrap"
-                                           Margin="0,6,0,6"
-                                           Visibility="Collapsed"/>
-                                <Button Name="UploadMissedCallButton"
-                                        Content="Upload missed call"
-                                        Click="UploadMissedCallButton_Click"
-                                        Style="{DynamicResource ModernButtonStyle}"
-                                        Padding="12,6"
-                                        HorizontalAlignment="Left"
-                                        Visibility="Collapsed"/>
-                            </StackPanel>
+                    <!-- AmoCRM: status + manual upload (hidden when integration is off in settings) -->
+                    <Border x:Name="AmoCrmSectionBorder"
+                            Margin="0,12,0,0"
+                            Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="AmoCRM"
+                                      FontSize="17" FontWeight="SemiBold"
+                                      Foreground="{DynamicResource TextPrimaryBrush}"
+                                      Margin="0,0,0,8"/>
+
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                   CornerRadius="8"
+                                   Padding="12">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MinWidth="148"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Name="RecordAddedLabel" Text="Record added to:"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,12,6" VerticalAlignment="Center"/>
+                                    <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,6">
+                                        <TextBlock Name="AmoCrmLeadTextBlock"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   VerticalAlignment="Center"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,0,8,0"/>
+                                        <Button Name="OpenAmoCrmLeadButton"
+                                                Content="Open lead"
+                                                Click="OpenAmoCrmLeadButton_Click"
+                                                Style="{DynamicResource ModernButtonStyle}"
+                                                Padding="8,4"
+                                                FontSize="11"
+                                                Visibility="Collapsed"
+                                                Margin="0,0,8,0"/>
+                                        <Button Name="OpenAmoCrmContactButton"
+                                                Content="Open contact"
+                                                Click="OpenAmoCrmContactButton_Click"
+                                                Style="{DynamicResource ModernButtonStyle}"
+                                                Padding="8,4"
+                                                FontSize="11"
+                                                Visibility="Collapsed"/>
+                                    </StackPanel>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Name="AmoCrmContactNameLabel" Text="AmoCRM contact name:"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,12,6"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Name="AmoCrmContactNameTextBlock"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               Margin="0,0,0,6"
+                                               TextWrapping="Wrap"
+                                               Text="Loading..."/>
+
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Name="AmoCrmUploadStatusLabel" Text="Recording upload status:"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,12,0" VerticalAlignment="Top"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="1" Name="AmoCrmUploadStatusTextBlock"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               Margin="0,0,0,0"
+                                               TextWrapping="Wrap"/>
+                                </Grid>
+                            </Border>
+
+                            <Border Margin="0,8,0,0"
+                                    CornerRadius="8"
+                                    Padding="12"
+                                    Background="{DynamicResource BackgroundLightBrush}"
+                                    BorderThickness="2"
+                                    BorderBrush="{DynamicResource AccentGreenBrush}">
+                                <StackPanel>
+                                    <TextBlock Text="Send result to AmoCRM"
+                                              FontSize="14" FontWeight="SemiBold"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              Margin="0,0,0,4"/>
+                                    <TextBlock Text="Uploads the recording to the lead you pick (downloads from PBX when configured), or adds a missed-call note when there is no recording and the call was not answered."
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontSize="11"
+                                              TextWrapping="Wrap"
+                                              Margin="0,0,0,8"/>
+                                    <Button Name="UploadCallResultButton"
+                                            Content="Upload call result"
+                                            Click="UploadCallResultButton_Click"
+                                            HorizontalAlignment="Left"
+                                            MinWidth="220"
+                                            FontSize="13"
+                                            FontWeight="SemiBold"
+                                            Padding="16,9"
+                                            Visibility="Collapsed"
+                                            Style="{DynamicResource AmoUploadPrimaryButtonStyle}"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
                     </Border>
 
                     <!-- Technical Details -->
                     <TextBlock Text="Technical Details" 
-                              FontSize="18" FontWeight="SemiBold"
+                              FontSize="17" FontWeight="SemiBold"
                               Foreground="{DynamicResource TextPrimaryBrush}"
-                              Margin="0,20,0,12"/>
+                              Margin="0,12,0,8"/>
                     
                     <Border Background="{DynamicResource BackgroundMediumBrush}"
                            CornerRadius="4"
                            Padding="0"
-                           Margin="0,0,0,20">
+                           Margin="0,0,0,12">
                         <Grid>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
@@ -488,7 +545,7 @@
                                         <Setter Property="Background" Value="Transparent"/>
                                         <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
                                         <Setter Property="BorderThickness" Value="0"/>
-                                        <Setter Property="Padding" Value="16,8"/>
+                                        <Setter Property="Padding" Value="12,6"/>
                                         <Setter Property="FontSize" Value="12"/>
                                         <Setter Property="Template">
                                             <Setter.Value>
@@ -523,7 +580,7 @@
                             </TabControl>
                             
                             <!-- Log Content Area -->
-                            <Grid Grid.Row="1" Margin="12,0,12,12">
+                            <Grid Grid.Row="1" Margin="8,0,8,8">
                                 <ScrollViewer VerticalScrollBarVisibility="Auto" 
                                              HorizontalScrollBarVisibility="Disabled"
                                              MaxHeight="400"
@@ -588,7 +645,7 @@
             </ScrollViewer>
 
             <!-- Buttons -->
-            <Grid Grid.Row="2" Margin="16,8,16,16">
+            <Grid Grid.Row="2" Margin="12,6,12,12">
                 <Button Content="Close" 
                        Click="CloseButton_Click"
                        Style="{DynamicResource ModernButtonStyle}"

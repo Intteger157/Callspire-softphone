@@ -26,6 +26,14 @@ namespace Softphone
         WebRtc
     }
 
+    /// <summary>Which app connection handled the call (main or secondary line).</summary>
+    public enum CallConnectionSlot
+    {
+        Unknown = 0,
+        Main = 1,
+        Secondary = 2
+    }
+
     public enum AmoCrmUploadStatus
     {
         NotUploaded,    // Не загружено (по умолчанию)
@@ -71,6 +79,7 @@ namespace Softphone
         
         // Информация о транспорте звонка
         public CallTransport Transport { get; set; } = CallTransport.Sip; // SIP или WebRTC
+        public CallConnectionSlot ConnectionSlot { get; set; } = CallConnectionSlot.Unknown;
         public string? SipCallId { get; set; } // Call-ID для SIP звонков
         public string? WebRtcSessionId { get; set; } // Session ID для WebRTC звонков
         

@@ -40,9 +40,20 @@ namespace Softphone
             if (!preferInProgress)
                 return list.OrderBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds)).First();
 
+            // Среди активных звонков берём ближайший по CallTime — иначе второй звонок на тот же
+            // номер «перетягивает» обновления первого (AnswerTime/WasAnswered попадают не в ту строку).
+            var inProgress = list
+                .Where(x => x.Status == CallStatus.Calling || x.Status == CallStatus.Connected)
+                .ToList();
+            if (inProgress.Count > 0)
+            {
+                return inProgress
+                    .OrderBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds))
+                    .First();
+            }
+
             return list
-                .OrderBy(x => x.Status == CallStatus.Calling ? 0 : x.Status == CallStatus.Connected ? 1 : 2)
-                .ThenBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds))
+                .OrderBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds))
                 .First();
         }
 
@@ -65,8 +76,10 @@ namespace Softphone
             if (call != null)
             {
                 call.Status = status;
-                call.Duration = duration;
-                call.ErrorMessage = errorMessage;
+                if (duration.HasValue)
+                    call.Duration = duration;
+                if (errorMessage != null)
+                    call.ErrorMessage = errorMessage;
                 SaveHistory();
             }
             else
@@ -81,7 +94,7 @@ namespace Softphone
             CallEndedBy endedBy = CallEndedBy.Unknown,
             List<string>? technicalDetails = null, TimeSpan? duration = null, string? recordingFilePath = null,
             CallTransport? transport = null, string? sipCallId = null, string? webRtcSessionId = null,
-            string? outboundCallerId = null)
+            string? outboundCallerId = null, CallConnectionSlot? connectionSlot = null)
         {
             var call = FindMatchingCall(phoneNumber, callTime, transport, preferInProgress: true);
 
@@ -112,24 +125,42 @@ namespace Softphone
                     call.EndedBy = endedBy;
                 if (duration.HasValue)
                     call.Duration = duration;
-                    
-                // ВАЖНО: Обновляем путь к записи всегда, даже если он уже был установлен (может быть обновлен после конвертации)
-                if (!string.IsNullOrEmpty(recordingFilePath))
+                else if (endedBy != CallEndedBy.Unknown && call.WasAnswered && !call.Duration.HasValue)
                 {
-                    string? oldPath = call.RecordingFilePath;
-                    call.RecordingFilePath = recordingFilePath;
-                    if (oldPath != recordingFilePath)
+                    var talkStart = answerTime ?? call.AnswerTime;
+                    if (talkStart.HasValue)
                     {
-                        MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Recording file path updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {oldPath} -> {recordingFilePath}");
+                        var inferred = DateTime.Now - talkStart.Value;
+                        if (inferred.TotalSeconds >= 0)
+                            call.Duration = inferred;
+                    }
+                }
+                    
+                // ВАЖНО: null = не трогаем путь; "" = явно сбросить (SIP запись не создала WAV).
+                // Непустая строка = установить/обновить путь.
+                if (recordingFilePath != null)
+                {
+                    if (recordingFilePath.Length == 0)
+                    {
+                        if (!string.IsNullOrEmpty(call.RecordingFilePath))
+                        {
+                            MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Clearing recording file path for {phoneNumber} at {callTime:HH:mm:ss.fff} (no output file).");
+                            call.RecordingFilePath = null;
+                        }
                     }
                     else
                     {
-                        MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Recording file path already set for {phoneNumber} at {callTime:HH:mm:ss.fff}: {recordingFilePath}");
+                        string? oldPath = call.RecordingFilePath;
+                        call.RecordingFilePath = recordingFilePath;
+                        if (oldPath != recordingFilePath)
+                        {
+                            MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Recording file path updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {oldPath} -> {recordingFilePath}");
+                        }
+                        else
+                        {
+                            MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Recording file path already set for {phoneNumber} at {callTime:HH:mm:ss.fff}: {recordingFilePath}");
+                        }
                     }
-                }
-                else
-                {
-                    MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Recording file path is null or empty for {phoneNumber} at {callTime:HH:mm:ss.fff} (current path: {call.RecordingFilePath ?? "null"})");
                 }
                 
                 // Обновляем транспорт и идентификаторы, если они переданы
@@ -141,27 +172,37 @@ namespace Softphone
                     call.WebRtcSessionId = webRtcSessionId;
                 if (!string.IsNullOrEmpty(outboundCallerId))
                     call.OutboundCallerId = outboundCallerId;
+                if (connectionSlot.HasValue && connectionSlot.Value != CallConnectionSlot.Unknown)
+                    call.ConnectionSlot = connectionSlot.Value;
                 
                 // Обновляем статус на основе WasAnswered, Duration и EndedBy
-                // Если звонок был принят и есть длительность, статус должен быть Ended (не Cancelled или Calling)
-                if (call.WasAnswered && call.Duration.HasValue && 
-                    (call.Status == CallStatus.Calling || call.Status == CallStatus.Cancelled))
+                bool inProgressStatus = call.Status == CallStatus.Calling || call.Status == CallStatus.Connected;
+
+                // Завершённый разговор: SIP исходящие часто остаются в Connected ("In call…") до SendCallDetails.
+                if (endedBy != CallEndedBy.Unknown && call.WasAnswered &&
+                    (inProgressStatus || call.Status == CallStatus.Cancelled))
                 {
                     call.Status = CallStatus.Ended;
                 }
-                // Если звонок был принят, но статус еще Calling, обновляем на Ended (даже без Duration)
-                else if (call.WasAnswered && call.Status == CallStatus.Calling)
+                // Если звонок был принят и есть длительность, статус должен быть Ended (не Cancelled или Calling)
+                else if (call.WasAnswered && call.Duration.HasValue &&
+                    (inProgressStatus || call.Status == CallStatus.Cancelled))
+                {
+                    call.Status = CallStatus.Ended;
+                }
+                // Если звонок был принят, но статус ещё in-progress — Ended (даже без Duration)
+                else if (call.WasAnswered && inProgressStatus)
                 {
                     call.Status = CallStatus.Ended;
                 }
                 // Если звонок НЕ был принят и был завершен локальным пользователем - это отмена
-                else if (!call.WasAnswered && endedBy == CallEndedBy.LocalUser && call.Status == CallStatus.Calling)
+                else if (!call.WasAnswered && endedBy == CallEndedBy.LocalUser && inProgressStatus)
                 {
                     call.Status = CallStatus.Cancelled;
                     MainWindow.Log($"[CallHistoryService] UpdateCallDetails: Call cancelled by local user (not answered), updating status to Cancelled");
                 }
                 // Если звонок НЕ был принят и был завершен удаленной стороной - это может быть Failed или Cancelled
-                else if (!call.WasAnswered && endedBy == CallEndedBy.RemoteParty && call.Status == CallStatus.Calling)
+                else if (!call.WasAnswered && endedBy == CallEndedBy.RemoteParty && inProgressStatus)
                 {
                     // Если есть длительность (звонок длился какое-то время), это Failed, иначе Cancelled
                     call.Status = duration.HasValue && duration.Value.TotalSeconds > 1 ? CallStatus.Failed : CallStatus.Cancelled;
@@ -204,7 +245,7 @@ namespace Softphone
 
         public CallHistoryItem? GetCall(string phoneNumber, DateTime callTime)
         {
-            return FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: true);
+            return FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
         }
 
         /// <summary>
@@ -212,21 +253,23 @@ namespace Softphone
         /// </summary>
         public void UpdateAmoCrmLeadId(string phoneNumber, DateTime callTime, long? leadId)
         {
-            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
-            
-            if (call != null && leadId.HasValue)
+            var call = FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
+
+            if (call != null)
             {
-                call.AmoCrmLeadId = leadId.Value;
+                call.AmoCrmLeadId = leadId;
                 SaveHistory();
-                MainWindow.Log($"[CallHistoryService] AmoCrmLeadId updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {leadId}");
+                MainWindow.Log($"[CallHistoryService] AmoCrmLeadId updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {leadId?.ToString() ?? "null"}");
+            }
+            else
+            {
+                MainWindow.Log($"[CallHistoryService] UpdateAmoCrmLeadId: no row for {phoneNumber} near {callTime:O}");
             }
         }
 
         public void UpdateOutboundCallerId(string phoneNumber, DateTime callTime, string callerId)
         {
-            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber &&
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
+            var call = FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
 
             if (call != null)
             {
@@ -234,18 +277,25 @@ namespace Softphone
                 SaveHistory();
                 MainWindow.Log($"[CallHistoryService] OutboundCallerId updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {callerId}");
             }
+            else
+            {
+                MainWindow.Log($"[CallHistoryService] UpdateOutboundCallerId: no row for {phoneNumber} near {callTime:O}");
+            }
         }
 
         public void UpdateRecordingFilePath(string phoneNumber, DateTime callTime, string recordingFilePath)
         {
-            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber &&
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
+            var call = FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
 
             if (call != null)
             {
                 call.RecordingFilePath = recordingFilePath;
                 SaveHistory();
                 MainWindow.Log($"[CallHistoryService] RecordingFilePath updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {recordingFilePath}");
+            }
+            else
+            {
+                MainWindow.Log($"[CallHistoryService] UpdateRecordingFilePath: no row for {phoneNumber} near {callTime:O}");
             }
         }
 
@@ -254,16 +304,19 @@ namespace Softphone
         /// </summary>
         public void UpdateAmoCrmUploadStatus(string phoneNumber, DateTime callTime, AmoCrmUploadStatus status, string? reason = null)
         {
-            var call = _history.FirstOrDefault(x => x.PhoneNumber == phoneNumber && 
-                Math.Abs((x.CallTime - callTime).TotalSeconds) < 30);
-            
+            var call = FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
+
             if (call != null)
             {
                 call.AmoCrmUploadStatus = status;
                 call.AmoCrmUploadReason = reason;
                 SaveHistory();
-                MainWindow.Log($"[CallHistoryService] AmoCrmUploadStatus updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {status}" + 
+                MainWindow.Log($"[CallHistoryService] AmoCrmUploadStatus updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {status}" +
                     (string.IsNullOrEmpty(reason) ? "" : $" ({reason})"));
+            }
+            else
+            {
+                MainWindow.Log($"[CallHistoryService] UpdateAmoCrmUploadStatus: no row for {phoneNumber} near {callTime:O} (status={status})");
             }
         }
 
@@ -286,6 +339,16 @@ namespace Softphone
                         }
                         catch { /* ignore */ }
                     }
+                    if (RepairMissingTalkDuration(history, out int durationRepaired))
+                    {
+                        try
+                        {
+                            string outJson = JsonConvert.SerializeObject(history, Formatting.Indented);
+                            File.WriteAllText(historyFilePath, outJson);
+                            MainWindow.Log($"[CallHistoryService] Repaired talk duration on {durationRepaired} entr(y/ies) on load");
+                        }
+                        catch { /* ignore */ }
+                    }
                     return history;
                 }
             }
@@ -297,7 +360,7 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Rows stuck in Calling long after start (e.g. WebRTC window closed without SendCallDetails, or bad time match on save).
+        /// Rows stuck in Calling/Connected long after start (e.g. SIP Connected never finalized, or WebRTC closed without SendCallDetails).
         /// </summary>
         private static bool RepairStaleCallingEntries(List<CallHistoryItem> list, out int repairedCount)
         {
@@ -305,8 +368,22 @@ namespace Softphone
             var now = DateTime.Now;
             foreach (var c in list)
             {
-                if (c.Status != CallStatus.Calling) continue;
-                if ((now - c.CallTime).TotalMinutes <= 30) continue;
+                if (c.Status != CallStatus.Calling && c.Status != CallStatus.Connected) continue;
+
+                // History is loaded only at app start — any Connected row is stale.
+                if (c.Status == CallStatus.Connected)
+                {
+                    if (c.WasAnswered || c.AnswerTime.HasValue || c.Duration.HasValue)
+                        c.Status = CallStatus.Ended;
+                    else
+                        c.Status = CallStatus.Cancelled;
+                    repairedCount++;
+                    continue;
+                }
+
+                bool hasCompletionEvidence = c.WasAnswered || c.Duration.HasValue || c.AnswerTime.HasValue
+                    || c.EndedBy != CallEndedBy.Unknown;
+                if (!hasCompletionEvidence && (now - c.CallTime).TotalMinutes <= 30) continue;
 
                 if (c.WasAnswered || c.Duration.HasValue || c.AnswerTime.HasValue)
                 {
@@ -317,6 +394,29 @@ namespace Softphone
                 else
                     c.Status = CallStatus.Cancelled;
 
+                repairedCount++;
+            }
+
+            return repairedCount > 0;
+        }
+
+        /// <summary>
+        /// Ended answered calls that lost Duration (e.g. Connected status update cleared it).
+        /// Uses recording file length when available.
+        /// </summary>
+        private static bool RepairMissingTalkDuration(List<CallHistoryItem> list, out int repairedCount)
+        {
+            repairedCount = 0;
+            foreach (var c in list)
+            {
+                if (c.Status != CallStatus.Ended) continue;
+                if (c.Duration.HasValue && c.Duration.Value.TotalSeconds > 0) continue;
+                if (!c.WasAnswered && !c.AnswerTime.HasValue) continue;
+
+                var talk = CallStatisticsService.GetEffectiveTalkDuration(c);
+                if (talk.TotalSeconds <= 0) continue;
+
+                c.Duration = talk;
                 repairedCount++;
             }
 

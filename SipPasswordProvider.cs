@@ -25,6 +25,85 @@ namespace Softphone
         }
 
         /// <summary>
+        /// WebRTC digest password for the main line: <see cref="AppSettings.WebRtcPasswordEncrypted"/> if set, else SIP password (legacy).
+        /// </summary>
+        public static string? GetMainWebRtcPassword(AppSettings? settings)
+        {
+            if (settings == null) return null;
+
+            string? sipFallback = GetPassword(settings);
+            if (string.IsNullOrWhiteSpace(settings.WebRtcPasswordEncrypted))
+                return NormalizeSecret(sipFallback);
+
+            string? webRtc = null;
+            try
+            {
+                webRtc = NormalizeSecret(TokenEncryption.Decrypt(settings.WebRtcPasswordEncrypted));
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SipPasswordProvider] WebRtcPasswordEncrypted decrypt failed ({DescribeEnc(settings.WebRtcPasswordEncrypted)}): {ex.Message}");
+            }
+
+            if (!string.IsNullOrEmpty(webRtc))
+            {
+                if (!string.IsNullOrEmpty(sipFallback) && webRtc != sipFallback)
+                {
+                    MainWindow.Log("[SipPasswordProvider] WARNING: WebRTC and SIP passwords differ in settings.json — WebRTC field is used. Re-save connection settings to sync.");
+                }
+                return webRtc;
+            }
+
+            if (!string.IsNullOrEmpty(sipFallback))
+            {
+                MainWindow.Log("[SipPasswordProvider] WebRTC password unavailable; using SIP password fallback.");
+            }
+
+            return sipFallback;
+        }
+
+        private static string? NormalizeSecret(string? value)
+        {
+            if (string.IsNullOrEmpty(value)) return null;
+            var trimmed = value.Trim();
+            return trimmed.Length == 0 ? null : trimmed;
+        }
+
+        private static string DescribeEnc(string? encrypted)
+        {
+            if (string.IsNullOrEmpty(encrypted)) return "empty";
+            if (encrypted.StartsWith("dpapi:", StringComparison.Ordinal)) return "dpapi";
+            return "legacy-aes";
+        }
+
+        /// <summary>
+        /// WebRTC digest password for line 2: dedicated field if set, else second SIP password (legacy).
+        /// </summary>
+        public static string? GetSecondaryWebRtcPassword(AppSettings? settings)
+        {
+            if (settings == null) return null;
+            if (!string.IsNullOrWhiteSpace(settings.WebRtcPasswordEncrypted2))
+            {
+                try
+                {
+                    var d = TokenEncryption.Decrypt(settings.WebRtcPasswordEncrypted2);
+                    if (!string.IsNullOrWhiteSpace(d)) return d;
+                }
+                catch { }
+            }
+            if (!string.IsNullOrWhiteSpace(settings.SipPasswordEncrypted2))
+            {
+                try
+                {
+                    var d = TokenEncryption.Decrypt(settings.SipPasswordEncrypted2);
+                    return string.IsNullOrWhiteSpace(d) ? null : d;
+                }
+                catch { }
+            }
+            return null;
+        }
+
+        /// <summary>
         /// Migrates legacy AES-encrypted SipPasswordEncrypted -> DPAPI format (best-effort).
         /// </summary>
         public static void MigrateEncryptedToDpapiIfNeeded(string settingsFilePath, AppSettings settings)

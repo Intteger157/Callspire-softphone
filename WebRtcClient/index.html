@@ -3,51 +3,99 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Softphone WebRTC</title>
-    <script src="jssip.min.js"></script>
-    <script src="phone.js"></script>
+    <title>Softphone WebRTC Container</title>
     <style>
-        body {
+        html, body {
             margin: 0;
             padding: 0;
+            width: 100%;
+            height: 100%;
             background: transparent;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
         }
-        #status {
-            display: none; /* Скрываем статус, так как он управляется из C# */
+        .slot {
+            border: 0;
+            width: 1px;
+            height: 1px;
+            position: absolute;
+            left: -9999px;
+            top: -9999px;
         }
     </style>
 </head>
 <body>
-    <div id="status">Initializing...</div>
-    <!-- Скрытый аудио элемент для воспроизведения входящего аудио -->
-    <audio id="remoteAudio" autoplay playsinline></audio>
+    <!--
+        Container page hosts two isolated iframes, one per connection slot.
+        Each iframe loads slot.html with its own SoftphoneWebRtc IIFE,
+        JsSIP UA, remoteAudio element, and module state — fully isolated by
+        the per-iframe window/document.
+
+        C# WebRtcEngineHost targets slots via window.Soft('main'|'secondary').X(...).
+        Legacy callers using window.SoftphoneWebRtc.X(...) transparently
+        route to the 'main' slot through the property getter below.
+    -->
+    <iframe id="slot-main" class="slot" src="slot.html?slot=main"></iframe>
+    <iframe id="slot-secondary" class="slot" src="slot.html?slot=secondary"></iframe>
+
     <script>
-        // Обработчик сообщений от C# для команд (initUA, makeCall, answer, hangup)
-        if (window.chrome && window.chrome.webview) {
-            window.chrome.webview.addEventListener('message', (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.cmd === 'initUA') {
-                        window.SoftphoneWebRtc.initUA({
-                            wsUri: data.wsUri,
-                            sipUri: data.sipUri,
-                            user: data.user,
-                            pass: data.pass
-                        });
-                    } else if (data.cmd === 'makeCall') {
-                        window.SoftphoneWebRtc.makeCall(data.number);
-                    } else if (data.cmd === 'answer') {
-                        window.SoftphoneWebRtc.answer();
-                    } else if (data.cmd === 'hangup') {
-                        window.SoftphoneWebRtc.hangup(data.sessionId);
-                    }
-                } catch (e) {
-                    console.error('[WebRTC] Error processing message:', e);
+        // Resolve a slot's SoftphoneWebRtc API. Returns a no-op Proxy when the
+        // iframe has not yet loaded so callers never throw on null access.
+        window.Soft = function (slot) {
+            var name = slot || 'main';
+            var f = document.getElementById('slot-' + name);
+            var sw = f && f.contentWindow ? f.contentWindow.SoftphoneWebRtc : null;
+            if (sw) return sw;
+            return new Proxy({}, {
+                get: function (_, method) {
+                    return function () {
+                        try {
+                            console.warn('[SoftphoneRouter] Slot ' + name + ' not ready for: ' + String(method));
+                        } catch (e) { /* swallow */ }
+                        return undefined;
+                    };
                 }
             });
+        };
+
+        // Backward-compatible alias: legacy code uses window.SoftphoneWebRtc directly,
+        // which now resolves to the 'main' slot.
+        Object.defineProperty(window, 'SoftphoneWebRtc', {
+            configurable: true,
+            get: function () { return window.Soft('main'); }
+        });
+
+        // Track which slots have loaded so the host can wait for readiness.
+        window._slotReady = { main: false, secondary: false };
+        function markSlotReady(slot) {
+            window._slotReady[slot] = true;
+            try {
+                if (window.chrome && window.chrome.webview) {
+                    window.chrome.webview.postMessage(JSON.stringify({
+                        type: 'slot_ready',
+                        slot: slot,
+                        ts: Date.now()
+                    }));
+                }
+            } catch (e) { /* swallow */ }
         }
+        document.getElementById('slot-main').addEventListener('load', function () { markSlotReady('main'); });
+        document.getElementById('slot-secondary').addEventListener('load', function () { markSlotReady('secondary'); });
+
+        // Relay JS->Host events from child iframes.
+        // WebView2's CoreWebView2.WebMessageReceived only fires for messages posted from the
+        // top frame, so each iframe forwards its payload here via window.parent.postMessage,
+        // and the container re-posts it on chrome.webview.postMessage so the host (C#) receives it.
+        window.addEventListener('message', function (e) {
+            try {
+                var data = e && e.data;
+                if (!data || data.__toHost !== true || typeof data.payload !== 'string') return;
+                if (window.chrome && window.chrome.webview) {
+                    window.chrome.webview.postMessage(data.payload);
+                }
+            } catch (relayErr) {
+                try { console.warn('[SoftphoneRouter] Relay error:', relayErr); } catch (_) { /* swallow */ }
+            }
+        });
     </script>
 </body>
 </html>
-

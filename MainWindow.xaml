@@ -244,6 +244,11 @@
                                    ToolTip="History">
                                 <ic:SymbolIcon Symbol="History" Width="24" Height="24" IconVariant="Regular"/>
                             </Button>
+                            <Button Style="{DynamicResource SidebarButtonStyle}" 
+                                   Click="StatisticsButton_Click" Name="StatisticsButton"
+                                   ToolTip="Statistics">
+                                <ic:SymbolIcon Symbol="ChartMultiple" Width="24" Height="24" IconVariant="Regular"/>
+                            </Button>
                         </StackPanel>
 
                         <!-- Bottom Buttons (Settings and Logs) -->
@@ -278,49 +283,48 @@
 
                         <!-- Status -->
                         <StackPanel Grid.Row="0" Margin="0,0,0,16">
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,0,0,4">
-                            <TextBlock Name="StatusLabel"
-                                      Text="Status:"
-                                      FontSize="12"
-                                      Foreground="{DynamicResource TextSecondaryBrush}"
-                                          FontWeight="SemiBold"
-                                          VerticalAlignment="Center"
-                                          Margin="0,0,8,0"/>
-                                <Border Name="WebRtcIndicator"
-                                       Width="8" Height="8"
-                                       CornerRadius="4"
-                                       Background="{DynamicResource TextSecondaryBrush}"
-                                       Visibility="Collapsed"
-                                       ToolTip="WebRTC mode active"
-                                       VerticalAlignment="Center"
-                                       Margin="0,0,8,0"/>
-                            </StackPanel>
-                            <!-- Status indicators -->
+                            <Border HorizontalAlignment="Center">
+                            <StackPanel HorizontalAlignment="Left">
+                            <!-- Status indicators: shared label column + left-aligned rows -->
                             <StackPanel Name="StatusPanel"
-                                       HorizontalAlignment="Center"
-                                       Orientation="Vertical">
+                                       HorizontalAlignment="Left"
+                                       Orientation="Vertical"
+                                       Grid.IsSharedSizeScope="True">
                                 <!-- Main connection status -->
-                                <StackPanel Orientation="Horizontal" 
-                                           HorizontalAlignment="Center"
-                                           Margin="0,0,0,4">
-                                    <TextBlock Text="Main:"
+                                <Grid Margin="0,0,0,4" VerticalAlignment="Center">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="ConnectionStatusLabelCol"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                              Name="MainConnectionStatusLabelTextBlock"
+                                              Text="PBX:"
                                               FontSize="12"
                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                               FontWeight="SemiBold"
                                               VerticalAlignment="Center"
-                                              Margin="0,0,4,0"/>
-                                    <Border Name="MainStatusIndicator"
+                                              HorizontalAlignment="Left"
+                                              TextAlignment="Left"
+                                              TextTrimming="CharacterEllipsis"
+                                              Margin="0,0,8,0"/>
+                                    <Border Grid.Column="1"
+                                           Name="MainStatusIndicator"
                                            Width="8" Height="8"
                                            CornerRadius="4"
                                            Background="{DynamicResource TextSecondaryBrush}"
                                            VerticalAlignment="Center"
                                            Margin="0,0,4,0"/>
-                                    <TextBlock Name="MainStatusTextBlock"
-                                              Text="Not connected" 
+                                    <TextBlock Grid.Column="2"
+                                              Name="MainStatusTextBlock"
+                                              Text="Not connected"
                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                               FontSize="12"
-                                              VerticalAlignment="Center"/>
-                                    <Button Name="MainRefreshButton"
+                                              VerticalAlignment="Center"
+                                              TextTrimming="CharacterEllipsis"/>
+                                    <Button Grid.Column="3"
+                                            Name="MainRefreshButton"
                                             Width="20" Height="20"
                                             Margin="4,0,0,0"
                                             VerticalAlignment="Center"
@@ -332,32 +336,46 @@
                                                   Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
                                         </Viewbox>
                                     </Button>
-                                </StackPanel>
+                                </Grid>
                                 
                                 <!-- Secondary connection status -->
-                                <StackPanel Name="SecondaryStatusPanel"
-                                           Orientation="Horizontal" 
-                                           HorizontalAlignment="Center"
-                                           Margin="0,0,0,4"
-                                           Visibility="Collapsed">
-                                    <TextBlock Text="Secondary:"
+                                <Grid Name="SecondaryStatusPanel"
+                                      Margin="0,0,0,4"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="ConnectionStatusLabelCol"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                              Name="SecondaryConnectionStatusLabelTextBlock"
+                                              Text="SIP:"
                                               FontSize="12"
                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                               FontWeight="SemiBold"
                                               VerticalAlignment="Center"
-                                              Margin="0,0,4,0"/>
-                                    <Border Name="SecondaryStatusIndicator"
+                                              HorizontalAlignment="Left"
+                                              TextAlignment="Left"
+                                              TextTrimming="CharacterEllipsis"
+                                              Margin="0,0,8,0"/>
+                                    <Border Grid.Column="1"
+                                           Name="SecondaryStatusIndicator"
                                            Width="8" Height="8"
                                            CornerRadius="4"
                                            Background="{DynamicResource TextSecondaryBrush}"
                                            VerticalAlignment="Center"
                                            Margin="0,0,4,0"/>
-                                    <TextBlock Name="SecondaryStatusTextBlock"
-                                              Text="Not connected" 
+                                    <TextBlock Grid.Column="2"
+                                              Name="SecondaryStatusTextBlock"
+                                              Text="Not connected"
                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                               FontSize="12"
-                                              VerticalAlignment="Center"/>
-                                    <Button Name="SecondaryRefreshButton"
+                                              VerticalAlignment="Center"
+                                              TextTrimming="CharacterEllipsis"/>
+                                    <Button Grid.Column="3"
+                                            Name="SecondaryRefreshButton"
                                             Width="20" Height="20"
                                             Margin="4,0,0,0"
                                             VerticalAlignment="Center"
@@ -369,32 +387,71 @@
                                                   Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
                                         </Viewbox>
                                     </Button>
-                                </StackPanel>
+                                </Grid>
                                 
                                 <!-- AmoCRM integration status -->
-                                <StackPanel Name="AmoCrmStatusPanel"
-                                           Orientation="Horizontal" 
-                                           HorizontalAlignment="Center"
-                                           Visibility="Collapsed">
-                                    <TextBlock Text="AmoCRM:"
+                                <Grid Name="AmoCrmStatusPanel"
+                                      VerticalAlignment="Center"
+                                      Visibility="Collapsed">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" SharedSizeGroup="ConnectionStatusLabelCol"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                              Text="AmoCRM:"
                                               FontSize="12"
                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                               FontWeight="SemiBold"
                                               VerticalAlignment="Center"
-                                              Margin="0,0,4,0"/>
-                                    <Border Name="AmoCrmStatusIndicator"
+                                              HorizontalAlignment="Left"
+                                              TextAlignment="Left"
+                                              Margin="0,0,8,0"/>
+                                    <Border Grid.Column="1"
+                                           Name="AmoCrmStatusIndicator"
                                            Width="8" Height="8"
                                            CornerRadius="4"
                                            Background="{DynamicResource TextSecondaryBrush}"
                                            VerticalAlignment="Center"
                                            Margin="0,0,4,0"/>
-                                    <TextBlock Name="AmoCrmStatusTextBlock"
-                                              Text="Not connected" 
+                                    <TextBlock Grid.Column="2"
+                                              Name="AmoCrmStatusTextBlock"
+                                              Text="Not connected"
                                               Foreground="{DynamicResource TextSecondaryBrush}"
                                               FontSize="12"
-                                              VerticalAlignment="Center"/>
-                                </StackPanel>
+                                              VerticalAlignment="Center"
+                                              TextTrimming="CharacterEllipsis"/>
+                                </Grid>
                             </StackPanel>
+                            </StackPanel>
+                            </Border>
+
+                            <!-- SIP auth-failure warning banner (shown when MikoPBX
+                                 reports recent rejected REGISTER attempts for this
+                                 extension — early warning before Fail2Ban bans us). -->
+                            <Border Name="SipAuthFailureBanner"
+                                    Background="#3c1f12"
+                                    BorderBrush="#b0532f"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10,6"
+                                    Margin="0,8,0,0"
+                                    Visibility="Collapsed">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="&#x26A0;"
+                                               Foreground="#ffc16b"
+                                               FontSize="14"
+                                               Margin="0,0,8,0"
+                                               VerticalAlignment="Center"/>
+                                    <TextBlock Name="SipAuthFailureBannerText"
+                                               Text=""
+                                               Foreground="#ffd9b0"
+                                               FontSize="12"
+                                               TextWrapping="Wrap"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
                         </StackPanel>
 
                         <!-- Phone Number Input with Backspace -->
@@ -628,11 +685,18 @@
 
                         <!-- Header -->
                         <Grid Grid.Row="0" Margin="0,0,0,20">
+                            <StackPanel>
                             <TextBlock Text="Call History" 
                                       FontSize="24" 
                                       FontWeight="Light"
                                       Foreground="{DynamicResource TextPrimaryBrush}"
                                       VerticalAlignment="Center"/>
+                            <TextBlock Name="HistoryFilterHintTextBlock"
+                                      FontSize="12"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                      Margin="0,4,0,0"
+                                      Visibility="Collapsed"/>
+                            </StackPanel>
                             <Button Name="ClearHistoryButton"
                                    Content="Clear History"
                                    HorizontalAlignment="Right"
@@ -757,6 +821,388 @@
                                   HorizontalAlignment="Center"
                                   VerticalAlignment="Center"
                                   Visibility="Collapsed"/>
+                    </Grid>
+
+                    <!-- Statistics View -->
+                    <Grid Name="StatisticsView" Visibility="Collapsed" Margin="24">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Header -->
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="Call Statistics"
+                                          FontSize="24"
+                                          FontWeight="Light"
+                                          Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <TextBlock Text="Operational analytics from the last 7 days of call history"
+                                          FontSize="13"
+                                          Foreground="{DynamicResource TextSecondaryBrush}"
+                                          Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <Button Name="StatisticsExportCsvButton"
+                                   Content="Export CSV"
+                                   HorizontalAlignment="Right"
+                                   VerticalAlignment="Top"
+                                   Padding="14,8"
+                                   FontSize="13"
+                                   Cursor="Hand"
+                                   Click="StatisticsExportCsvButton_Click">
+                                <Button.Style>
+                                    <Style TargetType="Button">
+                                        <Setter Property="Background" Value="{DynamicResource BackgroundMediumBrush}"/>
+                                        <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+                                        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+                                        <Setter Property="BorderThickness" Value="1"/>
+                                        <Setter Property="Template">
+                                            <Setter.Value>
+                                                <ControlTemplate TargetType="Button">
+                                                    <Border Background="{TemplateBinding Background}"
+                                                            BorderBrush="{TemplateBinding BorderBrush}"
+                                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                                            CornerRadius="4"
+                                                            Padding="{TemplateBinding Padding}">
+                                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                                    </Border>
+                                                    <ControlTemplate.Triggers>
+                                                        <Trigger Property="IsMouseOver" Value="True">
+                                                            <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                                                        </Trigger>
+                                                    </ControlTemplate.Triggers>
+                                                </ControlTemplate>
+                                            </Setter.Value>
+                                        </Setter>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                        </Grid>
+
+                        <!-- Filters -->
+                        <Grid Grid.Row="1" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="24"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="24"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="200"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Period" VerticalAlignment="Center" Margin="0,0,10,0"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <ComboBox Grid.Column="1" Name="StatisticsPeriodComboBox"
+                                     Style="{DynamicResource ModernComboBoxStyle}"
+                                     SelectionChanged="StatisticsFilter_Changed" Height="34" FontSize="14"/>
+                            <TextBlock Grid.Column="3" Text="Connection" VerticalAlignment="Center" Margin="0,0,10,0"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <ComboBox Grid.Column="4" Name="StatisticsConnectionComboBox"
+                                     Style="{DynamicResource ModernComboBoxStyle}"
+                                     SelectionChanged="StatisticsFilter_Changed" Height="34" FontSize="14"/>
+                            <TextBlock Grid.Column="6" Text="Direction" VerticalAlignment="Center" Margin="0,0,10,0"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <ComboBox Grid.Column="7" Name="StatisticsDirectionComboBox"
+                                     Style="{DynamicResource ModernComboBoxStyle}"
+                                     SelectionChanged="StatisticsFilter_Changed" Height="34" FontSize="14"/>
+                        </Grid>
+
+                        <StackPanel Grid.Row="2" Name="StatisticsCustomRangePanel" Orientation="Horizontal"
+                                   Margin="0,0,0,12" Visibility="Collapsed">
+                            <TextBlock Text="From" VerticalAlignment="Center" Margin="0,0,8,0"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <DatePicker Name="StatisticsCustomFromDatePicker"
+                                       Style="{DynamicResource ModernDatePickerStyle}"
+                                       SelectedDateChanged="StatisticsCustomDatePicker_SelectedDateChanged"
+                                       Margin="0,0,16,0"/>
+                            <TextBlock Text="To" VerticalAlignment="Center" Margin="0,0,8,0"
+                                      Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <DatePicker Name="StatisticsCustomToDatePicker"
+                                       Style="{DynamicResource ModernDatePickerStyle}"
+                                       SelectedDateChanged="StatisticsCustomDatePicker_SelectedDateChanged"/>
+                        </StackPanel>
+
+                        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Margin="0,0,8,0">
+                            <StackPanel Name="StatisticsDashboardsPanel">
+                                <TextBlock Name="StatisticsPeriodHintTextBlock" FontSize="13"
+                                          Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,16"/>
+
+                                <!-- KPI row -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{DynamicResource StatisticsCardBorderStyle}" Margin="0,0,8,0"
+                                            Cursor="Hand" MouseLeftButtonUp="StatisticsKpi_Click" Tag="All">
+                                        <StackPanel>
+                                            <TextBlock Text="Total" Style="{DynamicResource StatisticsCardLabelStyle}"/>
+                                            <TextBlock Name="StatsKpiTotal" Style="{DynamicResource StatisticsCardValueStyle}"/>
+                                            <TextBlock Name="StatsKpiDirectionHint" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="1" Style="{DynamicResource StatisticsCardBorderStyle}" Margin="0,0,8,0"
+                                            Cursor="Hand" MouseLeftButtonUp="StatisticsKpi_Click" Tag="Answered">
+                                        <StackPanel>
+                                            <TextBlock Text="Answered" Style="{DynamicResource StatisticsCardLabelStyle}"/>
+                                            <TextBlock Name="StatsKpiAnswered" Style="{DynamicResource StatisticsCardValueStyle}"
+                                                      Foreground="{DynamicResource AccentGreenBrush}"/>
+                                            <TextBlock Name="StatsKpiSuccessRate" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{DynamicResource StatisticsCardBorderStyle}" Margin="0,0,8,0"
+                                            Cursor="Hand" MouseLeftButtonUp="StatisticsKpi_Click" Tag="Unanswered">
+                                        <StackPanel>
+                                            <TextBlock Text="Unanswered" Style="{DynamicResource StatisticsCardLabelStyle}"/>
+                                            <TextBlock Name="StatsKpiUnanswered" Style="{DynamicResource StatisticsCardValueStyle}"
+                                                      Foreground="{DynamicResource AccentRedBrush}"/>
+                                            <TextBlock Name="StatsKpiUnansweredHint" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="3" Style="{DynamicResource StatisticsCardBorderStyle}" Margin="0,0,8,0">
+                                        <StackPanel>
+                                            <TextBlock Text="Talk time" Style="{DynamicResource StatisticsCardLabelStyle}"/>
+                                            <TextBlock Name="StatsKpiTalkTime" Style="{DynamicResource StatisticsCardValueStyle}"/>
+                                            <TextBlock Name="StatsKpiAvgTalk" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="4" Style="{DynamicResource StatisticsCardBorderStyle}" Margin="0,0,8,0">
+                                        <StackPanel>
+                                            <TextBlock Text="Contact rate" Style="{DynamicResource StatisticsCardLabelStyle}"/>
+                                            <TextBlock Name="StatsKpiContactRate" Style="{DynamicResource StatisticsCardValueStyle}"/>
+                                            <TextBlock Name="StatsKpiRingTime" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="5" Style="{DynamicResource StatisticsCardBorderStyle}"
+                                            Cursor="Hand" MouseLeftButtonUp="StatisticsKpi_Click" Tag="Missed">
+                                        <StackPanel>
+                                            <TextBlock Text="Missed incoming" Style="{DynamicResource StatisticsCardLabelStyle}"/>
+                                            <TextBlock Name="StatsKpiMissed" Style="{DynamicResource StatisticsCardValueStyle}"
+                                                      Foreground="{DynamicResource AccentRedBrush}"/>
+                                            <TextBlock Name="StatsKpiFailedCancelled" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Charts row -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{DynamicResource StatisticsCardBorderStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="Calls by day" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsDailyChartItems">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <UniformGrid Rows="1"/>
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel VerticalAlignment="Bottom" Margin="2,0">
+                                                            <Border Height="{Binding BarHeight}" MinHeight="4"
+                                                                   VerticalAlignment="Bottom"
+                                                                   Background="{DynamicResource AccentBlueBrush}"
+                                                                   CornerRadius="3,3,0,0"
+                                                                   ToolTip="{Binding ToolTipText}"/>
+                                                            <TextBlock Text="{Binding Label}" FontSize="10"
+                                                                      Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                      HorizontalAlignment="Center" TextAlignment="Center"
+                                                                      Margin="0,6,0,0"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{DynamicResource StatisticsCardBorderStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="Activity by hour" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,4"/>
+                                            <TextBlock Name="StatsPeakHourText" FontSize="12"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                                                <ItemsControl Name="StatsHourlyChartItems">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <StackPanel Orientation="Horizontal"/>
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <StackPanel Width="28" VerticalAlignment="Bottom" Margin="1,0">
+                                                                <Border Height="{Binding BarHeight}" MinHeight="2"
+                                                                       VerticalAlignment="Bottom"
+                                                                       Background="{DynamicResource AccentGreenBrush}"
+                                                                       CornerRadius="2,2,0,0"
+                                                                       ToolTip="{Binding Total, StringFormat={}{0} calls}"/>
+                                                                <TextBlock Text="{Binding Label}" FontSize="9"
+                                                                          Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                          HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </ScrollViewer>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Outcome + Connection compare -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{DynamicResource StatisticsCardBorderStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="Outcome breakdown" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <TextBlock Name="StatsOutcomeAnswered" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeCancelled" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeAgentCancel" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeFailed" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeMissed" Style="{DynamicResource StatisticsCardHintStyle}"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{DynamicResource StatisticsCardBorderStyle}" Name="StatsConnectionComparePanel">
+                                        <StackPanel>
+                                            <TextBlock Text="By connection" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsConnectionCompareItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1"
+                                                               Padding="0,0,0,10" Margin="0,0,0,10">
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                                          Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                                <TextBlock Text="{Binding Detail}" FontSize="12"
+                                                                          Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,4,0,0"/>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Transport + CRM -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{DynamicResource StatisticsCardBorderStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="SIP vs WebRTC" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsTransportItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding Detail}" FontSize="12"
+                                                                  Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Name="StatsTransportEmptyText" FontSize="12"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}" Visibility="Collapsed"
+                                                      Text="No transport data for this filter"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{DynamicResource StatisticsCardBorderStyle}" Name="StatsCrmPanel">
+                                        <StackPanel>
+                                            <TextBlock Text="AmoCRM" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <TextBlock Name="StatsCrmLinked" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"
+                                                      Cursor="Hand" MouseLeftButtonUp="StatisticsCrmMetric_Click" Tag="CrmLinkedToLead"/>
+                                            <TextBlock Name="StatsCrmSentToContact" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"
+                                                      Cursor="Hand" MouseLeftButtonUp="StatisticsCrmMetric_Click" Tag="CrmSentToContact"/>
+                                            <TextBlock Name="StatsCrmRecorded" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"
+                                                      Cursor="Hand" MouseLeftButtonUp="StatisticsCrmMetric_Click" Tag="CrmWithRecording"/>
+                                            <TextBlock Name="StatsCrmUploaded" Style="{DynamicResource StatisticsCardHintStyle}" Margin="0,0,0,6"
+                                                      Cursor="Hand" MouseLeftButtonUp="StatisticsCrmMetric_Click" Tag="CrmUploadedToAmo"/>
+                                            <TextBlock Name="StatsCrmUploadIssues" Style="{DynamicResource StatisticsCardHintStyle}"
+                                                      Cursor="Hand" MouseLeftButtonUp="StatisticsCrmMetric_Click" Tag="CrmRecordingNotInAmo"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Caller ID + Top numbers -->
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Style="{DynamicResource StatisticsCardBorderStyle}" Name="StatsCallerIdPanel">
+                                        <StackPanel>
+                                            <TextBlock Text="Outbound Caller ID" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsCallerIdItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding Detail}" FontSize="12"
+                                                                  Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,6"/>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Name="StatsCallerIdEmptyText" FontSize="12"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}" Visibility="Collapsed"
+                                                      Text="No Caller ID data in this period"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{DynamicResource StatisticsCardBorderStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="Top numbers" FontSize="15" FontWeight="SemiBold"
+                                                      Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Click a row to view in history" FontSize="11"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                            <ItemsControl Name="StatsTopNumbersItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Padding="8,6" Margin="0,0,0,4" CornerRadius="4"
+                                                               Background="{DynamicResource BackgroundDarkBrush}"
+                                                               Cursor="Hand" MouseLeftButtonUp="StatisticsTopNumber_Click"
+                                                               Tag="{Binding PhoneNumber}">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="{Binding PhoneNumber}"
+                                                                          Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                                <TextBlock Grid.Column="1" Text="{Binding Detail}"
+                                                                          Foreground="{DynamicResource TextSecondaryBrush}" FontSize="12"/>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Name="StatsTopNumbersEmptyText" FontSize="12"
+                                                      Foreground="{DynamicResource TextSecondaryBrush}" Visibility="Collapsed"
+                                                      Text="No calls in this period"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <TextBlock Name="StatisticsLegacyHintTextBlock"
+                                          Text="Calls before dual-line tracking may appear under the main connection in exports."
+                                          FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                          TextWrapping="Wrap" Margin="0,8,0,0" Visibility="Collapsed"/>
+                            </StackPanel>
+                        </ScrollViewer>
                     </Grid>
                     </Grid>
                 </Grid>

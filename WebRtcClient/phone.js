@@ -8,6 +8,40 @@ window.SoftphoneWebRtc = (function () {
     let recordingStream = null;
     let _jssipLoadPromise = null;
 
+    // Connection slot identifier ("main" | "secondary"). Read from URL query string
+    // so that each iframe (one per slot) carries its own slot label.
+    // Default to "main" for backward compatibility with single-slot pages.
+    const _slot = (function () {
+        try {
+            return new URLSearchParams(window.location.search).get('slot') || 'main';
+        } catch (e) {
+            return 'main';
+        }
+    })();
+
+    // When running inside an iframe, WebView2's CoreWebView2.WebMessageReceived event
+    // ONLY fires for messages posted from the top-level frame. Messages from iframes
+    // go to a separate WebMessageReceivedFromFrame event that the host doesn't subscribe to.
+    //
+    // To keep a single subscription point on the host side, we relay every message to the
+    // parent window (index.html), which forwards it via its own chrome.webview.postMessage.
+    // For the standalone test page (slot=test, no parent), we fall back to direct posting.
+    const _inIframe = (function () { try { return window.parent && window.parent !== window; } catch (e) { return false; } })();
+    function postToHost(jsonStr) {
+        try {
+            if (_inIframe) {
+                // Relay through the container; same-origin so '*' is fine.
+                window.parent.postMessage({ __toHost: true, payload: jsonStr }, '*');
+                return true;
+            }
+            if (window.chrome && window.chrome.webview) {
+                window.chrome.webview.postMessage(jsonStr);
+                return true;
+            }
+        } catch (e) { /* swallow — never break SIP flow because of logging */ }
+        return false;
+    }
+
     function loadJsSIPOnce() {
         if (window.JsSIP) return Promise.resolve(true);
         if (_jssipLoadPromise) return _jssipLoadPromise;
@@ -75,6 +109,50 @@ window.SoftphoneWebRtc = (function () {
         }
     }
 
+    // Redact secrets from SIP messages before logging/sending to host logs.
+    // INVITE/REGISTER may contain Authorization / Proxy-Authorization headers.
+    //
+    // Only the `response="..."` Digest param is sensitive (it's the MD5/SHA hash of the
+    // password mixed with nonce). Everything else (username, realm, nonce, uri, qop, etc.)
+    // is publicly observable on the wire and is critical for diagnosing auth failures
+    // (e.g. "is JsSIP sending the right username?", "does realm match PBX config?").
+    // WWW-Authenticate carries the challenge — no secret there at all.
+    function redactSipForLog(raw) {
+        try {
+            if (!raw || typeof raw !== 'string') return raw;
+            const lines = raw.split(/\r?\n/);
+            const out = [];
+            for (const line of lines) {
+                const l = String(line);
+                if (/^\s*Authorization\s*:/i.test(l) || /^\s*Proxy-Authorization\s*:/i.test(l)) {
+                    // Mask only the response= digest hash, keep everything else visible.
+                    out.push(l.replace(/response\s*=\s*"[^"]*"/i, 'response="***REDACTED***"'));
+                    continue;
+                }
+                // WWW-Authenticate carries the server challenge (realm, nonce, qop, ...) — no secret.
+                out.push(l);
+            }
+            return out.join('\r\n');
+        } catch {
+            return raw;
+        }
+    }
+
+    // Redact sensitive SDP before sending it to C# logs.
+    // SDP may contain ICE ufrag/pwd and private IP candidates.
+    function redactSdpForLog(rawSdp) {
+        try {
+            if (!rawSdp || typeof rawSdp !== 'string') return rawSdp;
+            let s = rawSdp.replace(/^a=ice-ufrag:.*$/gmi, 'a=ice-ufrag:***REDACTED***');
+            s = s.replace(/^a=ice-pwd:.*$/gmi, 'a=ice-pwd:***REDACTED***');
+            // Mask IP address in "a=candidate:" lines (best-effort).
+            s = s.replace(/^(a=candidate:[^\r\n]*\s)(\d{1,3}(?:\.\d{1,3}){3})(\s\d+\s typ\s\w+[^\r\n]*)$/gmi, '$1***.***.***.***$3');
+            return s;
+        } catch {
+            return rawSdp;
+        }
+    }
+
     // Отправка события в C#
     function sendEvent(obj) {
         try {
@@ -98,7 +176,14 @@ window.SoftphoneWebRtc = (function () {
             }
             
             const safeObj = toSafeJson(obj);
-            
+
+            // Tag every outgoing event with the connection slot so the C# router
+            // can demultiplex between WebRtcService.Main and WebRtcService.Secondary.
+            // Inner code can override by setting safeObj.slot explicitly (rare).
+            if (safeObj && typeof safeObj === 'object' && safeObj.slot == null) {
+                safeObj.slot = _slot;
+            }
+
             // ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ для критичных событий
             if (safeObj.type === 'call_accepted' || safeObj.type === 'audio_connected' || safeObj.type === 'audio_playing') {
                 console.log(`[WebRTC] ⚠️⚠️⚠️ SENDING CRITICAL EVENT: ${safeObj.type} ⚠️⚠️⚠️`);
@@ -108,6 +193,7 @@ window.SoftphoneWebRtc = (function () {
                 try {
                     const logEvent = {
                         type: 'js_log',
+                        slot: _slot,
                         data: {
                             level: 'critical',
                             message: `[WebRTC] ⚠️⚠️⚠️ CRITICAL EVENT: ${safeObj.type} ⚠️⚠️⚠️`,
@@ -116,18 +202,15 @@ window.SoftphoneWebRtc = (function () {
                             timestamp: Date.now()
                         }
                     };
-                    if (window.chrome && window.chrome.webview) {
-                        window.chrome.webview.postMessage(JSON.stringify(logEvent));
-                    }
+                    postToHost(JSON.stringify(logEvent));
                 } catch (logErr) {
                     console.error('[WebRTC] Error sending log event:', logErr);
                 }
             }
-            
-            if (window.chrome && window.chrome.webview) {
-                const jsonStr = JSON.stringify(safeObj);
-                window.chrome.webview.postMessage(jsonStr);
-                
+
+            const jsonStr = JSON.stringify(safeObj);
+            const delivered = postToHost(jsonStr);
+            if (delivered) {
                 // Подтверждение отправки для критичных событий
                 if (safeObj.type === 'call_accepted' || safeObj.type === 'audio_connected' || safeObj.type === 'audio_playing') {
                     console.log(`[WebRTC] ✅ Event ${safeObj.type} sent via postMessage (${jsonStr.length} bytes)`);
@@ -146,6 +229,65 @@ window.SoftphoneWebRtc = (function () {
     // Глобальные переменные для сессий
     window._incomingSession = null;
     window._activeSession = null;
+    window._callspireOriginatePending = false;
+    window._callspireOriginateAcceptedSessionId = null;
+
+    function setOriginatePending(pending) {
+        window._callspireOriginatePending = !!pending;
+        if (!pending) {
+            window._callspireOriginateAcceptedSessionId = null;
+        }
+    }
+
+    function setOriginateAcceptedSessionId(sessionId) {
+        window._callspireOriginateAcceptedSessionId = sessionId || null;
+        window._callspireOriginatePending = false;
+    }
+
+    function rejectIncomingSession(session, sessionId, reason) {
+        console.log('[WebRTC]', reason, sessionId);
+        sendEvent({
+            type: 'js_log',
+            data: { level: 'warn', message: `[WebRTC] ${reason} session=${sessionId}` }
+        });
+        try {
+            session.terminate({ status_code: 486, reason_phrase: 'Busy Here' });
+        } catch (ex) {
+            console.warn('[WebRTC] rejectIncomingSession terminate failed:', ex);
+        }
+    }
+
+    function getRegisteredContactUser() {
+        try {
+            const uri = ua?.contact?.uri;
+            if (uri?.user) return uri.user;
+            const raw = (typeof ua?.contact?.toString === 'function') ? ua.contact.toString() : '';
+            const m = raw.match(/sip:([^@;>]+)/i);
+            return m ? m[1] : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function isInviteForCurrentContact(session) {
+        try {
+            const originatePending = !!window._callspireOriginatePending;
+            const inviteUser = session?.request?.ruri?.user || null;
+            const contactUser = getRegisteredContactUser();
+
+            // Originate callback: accept when unsure (C# OriginateCoordinator dedupes stale legs).
+            if (originatePending) {
+                if (!inviteUser || !contactUser) return true;
+                return inviteUser === contactUser;
+            }
+
+            if (!inviteUser || !contactUser) return false;
+            return inviteUser === contactUser;
+        } catch (ex) {
+            console.warn('[WebRTC] isInviteForCurrentContact error:', ex);
+            return !!window._callspireOriginatePending;
+        }
+    }
 
     // Фаза 2: Инициализация JsSIP UA без медиа (prewarm)
     async function initUA(cfg) {
@@ -220,8 +362,9 @@ window.SoftphoneWebRtc = (function () {
                                                    str.includes('ACK') || str.includes('UPDATE') || str.includes('REFER') ||
                                                    (str.includes('SIP/2.0') && !str.includes('REGISTER'));
                         if (isImportantMessage) {
-                        console.log('[WSS OUT]', str.substring(0, 1500) + (str.length > 1500 ? '...' : ''));
-                            sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WSS OUT] ' + str.substring(0, 1500) } });
+                            const safe = redactSipForLog(str);
+                            console.log('[WSS OUT]', safe.substring(0, 1500) + (safe.length > 1500 ? '...' : ''));
+                            sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WSS OUT] ' + safe.substring(0, 1500) } });
                         }
                         return origSend(data);
                     };
@@ -240,8 +383,9 @@ window.SoftphoneWebRtc = (function () {
                                                            str.includes('ACK') || str.includes('UPDATE') || str.includes('REFER') ||
                                                            (str.indexOf('SIP/2.0') !== -1 && str.indexOf('REGISTER') === -1);
                                 if (isImportantMessage) {
-                                console.log('[WSS IN ]', str.substring(0, 1500) + (str.length > 1500 ? '...' : ''));
-                                    sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WSS IN ] ' + str.substring(0, 1500) } });
+                                    const safe = redactSipForLog(str);
+                                    console.log('[WSS IN ]', safe.substring(0, 1500) + (safe.length > 1500 ? '...' : ''));
+                                    sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WSS IN ] ' + safe.substring(0, 1500) } });
                                 }
                             });
                             console.log('[WebRTC] WSS hook: [WSS IN] listener attached to _ws');
@@ -261,13 +405,14 @@ window.SoftphoneWebRtc = (function () {
             }
             // ----- конец перехвата WSS -----
 
-            // Формируем список ICE‑серверов
-            const iceServers = [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ];
+            // Формируем список ICE‑серверов.
+            // В symmetric NAT и/или при наличии VPN-интерфейса быстрее/надежнее начинать с TURN,
+            // чтобы ICE не тратил время на host/srflx пути, из-за чего пользователь слышит IVR "с середины".
+            const iceServers = [];
 
-            // Пользовательский TURN‑сервер из настроек (если задан в C#)
+            // Пользовательский TURN‑сервер из настроек (если задан в C#).
+            // ВАЖНО: если пользовательский TURN не задан, НЕ подставляем публичные TURN'ы по умолчанию.
+            // В некоторых сетях они не резолвятся/блокируются и могут ломать ICE (0 кандидатов).
             if (cfg.turnServer && typeof cfg.turnServer === 'string' && cfg.turnServer.trim() !== '') {
                 let turnUrl = cfg.turnServer.trim();
                 if (!/^turns?:/i.test(turnUrl)) {
@@ -280,24 +425,52 @@ window.SoftphoneWebRtc = (function () {
                 if (cfg.turnPassword && typeof cfg.turnPassword === 'string' && cfg.turnPassword.trim() !== '') {
                     turnEntry.credential = cfg.turnPassword.trim();
                 }
+                // TURN первым
                 iceServers.push(turnEntry);
                 console.log('[WebRTC] Using custom TURN server from config:', turnUrl);
-            } else {
-                // Публичный TURN сервер как fallback (может не работать без учетных данных):
-                iceServers.push(
-                    { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-                    { urls: 'turn:openrelay.metered.ca:443?transport=udp', username: 'openrelayproject', credential: 'openrelayproject' }, // UDP 443 для обхода firewall
-                    { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }, // По умолчанию UDP
-                    { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' } // TCP 443 как fallback
-                );
+                sendEvent({
+                    type: 'js_log',
+                    data: {
+                        level: 'critical',
+                        message: `[WebRTC] TURN config in initUA: url=${turnUrl}, hasUser=${!!turnEntry.username}, hasPass=${!!turnEntry.credential}`
+                    }
+                });
             }
+
+            // STUN добавляем после TURN.
+            iceServers.push(
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            );
 
             console.log('[WebRTC] ICE servers:', iceServers);
 
+            // Relay-only включаем ТОЛЬКО если пользователь явно настроил TURN.
+            // Иначе остаёмся в STUN-only режиме (как раньше), чтобы звонки не "падали" при недоступном публичном TURN.
+            const forceRelay = !!(cfg.turnServer && typeof cfg.turnServer === 'string' && cfg.turnServer.trim() !== '');
+            const pcConfig = forceRelay
+                ? { iceServers: iceServers, iceTransportPolicy: 'relay' }
+                : { iceServers: iceServers };
+            sendEvent({
+                type: 'js_log',
+                data: {
+                    level: 'critical',
+                    message: `[WebRTC] pcConfig: forceRelay=${forceRelay}, iceServers=${iceServers.map(s => s.urls).join(', ')}`
+                }
+            });
+
             console.log('[WebRTC] Creating JsSIP UA with SIP URI:', cfg.sipUri);
+            // IMPORTANT (MikoPBX WebRTC):
+            // We register as "<EXT>-WS" AoR (cfg.sipUri = sip:52678419-WS@...) so that the
+            // contact is bound to the WSS endpoint (otherwise PBX picks the UDP endpoint
+            // and originate callback fails with PJSIP_ETPNOTSUITABLE).
+            // BUT the actual auth account on PBX is still "<EXT>" (cfg.user = "52678419").
+            // Without authorization_user, JsSIP derives auth username from uri ("52678419-WS"),
+            // which causes "Authentication Error: Registration failed".
             ua = new JsSIP.UA({
                 sockets: [socket],
                 uri: cfg.sipUri,
+                authorization_user: cfg.user,
                 password: cfg.pass,
                 session_timers: false,
                 register: true,
@@ -307,6 +480,11 @@ window.SoftphoneWebRtc = (function () {
                 // STUN нужен для NAT traversal: MikoPBX выполняет ICE negotiation ДО отправки 200 OK.
                 // Без публичных (srflx) кандидатов PBX не может завершить ICE → 200 OK не отправляется.
                 // Для symmetric NAT также потребуется TURN сервер (настраивается на PBX или в настройках клиента).
+                // IMPORTANT: JsSIP uses RTCPeerConnection config under "pcConfig".
+                // Without this, incoming sessions answered via sess.answer() can run with default ICE (host-only),
+                // causing long silence before media starts and users miss the beginning of IVR prompts.
+                pcConfig: pcConfig,
+                // Back-compat: keep old key (may be ignored by JsSIP).
                 ice_servers: iceServers,
                 // Минимальное логирование JsSIP - только ошибки и предупреждения
                 log: {
@@ -394,6 +572,20 @@ window.SoftphoneWebRtc = (function () {
                 
                 const sessionId = e.session.id || e.session.request?.call_id || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
                 e.session._softphoneSessionId = sessionId;
+
+                if (e.originator === 'remote') {
+                    if (window._callspireOriginateAcceptedSessionId
+                        && sessionId !== window._callspireOriginateAcceptedSessionId) {
+                        rejectIncomingSession(e.session, sessionId, 'Originate: rejecting duplicate INVITE');
+                        return;
+                    }
+
+                    // PBX Originate callback must never be dropped here — C# OriginateCoordinator dedupes stale legs.
+                    if (!window._callspireOriginatePending && !isInviteForCurrentContact(e.session)) {
+                        rejectIncomingSession(e.session, sessionId, 'Rejecting INVITE for stale WebRTC contact');
+                        return;
+                    }
+                }
                 
                 // КРИТИЧНО: Подписываемся на события СРАЗУ, чтобы не пропустить sending/sdp события
                 wireSessionEvents(e.session, e.originator);
@@ -521,9 +713,12 @@ window.SoftphoneWebRtc = (function () {
             console.log('[WebRTC] Creating JsSIP UA with SIP URI:', config.sipUri);
             // Создаем UA
             try {
+                // See comment in initUA(): authorization_user must be the actual PBX extension,
+                // while uri/AoR is "<EXT>-WS" for WebRTC contact binding.
                 ua = new JsSIP.UA({
                     sockets: [socket],
                     uri: config.sipUri,
+                    authorization_user: config.user || config.username,
                     password: config.password,
                     session_timers: false,
                     register: true,
@@ -666,6 +861,133 @@ window.SoftphoneWebRtc = (function () {
         }
     }
 
+    // Wake default audio output (WASAPI) early — cold output devices can add seconds before first samples are audible.
+    function prewarmAudioOutputBestEffort() {
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            if (!window._softphoneAudioPrewarmCtx) {
+                window._softphoneAudioPrewarmCtx = new AC({ latencyHint: 'interactive' });
+            }
+            const ctx = window._softphoneAudioPrewarmCtx;
+            const resume = ctx.resume();
+            if (resume && typeof resume.then === 'function') {
+                resume.then(() => {
+                    try {
+                        const frames = Math.max(2, Math.floor(ctx.sampleRate * 0.02));
+                        const buf = ctx.createBuffer(1, frames, ctx.sampleRate);
+                        const src = ctx.createBufferSource();
+                        src.buffer = buf;
+                        src.connect(ctx.destination);
+                        src.start(0);
+                    } catch (e) { /* ignore */ }
+                }).catch(() => {});
+            }
+        } catch (e) { /* ignore */ }
+    }
+
+    /**
+     * Где слышен IVR: по умолчанию удалённый звук идёт через Web Audio (элемент remoteAudio с volume=0).
+     * Если обрезается начало — проверьте обычный <audio>:
+     *   В консоли DevTools на странице софтфона: localStorage.setItem('callspire.remotePlayback','audio'); затем перезагрузка WebView.
+     * Вернуть Web Audio: localStorage.setItem('callspire.remotePlayback','webaudio'); или removeItem.
+     */
+    function isRemotePlaybackViaWebAudio() {
+        try {
+            const v = (localStorage.getItem('callspire.remotePlayback') || 'webaudio').toLowerCase();
+            return v !== 'audio' && v !== 'html';
+        } catch {
+            return true;
+        }
+    }
+
+    // Tear down Web Audio graph used for remote playback (call on hangup / new session).
+    function teardownRemoteWebAudioPlayback() {
+        try {
+            const g = window._softphoneRemotePlayback;
+            if (!g) return;
+            try { if (g.source) g.source.disconnect(); } catch { }
+            try { if (g.gain) g.gain.disconnect(); } catch { }
+            try { if (g.ctx && g.ctx.state !== 'closed') g.ctx.close(); } catch { }
+            window._softphoneRemotePlayback = null;
+        } catch { /* ignore */ }
+    }
+
+    // Play remote MediaStream to speakers via Web Audio API — often lower latency than <audio> alone (important after PBX re-INVITE).
+    function attachRemoteWebAudioPlayback(mediaStream, logSessionId) {
+        if (!mediaStream || typeof mediaStream.getAudioTracks !== 'function') return;
+        if (!isRemotePlaybackViaWebAudio()) return;
+        teardownRemoteWebAudioPlayback();
+        try {
+            const AC = window.AudioContext || window.webkitAudioContext;
+            if (!AC) return;
+            const ctx = new AC({ latencyHint: 'interactive' });
+            const source = ctx.createMediaStreamSource(mediaStream);
+            const gain = ctx.createGain();
+            gain.gain.value = 1.0;
+            source.connect(gain);
+            gain.connect(ctx.destination);
+            window._softphoneRemotePlayback = { ctx, source, gain, stream: mediaStream };
+            const p = ctx.resume();
+            if (p && typeof p.then === 'function') {
+                p.then(() => {
+                    sendEvent({
+                        type: 'js_log',
+                        data: {
+                            level: 'critical',
+                            message: `[WebRTC] Remote playback: WebAudio graph active (session=${logSessionId || 'n/a'})`
+                        }
+                    });
+                }).catch(() => {});
+            }
+        } catch (e) {
+            console.warn('[WebRTC] attachRemoteWebAudioPlayback failed:', e);
+        }
+    }
+
+    function resumeRemoteWebAudioPlaybackBestEffort() {
+        try {
+            const g = window._softphoneRemotePlayback;
+            if (g && g.ctx && g.ctx.state === 'suspended') {
+                g.ctx.resume().catch(() => {});
+            }
+        } catch { /* ignore */ }
+    }
+
+    // Larger jitter target helps survive PBX re-INVITE bursts so the first IVR syllables are not dropped.
+    const INBOUND_AUDIO_JITTER_BUFFER_TARGET_MS = 220;
+
+    function applyInboundAudioReceiverBufferHints(pc, targetMs) {
+        if (!pc || typeof pc.getReceivers !== 'function') return;
+        try {
+            const receivers = pc.getReceivers();
+            for (let i = 0; i < receivers.length; i++) {
+                const r = receivers[i];
+                if (!r.track || r.track.kind !== 'audio' || r.track.readyState === 'ended') continue;
+                if ('jitterBufferTarget' in r) {
+                    try {
+                        r.jitterBufferTarget = targetMs;
+                    } catch { /* ignore */ }
+                }
+            }
+        } catch { /* ignore */ }
+    }
+
+    /** After SDP renegotiation (re-INVITE), rebuild WebAudio graph — resume() alone is not enough. */
+    function reattachRemoteWebAudioFromElement(logSessionId) {
+        try {
+            if (!isRemotePlaybackViaWebAudio()) return;
+            const remoteAudio = document.getElementById('remoteAudio');
+            if (!remoteAudio || !remoteAudio.srcObject) return;
+            const stream = remoteAudio.srcObject;
+            const tracks = stream.getAudioTracks();
+            if (!tracks.length || tracks[0].readyState === 'ended') return;
+            if (remoteAudio.volume !== 0) return;
+            attachRemoteWebAudioPlayback(stream, logSessionId);
+            remoteAudio.volume = 0;
+        } catch { /* ignore */ }
+    }
+
     // Подключение обработчиков событий сессии
     function wireSessionEvents(s, originator) {
         // Предотвращаем двойную подписку
@@ -675,9 +997,34 @@ window.SoftphoneWebRtc = (function () {
         }
         
         const sessionId = s.id || s.request?.call_id || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        // PBX Originate callback carries X-Callspire-Originate — remote answer != ICE to PBX.
+        // Many PBX setups omit the header; fall back to global originate state set by C#.
+        let originateId = s._softphoneOriginateId || null;
+        try {
+            const hdr = s.request?.getHeader?.('X-Callspire-Originate');
+            if (hdr) {
+                originateId = String(hdr).trim() || originateId;
+            }
+        } catch { /* ignore */ }
+        if (!originateId && originator === 'remote') {
+            if (window._callspireOriginateAcceptedSessionId === sessionId) {
+                originateId = window._callspireOriginateAcceptedSessionId;
+            } else if (window._callspireOriginatePending) {
+                originateId = 'originate-pending';
+            }
+        }
+        if (originateId) {
+            s._softphoneOriginateId = originateId;
+        }
+        let sdpStableCount = 0;
+        let remotePartyAnsweredSent = false;
+
         console.log('[WebRTC] ⚠️⚠️⚠️ WIRING SESSION EVENTS ⚠️⚠️⚠️');
         console.log('[WebRTC] Session ID:', sessionId);
         console.log('[WebRTC] Originator:', originator);
+        if (originateId) {
+            console.log('[WebRTC] Originate session detected, id=', originateId);
+        }
         console.log('[WebRTC] Session object:', s);
         console.log('[WebRTC] Session has request:', !!(s.request));
         
@@ -685,6 +1032,42 @@ window.SoftphoneWebRtc = (function () {
         s._eventsWired = true;
         console.log('[WebRTC] Session status:', s.status);
         console.log('[WebRTC] Session direction:', s.direction);
+
+        // IMPORTANT: We reuse a single <audio id="remoteAudio"> element across calls (index.html).
+        // After a call ends, the element can keep an old srcObject/readyState/paused state and delay
+        // playback for the next call (users then miss the beginning of IVR prompts).
+        // Reset the element to a clean state at the start of every session wiring.
+        try {
+            const existing = document.getElementById('remoteAudio');
+            if (existing && existing.parentNode) {
+                try { existing.pause(); } catch { }
+                try { existing.srcObject = null; } catch { }
+                try { existing.removeAttribute('src'); } catch { }
+                try { existing.load(); } catch { }
+
+                const fresh = existing.cloneNode(false);
+                fresh.id = 'remoteAudio';
+                fresh.autoplay = true;
+                fresh.playsInline = true;
+                fresh.muted = false;
+                fresh.volume = 1.0;
+                existing.parentNode.replaceChild(fresh, existing);
+
+                teardownRemoteWebAudioPlayback();
+
+                sendEvent({
+                    type: 'js_log',
+                    data: { level: 'critical', message: `[WebRTC] remoteAudio reset for new session ${sessionId}` }
+                });
+            }
+        } catch (e) {
+            sendEvent({
+                type: 'js_log',
+                data: { level: 'critical', message: `[WebRTC] WARNING: remoteAudio reset failed: ${e?.message || e}` }
+            });
+        }
+
+        prewarmAudioOutputBestEffort();
         
         sendEvent({
             type: 'js_log',
@@ -700,6 +1083,8 @@ window.SoftphoneWebRtc = (function () {
         const sendCallAcceptedOnce = (source) => {
             if (!callAcceptedSent) {
                 callAcceptedSent = true;
+                // Used to avoid synthetic call_ended on early ICE/PC teardown before the call is actually up.
+                try { s._softphoneHadMediaNegotiationProgress = true; } catch { }
                 console.log(`[WebRTC] ⚠️⚠️⚠️ SENDING call_accepted EVENT ⚠️⚠️⚠️`);
                 console.log(`[WebRTC] Source: ${source}, SessionId: ${sessionId}`);
                 console.log(`[WebRTC] ⚠️ Ringback tone MUST be stopped now!`);
@@ -749,6 +1134,142 @@ window.SoftphoneWebRtc = (function () {
         // Сохраняем функцию sendCallAcceptedOnce в сессии для доступа из других мест
         s._sendCallAcceptedOnce = sendCallAcceptedOnce;
         
+        // Prevent repeated connectAudioTrack() calls from resetting srcObject/playback for the same track.
+        // (We wire audio via transceivers + ontrack + fallback timers, so duplicates are common.)
+        const connectedRemoteAudioTrackIds = new Set();
+        // Detect when remote audio actually has non-silent samples (IVR voice started).
+        // This allows the UI to stop local ringback as soon as the user can hear remote audio,
+        // instead of relying on ICE state which can be "connected" before audio begins.
+        const remoteAudioStartedSentForSession = new Set();
+
+        const emitRemoteAudioStarted = (payload) => {
+            sendEvent({ type: 'remote_audio_started', data: payload });
+            if (!originateId || remotePartyAnsweredSent) return;
+
+            const afterReneg = !!payload.afterRenegotiation;
+            const postBridge = sdpStableCount > 1;
+            const waitedMs = payload.waitedMs ?? 0;
+            // B-leg may bridge without a dedicated re-INVITE probe hit; after SDP is stable,
+            // sustained remote audio usually means callee media (not just local ringback UI).
+            // postBridge: B-leg often bridges via re-INVITE; sustained remote audio after that is callee media.
+            if (afterReneg || (postBridge && waitedMs >= 1000)) {
+                remotePartyAnsweredSent = true;
+                sendEvent({
+                    type: 'remote_party_answered',
+                    data: {
+                        sessionId: payload.sessionId,
+                        originateId: originateId,
+                        source: payload.source || 'remote_audio_analyser',
+                        waitedMs: payload.waitedMs ?? null,
+                        trackId: payload.trackId || null,
+                        sdpStableCount: sdpStableCount
+                    }
+                });
+            }
+        };
+
+        const startRemoteAudioSignalProbe = (sessionId, mediaStream, trackId, options = {}) => {
+            try {
+                const afterRenegotiation = !!options.afterRenegotiation;
+                const probeKey = afterRenegotiation ? `${sessionId}:reneg` : sessionId;
+                if (!sessionId || remoteAudioStartedSentForSession.has(probeKey)) return;
+                if (!mediaStream || typeof mediaStream.getAudioTracks !== 'function') return;
+                const audioTracks = mediaStream.getAudioTracks();
+                if (!audioTracks || audioTracks.length === 0) return;
+
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+
+                const ctx = new AudioCtx({ latencyHint: 'interactive' });
+                const source = ctx.createMediaStreamSource(mediaStream);
+                const analyser = ctx.createAnalyser();
+                analyser.fftSize = 2048;
+                analyser.smoothingTimeConstant = 0.3;
+                source.connect(analyser);
+
+                let consecutive = 0;
+                const requiredConsecutive = 3; // ~300ms (checkInterval=100ms)
+                const checkInterval = 100;
+                const maxWaitMs = originateId ? 120000 : 6000;
+                let waited = 0;
+
+                const closeCtx = () => {
+                    try { source.disconnect(); } catch {}
+                    try { analyser.disconnect(); } catch {}
+                    try { if (ctx.state !== 'closed') ctx.close(); } catch {}
+                };
+
+                const tick = () => {
+                    // If track already ended, stop probing.
+                    try {
+                        const t = audioTracks[0];
+                        if (!t || t.readyState === 'ended') {
+                            closeCtx();
+                            return;
+                        }
+                    } catch {}
+
+                    waited += checkInterval;
+                    try {
+                        const data = new Uint8Array(analyser.frequencyBinCount);
+                        analyser.getByteTimeDomainData(data);
+                        let maxDeviation = 0;
+                        let strong = 0;
+                        for (let i = 0; i < data.length; i++) {
+                            const d = Math.abs(data[i] - 128);
+                            if (d > maxDeviation) maxDeviation = d;
+                            if (d > 10) strong++;
+                        }
+                        const hasRealSignal = maxDeviation > 10 && strong > 20;
+                        if (hasRealSignal) {
+                            consecutive++;
+                            if (consecutive >= requiredConsecutive) {
+                                remoteAudioStartedSentForSession.add(probeKey);
+                                if (!afterRenegotiation) {
+                                    remoteAudioStartedSentForSession.add(sessionId);
+                                }
+                                emitRemoteAudioStarted({
+                                    sessionId: sessionId,
+                                    trackId: trackId || null,
+                                    source: 'remote_audio_analyser',
+                                    waitedMs: waited,
+                                    maxDeviation: maxDeviation,
+                                    strongSamples: strong,
+                                    afterRenegotiation: afterRenegotiation,
+                                    originateId: originateId || null
+                                });
+                                closeCtx();
+                                return;
+                            }
+                        } else {
+                            consecutive = 0;
+                        }
+                    } catch (e) {
+                        // Ignore transient analyser errors; keep trying until timeout.
+                        consecutive = 0;
+                    }
+
+                    if (waited >= maxWaitMs) {
+                        closeCtx();
+                        return;
+                    }
+                    setTimeout(tick, checkInterval);
+                };
+
+                const resume = ctx.resume();
+                const startAfterResume = () => {
+                    setTimeout(tick, 150);
+                };
+                if (resume && typeof resume.then === 'function') {
+                    resume.then(startAfterResume).catch(startAfterResume);
+                } else {
+                    startAfterResume();
+                }
+            } catch (e) {
+                // Best effort only; never break calls if AudioContext fails.
+            }
+        };
+        
         // КРИТИЧНО: Определяем connectAudioTrack на уровне wireSessionEvents, чтобы она была доступна везде
         // (включая таймаут-проверку в s.on('progress'))
         const connectAudioTrack = async (track) => {
@@ -766,6 +1287,25 @@ window.SoftphoneWebRtc = (function () {
             
             if (track.kind !== 'audio') {
                 console.log('[WebRTC] Skipping non-audio track:', track.kind);
+                return;
+            }
+
+            // If this exact track was already connected, do not replace remoteAudio.srcObject again.
+            // Replacing srcObject can cause short silences and users miss the start of IVR prompts.
+            if (track && connectedRemoteAudioTrackIds.has(track.id)) {
+                try {
+                    resumeRemoteWebAudioPlaybackBestEffort();
+                    reattachRemoteWebAudioFromElement(sessionId);
+                    const remoteAudioExisting = document.getElementById('remoteAudio');
+                    if (remoteAudioExisting && remoteAudioExisting.paused) {
+                        console.log('[WebRTC] Track already connected; remoteAudio is paused — retrying play()');
+                        await remoteAudioExisting.play();
+                    } else {
+                        console.log('[WebRTC] Track already connected; skipping reconnect:', track.id);
+                    }
+                } catch (err) {
+                    console.warn('[WebRTC] Track already connected but play() failed:', err);
+                }
                 return;
             }
             
@@ -1047,6 +1587,8 @@ window.SoftphoneWebRtc = (function () {
                 
                 track.addEventListener('unmute', () => {
                     console.log('[WebRTC] ✅ Remote audio track was UNMUTED');
+                    resumeRemoteWebAudioPlaybackBestEffort();
+                    reattachRemoteWebAudioFromElement(sessionId);
                 });
                 
                 // Заменяем предыдущий поток если есть
@@ -1349,6 +1891,40 @@ window.SoftphoneWebRtc = (function () {
                         console.log('[WebRTC] ✅✅✅ REMOTE AUDIO PLAY() SUCCESS ✅✅✅');
                         console.log('[WebRTC] Play() completed in', playDuration, 'ms');
                         console.log('[WebRTC] ✅ Remote audio track connected and playing');
+                        
+                        // Mark this track as connected only after successful play().
+                        connectedRemoteAudioTrackIds.add(track.id);
+                        // Speakers: Web Audio (default) или напрямую <audio> — см. callspire.remotePlayback
+                        try {
+                            if (isRemotePlaybackViaWebAudio()) {
+                                attachRemoteWebAudioPlayback(remoteAudio.srcObject, sessionId);
+                                remoteAudio.volume = 0;
+                                sendEvent({
+                                    type: 'js_log',
+                                    data: {
+                                        level: 'critical',
+                                        message: `[WebRTC] Remote playback mode: webaudio (session=${sessionId})`
+                                    }
+                                });
+                            } else {
+                                teardownRemoteWebAudioPlayback();
+                                remoteAudio.volume = 1.0;
+                                sendEvent({
+                                    type: 'js_log',
+                                    data: {
+                                        level: 'critical',
+                                        message: `[WebRTC] Remote playback mode: html_audio (localStorage callspire.remotePlayback=audio) session=${sessionId}`
+                                    }
+                                });
+                            }
+                            try {
+                                const pc = s.connection;
+                                if (pc) applyInboundAudioReceiverBufferHints(pc, INBOUND_AUDIO_JITTER_BUFFER_TARGET_MS);
+                            } catch { /* ignore */ }
+                        } catch (webAudErr) {
+                            console.warn('[WebRTC] WebAudio attach after play:', webAudErr);
+                            remoteAudio.volume = 1.0;
+                        }
                         console.log('[WebRTC] ===== FINAL STATE AFTER play() SUCCESS =====');
                         console.log('[WebRTC] ✅ Final state check:');
                         console.log('[WebRTC]   - paused:', remoteAudio.paused, '(should be false)');
@@ -1386,6 +1962,13 @@ window.SoftphoneWebRtc = (function () {
                                 message: `[WebRTC] ✅✅✅ REMOTE AUDIO PLAY() SUCCESS ✅✅✅ paused=${remoteAudio.paused}, muted=${remoteAudio.muted}, volume=${remoteAudio.volume}, currentTime=${remoteAudio.currentTime}`
                             }
                         });
+
+                        // Start probe: detect when real remote audio begins (non-silent samples).
+                        // If the local ringback tone is still playing, it can mask the first words of IVR.
+                        // We send remote_audio_started only once per session.
+                        try {
+                            startRemoteAudioSignalProbe(sessionId, remoteAudio.srcObject, track.id);
+                        } catch {}
                         
                         // КРИТИЧНО: Отправляем событие audio_connected после успешного play()
                         console.log('[WebRTC] ⚠️⚠️⚠️ SENDING audio_connected EVENT ⚠️⚠️⚠️');
@@ -1737,13 +2320,21 @@ window.SoftphoneWebRtc = (function () {
         // Сохраняем функцию connectAudioTrack в сессии для доступа из других мест
         s._connectAudioTrack = connectAudioTrack;
         
+        const newSessionPayload = {
+            sessionId: sessionId,
+            originator: originator,
+            direction: originator === 'local' ? 'outgoing' : 'incoming'
+        };
+        if (originator === 'remote') {
+            try {
+                const caller = s.remote_identity?.uri?.user;
+                if (caller) newSessionPayload.callerNumber = caller;
+            } catch { }
+        }
+
         sendEvent({ 
             type: 'new_session', 
-            data: { 
-                sessionId: sessionId,
-                originator: originator,
-                direction: originator === 'local' ? 'outgoing' : 'incoming'
-            } 
+            data: newSessionPayload
         });
         
         // КРИТИЧНО: Логируем ВСЕ события JsSIP для диагностики проблем со звонками
@@ -1761,6 +2352,38 @@ window.SoftphoneWebRtc = (function () {
                 }
             });
         };
+
+        /** Send long SDP to C# host in chunks (WebRTC answers often exceed 3000 chars). */
+        const emitSdpChunksToHost = (label, sdp, maxChunks) => {
+            if (!sdp || typeof sdp !== 'string') return;
+            sdp = redactSdpForLog(sdp);
+            const chunkSize = 1800;
+            const limit = maxChunks != null ? maxChunks : 24;
+            let offset = 0;
+            let part = 0;
+            const totalParts = Math.min(limit, Math.ceil(sdp.length / chunkSize));
+            while (offset < sdp.length && part < limit) {
+                const slice = sdp.substring(offset, offset + chunkSize);
+                sendEvent({
+                    type: 'js_log',
+                    data: {
+                        level: 'critical',
+                        message: `[WebRTC] ${label} chunk ${part + 1}/${totalParts}: ${slice}`
+                    }
+                });
+                offset += chunkSize;
+                part++;
+            }
+            if (offset < sdp.length) {
+                sendEvent({
+                    type: 'js_log',
+                    data: {
+                        level: 'critical',
+                        message: `[WebRTC] ${label}: ... truncated (sent ${offset} of ${sdp.length} bytes). Increase maxChunks if needed.`
+                    }
+                });
+            }
+        };
         
         // КРИТИЧНО: Логируем отправку SIP запросов
         s.on('sending', (request) => {
@@ -1769,7 +2392,13 @@ window.SoftphoneWebRtc = (function () {
             console.log('[WebRTC] Request method:', request?.method || 'N/A');
             console.log('[WebRTC] Request URI:', request?.ruri?.toString() || 'N/A');
             console.log('[WebRTC] Request headers:', request?.getHeaders ? Object.keys(request.getHeaders()) : 'N/A');
-            console.log('[WebRTC] Full request:', request?.toString ? request.toString().substring(0, 500) : 'N/A');
+            try {
+                const raw = request?.toString ? String(request.toString()) : '';
+                const safe = redactSipForLog(raw);
+                console.log('[WebRTC] Full request (redacted):', safe.substring(0, 500));
+            } catch {
+                console.log('[WebRTC] Full request (redacted):', 'N/A');
+            }
             
             sendEvent({
                 type: 'js_log',
@@ -1809,22 +2438,6 @@ window.SoftphoneWebRtc = (function () {
                 });
             });
         }
-        
-        // Подписываемся на все возможные события ответов
-        s.on('sdp', (e) => {
-            console.log('[WebRTC] ⚠️⚠️⚠️ JSSIP SDP EVENT ⚠️⚠️⚠️');
-            console.log('[WebRTC] Session ID:', sessionId);
-            console.log('[WebRTC] SDP type:', e?.type || 'N/A');
-            console.log('[WebRTC] SDP:', e?.sdp ? e.sdp.substring(0, 500) : 'N/A');
-            
-            sendEvent({
-                type: 'js_log',
-                data: {
-                    level: 'critical',
-                    message: `[WebRTC] ⚠️⚠️⚠️ JSSIP SDP EVENT ⚠️⚠️⚠️ SessionID=${sessionId}, Type=${e?.type || 'N/A'}`
-                }
-            });
-        });
         
         // Подписываемся на все возможные события JsSIP для диагностики
         // ВАЖНО: Некоторые события могут уже быть подписаны ниже, но мы добавляем логирование здесь для полноты
@@ -1892,6 +2505,21 @@ window.SoftphoneWebRtc = (function () {
             } catch (err) {
                 console.warn('[WebRTC] Error adding local track handlers:', err);
             }
+
+            // Helpful diagnostics: TURN failures / STUN errors can explain delayed media start.
+            try {
+                const pc = s.connection;
+                if (pc && !pc._iceCandidateErrorWired) {
+                    pc._iceCandidateErrorWired = true;
+                    pc.addEventListener('icecandidateerror', (ev) => {
+                        const msg = `[WebRTC] icecandidateerror: url=${ev?.url || 'n/a'} code=${ev?.errorCode || 'n/a'} text=${ev?.errorText || 'n/a'} address=${ev?.address || 'n/a'}:${ev?.port || 'n/a'}`;
+                        console.warn(msg);
+                        sendEvent({ type: 'js_log', data: { level: 'critical', message: msg } });
+                    });
+                }
+            } catch (err) {
+                // ignore
+            }
         });
         
         // Подписываемся на s.on('icecandidate') с УМНЫМ таймаутом:
@@ -1907,7 +2535,8 @@ window.SoftphoneWebRtc = (function () {
             let lastReadyFn = null;
             let hasSrflx = false;
             let candidateCount = 0;
-            const ICE_GATHER_TIMEOUT_MS = 3000; // макс. время ожидания STUN кандидатов
+            // Incoming / PBX originate legs should answer quickly (PBX waits for 200 OK). Outbound INVITE can wait a bit longer for srflx.
+            const ICE_GATHER_TIMEOUT_MS = originator === 'remote' ? 1600 : 3000;
 
             const callReady = (reason) => {
                 if (iceReadyCalled) return;
@@ -1938,11 +2567,11 @@ window.SoftphoneWebRtc = (function () {
                 if (c.includes('srflx')) {
                     hasSrflx = true;
                     console.log(`[WebRTC] icecandidate: srflx found! Will send INVITE shortly.`);
-                    // Даём ещё 500ms для сбора оставшихся кандидатов, потом отправляем
+                    // Logs showed ~3s gap is mostly media-path buffering, not SIP 200 OK timing — keep srflx path snappy.
                     clearTimeout(gatherTimer);
-                    setTimeout(() => {
-                        callReady('srflx candidate found + 500ms buffer');
-                    }, 500);
+                    const originStr = typeof originator === 'string' ? originator : String(originator || '');
+                    const dirStr = s && s.direction != null ? String(s.direction) : '';
+                    callReady(`srflx candidate found (origin=${originStr} dir=${dirStr})`);
                 }
             });
         }
@@ -2114,24 +2743,8 @@ window.SoftphoneWebRtc = (function () {
                     });
                 }
 
-                // Часть 1
-                sendEvent({
-                    type: 'js_log',
-                    data: {
-                        level: 'critical',
-                        message: `[WebRTC] SDP CONTENT (part1): ${sdpContent.substring(0, 1500)}`
-                    }
-                });
-                // Часть 2 (если SDP длиннее 1500)
-                if (sdpContent.length > 1500) {
-                    sendEvent({
-                        type: 'js_log',
-                        data: {
-                            level: 'critical',
-                            message: `[WebRTC] SDP CONTENT (part2): ${sdpContent.substring(1500, 3000)}`
-                        }
-                    });
-                }
+                const sdpLabel = `SDP type=${sdpType} SessionID=${sessionId}`;
+                emitSdpChunksToHost(sdpLabel, sdpContent, 24);
             } else {
                 sendEvent({
                     type: 'js_log',
@@ -2215,6 +2828,16 @@ window.SoftphoneWebRtc = (function () {
                 console.log('[WebRTC] ICE Connection State:', iceState);
                 console.log('[WebRTC] Connection State:', s.connection.connectionState);
                 
+                // Notify host app (C#) so UI can synchronize ringback/connected state with real media readiness.
+                sendEvent({
+                    type: 'ice_connection_state_change',
+                    data: {
+                        sessionId: sessionId,
+                        state: iceState,
+                        connectionState: s.connection.connectionState
+                    }
+                });
+
                 sendEvent({
                     type: 'js_log',
                     data: {
@@ -2294,34 +2917,6 @@ window.SoftphoneWebRtc = (function () {
             });
             
             sendCallAcceptedOnce('accepted_event');
-            
-            // Подключаем аудио треки через единый connectAudioTrack
-            try {
-                const pc = s.connection;
-                if (pc) {
-                    setTimeout(() => {
-                        try {
-                            const transceivers = pc.getTransceivers();
-                            console.log('[WebRTC] accepted: Found', transceivers.length, 'transceivers');
-                            transceivers.forEach(async (transceiver, index) => {
-                                if (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'audio') {
-                                    console.log(`[WebRTC] accepted: Connecting audio track from transceiver ${index}`);
-                                    try {
-                                        await connectAudioTrack(transceiver.receiver.track);
-                                        console.log(`[WebRTC] accepted: Track ${index} connected`);
-                                    } catch (err) {
-                                        console.error(`[WebRTC] accepted: Error connecting track ${index}:`, err);
-                                    }
-                                }
-                            });
-                        } catch (err) {
-                            console.error('[WebRTC] accepted: Error checking transceivers:', err);
-                        }
-                    }, 300);
-                }
-            } catch (err) {
-                console.error('[WebRTC] accepted: Error accessing PeerConnection:', err);
-            }
         });
 
         s.on('confirmed', () => {
@@ -2340,34 +2935,6 @@ window.SoftphoneWebRtc = (function () {
                 type: 'call_confirmed',
                 data: { sessionId: sessionId }
             });
-            
-            // Подключаем аудио треки через единый connectAudioTrack
-            try {
-                const pc = s.connection;
-                if (pc) {
-                    setTimeout(() => {
-                        try {
-                            const transceivers = pc.getTransceivers();
-                            console.log('[WebRTC] confirmed: Found', transceivers.length, 'transceivers');
-                            transceivers.forEach(async (transceiver, index) => {
-                                if (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'audio') {
-                                    console.log(`[WebRTC] confirmed: Connecting audio track from transceiver ${index}`);
-                                    try {
-                                        await connectAudioTrack(transceiver.receiver.track);
-                                        console.log(`[WebRTC] confirmed: Track ${index} connected`);
-                                    } catch (err) {
-                                        console.error(`[WebRTC] confirmed: Error connecting track ${index}:`, err);
-                                    }
-                                }
-                            });
-                        } catch (err) {
-                            console.error('[WebRTC] confirmed: Error checking transceivers:', err);
-                        }
-                    }, 300);
-                }
-            } catch (err) {
-                console.error('[WebRTC] confirmed: Error accessing PeerConnection:', err);
-            }
         });
 
         // Добавляем таймаут для отслеживания отсутствия события progress
@@ -2412,6 +2979,8 @@ window.SoftphoneWebRtc = (function () {
                 clearTimeout(progressTimeout);
                 progressTimeout = null;
             }
+            // Prevent synthetic call_ended from PeerConnection 'closed' after a failed dialog.
+            s._softphoneHostCallEndedSent = true;
             // Извлекаем безопасные строковые значения из события failed
             const causeStr = e?.cause ? (typeof e.cause === 'string' ? e.cause : (e.cause.toString ? e.cause.toString() : String(e.cause))) : null;
             const originatorStr = e?.originator ? (typeof e.originator === 'string' ? e.originator : String(e.originator)) : null;
@@ -2424,14 +2993,41 @@ window.SoftphoneWebRtc = (function () {
             console.error('[WebRTC]   - status_code:', statusCode);
             console.error('[WebRTC]   - reason_phrase:', reasonPhrase);
             
+            const messageStr = e?.message ? (typeof e.message === 'string' ? e.message : String(e.message)) : 'Call failed';
+
             sendEvent({
                 type: 'js_log',
                 data: {
                     level: 'critical',
-                    message: `[WebRTC] Failed details: cause=${causeStr || 'N/A'}, originator=${originatorStr || 'N/A'}, status_code=${statusCode || 'N/A'}, reason_phrase=${reasonPhrase || 'N/A'}`
+                    message: `[WebRTC] Failed details: cause=${causeStr || 'N/A'}, originator=${originatorStr || 'N/A'}, status_code=${statusCode || 'N/A'}, reason_phrase=${reasonPhrase || 'N/A'}, message=${messageStr}`
                 }
             });
-            const messageStr = e?.message ? (typeof e.message === 'string' ? e.message : String(e.message)) : 'Call failed';
+
+            try {
+                const pc = s.connection;
+                if (pc) {
+                    const summary = `[WebRTC] FAILED PC: ice=${pc.iceConnectionState}, conn=${pc.connectionState}, sig=${pc.signalingState}, localType=${pc.localDescription ? pc.localDescription.type : 'none'}, remoteType=${pc.remoteDescription ? pc.remoteDescription.type : 'none'}`;
+                    sendEvent({ type: 'js_log', data: { level: 'critical', message: summary } });
+                    const sdpMediaHint = (sdp) => {
+                        if (!sdp) return '(no sdp)';
+                        const audioLine = sdp.match(/^m=audio .*$/m);
+                        const hasCrypto = /^a=crypto:/m.test(sdp);
+                        const hasFingerprint = /^a=fingerprint:/m.test(sdp);
+                        return `${audioLine ? audioLine[0] : 'no m=audio'} | SDES(a=crypto)=${hasCrypto} | DTLS(a=fingerprint)=${hasFingerprint}`;
+                    };
+                    sendEvent({
+                        type: 'js_log',
+                        data: {
+                            level: 'critical',
+                            message: `[WebRTC] FAILED SDP check — remote: ${sdpMediaHint(pc.remoteDescription && pc.remoteDescription.sdp)} || local: ${sdpMediaHint(pc.localDescription && pc.localDescription.sdp)}`
+                        }
+                    });
+                    emitSdpChunksToHost('FAILED remote SDP', pc.remoteDescription && pc.remoteDescription.sdp, 24);
+                    emitSdpChunksToHost('FAILED local SDP', pc.localDescription && pc.localDescription.sdp, 24);
+                }
+            } catch (diagErr) {
+                console.warn('[WebRTC] failed-handler SDP diagnostics:', diagErr);
+            }
             
             sendEvent({ 
                 type: 'call_failed', 
@@ -2459,7 +3055,11 @@ window.SoftphoneWebRtc = (function () {
 
         s.on('ended', (e) => {
             console.log('[WebRTC] Session ended:', sessionId, e);
-            console.log('[WebRTC] Session ended - full event object:', JSON.stringify(e, null, 2));
+            try {
+                console.log('[WebRTC] Session ended - full event object:', JSON.stringify(e, null, 2));
+            } catch (stringifyErr) {
+                console.warn('[WebRTC] Session ended - event not JSON-serializable (non-fatal):', stringifyErr);
+            }
             
             // Извлекаем безопасные строковые значения из события ended
             const causeStr = e?.cause ? (typeof e.cause === 'string' ? e.cause : (e.cause.toString ? e.cause.toString() : String(e.cause))) : null;
@@ -2499,11 +3099,16 @@ window.SoftphoneWebRtc = (function () {
             };
             
             console.log('[WebRTC] wireSessionEvents: Sending call_ended event with data:', endedEventData);
-            sendEvent({ 
-                type: 'call_ended',
-                data: endedEventData
-            });
-            console.log('[WebRTC] wireSessionEvents: call_ended event sent for session:', sessionId, 'originator:', originatorStr || 'local');
+            if (!s._softphoneHostCallEndedSent) {
+                s._softphoneHostCallEndedSent = true;
+                sendEvent({ 
+                    type: 'call_ended',
+                    data: endedEventData
+                });
+                console.log('[WebRTC] wireSessionEvents: call_ended event sent for session:', sessionId, 'originator:', originatorStr || 'local');
+            } else {
+                console.log('[WebRTC] wireSessionEvents: call_ended already sent for session (e.g. PeerConnection closed); skipping duplicate');
+            }
             
             // КРИТИЧНО: Очищаем все сессии при завершении звонка
             if (session && (session.id === sessionId || session === s)) {
@@ -2576,6 +3181,31 @@ window.SoftphoneWebRtc = (function () {
                 const pc = e.peerconnection;
                 console.log('[WebRTC] PeerConnection state:', pc.connectionState, 'ICE state:', pc.iceConnectionState);
 
+                const trySyntheticCallEndedFromPc = (reason) => {
+                    if (s._softphoneHostCallEndedSent) return;
+                    if (!s._softphoneHadMediaNegotiationProgress) return;
+                    try {
+                        s._softphoneHostCallEndedSent = true;
+                        console.warn('[WebRTC]', reason, '- synthesizing call_ended for host', sessionId);
+                        sendEvent({
+                            type: 'call_ended',
+                            data: {
+                                sessionId: sessionId,
+                                cause: reason,
+                                originator: 'remote',
+                                message: reason
+                            }
+                        });
+                    } catch (synErr) {
+                        try { s._softphoneHostCallEndedSent = false; } catch { }
+                        console.warn('[WebRTC] Error sending synthetic call_ended:', synErr);
+                    }
+                };
+
+                try {
+                    applyInboundAudioReceiverBufferHints(pc, INBOUND_AUDIO_JITTER_BUFFER_TARGET_MS);
+                } catch { /* ignore */ }
+
                 // Логируем ICE-кандидаты через PeerConnection напрямую (не через JsSIP s.on('icecandidate'))
                 pc.addEventListener('icecandidate', (evt) => {
                     if (evt.candidate) {
@@ -2627,6 +3257,13 @@ window.SoftphoneWebRtc = (function () {
                             message: `[WebRTC] PeerConnection connectionState: ${state}, ICE: ${pc.iceConnectionState}, SessionID=${sessionId}`
                         }
                     });
+                    // If the media layer tears down without a JsSIP 'ended' callback (some PBX / race cases),
+                    // the host CallWindow would stay open. Mirror call_ended once per session.
+                    if (state === 'closed') {
+                        trySyntheticCallEndedFromPc('PeerConnection closed');
+                    } else if (state === 'failed') {
+                        trySyntheticCallEndedFromPc('PeerConnection failed');
+                    }
                     checkConnectionEstablished();
                 });
                 
@@ -2640,8 +3277,67 @@ window.SoftphoneWebRtc = (function () {
                             message: `[WebRTC] PeerConnection ICE state: ${iceState}, Connection: ${pc.connectionState}, SessionID=${sessionId}`
                         }
                     });
+                    // ICE can reach 'closed' before connectionState on some stacks; cover that path too.
+                    if (iceState === 'closed') {
+                        trySyntheticCallEndedFromPc('ICE connection closed');
+                    } else if (iceState === 'failed') {
+                        trySyntheticCallEndedFromPc('ICE connection failed');
+                    }
                     checkConnectionEstablished();
                 });
+
+                // PBX often sends re-INVITE when the B-leg bridges. On stable, rebuild WebAudio + jitter hints — not just resume().
+                if (!pc._softphoneSignalingStableWired) {
+                    pc._softphoneSignalingStableWired = true;
+                    pc.addEventListener('signalingstatechange', () => {
+                        if (pc.signalingState !== 'stable') return;
+                        sdpStableCount++;
+                        try {
+                            applyInboundAudioReceiverBufferHints(pc, INBOUND_AUDIO_JITTER_BUFFER_TARGET_MS);
+                        } catch { /* ignore */ }
+
+                        if (sdpStableCount > 1) {
+                            // re-INVITE completed — reconnect inbound audio (track IDs may be unchanged but RTP path changed).
+                            connectedRemoteAudioTrackIds.clear();
+                            try {
+                                const receivers = pc.getReceivers();
+                                for (let ri = 0; ri < receivers.length; ri++) {
+                                    const r = receivers[ri];
+                                    if (r.track && r.track.kind === 'audio' && r.track.readyState !== 'ended') {
+                                        connectAudioTrack(r.track).catch(() => {});
+                                    }
+                                }
+                            } catch { /* ignore */ }
+
+                            sendEvent({
+                                type: 'sdp_renegotiated',
+                                data: {
+                                    sessionId: sessionId,
+                                    stableCount: sdpStableCount,
+                                    originateId: originateId || null
+                                }
+                            });
+
+                            setTimeout(() => {
+                                try {
+                                    reattachRemoteWebAudioFromElement(sessionId);
+                                    resumeRemoteWebAudioPlaybackBestEffort();
+                                    const remoteAudioEl = document.getElementById('remoteAudio');
+                                    if (remoteAudioEl && remoteAudioEl.srcObject) {
+                                        startRemoteAudioSignalProbe(sessionId, remoteAudioEl.srcObject, null, { afterRenegotiation: true });
+                                    }
+                                } catch { /* ignore */ }
+                            }, 80);
+                        } else {
+                            setTimeout(() => {
+                                try {
+                                    reattachRemoteWebAudioFromElement(sessionId);
+                                    resumeRemoteWebAudioPlaybackBestEffort();
+                                } catch { /* ignore */ }
+                            }, 50);
+                        }
+                    });
+                }
                 
                 // КРИТИЧНО: Используем connectAudioTrack из wireSessionEvents (определена выше)
                 // Не создаем локальную версию, чтобы избежать дублирования кода
@@ -2730,6 +3426,18 @@ window.SoftphoneWebRtc = (function () {
                 pc.oniceconnectionstatechange = () => {
                     const iceState = pc.iceConnectionState;
                     console.log('[WebRTC] pc.oniceconnectionstatechange:', iceState);
+
+                    // Notify host app (C#). This handler can overwrite session.connection.oniceconnectionstatechange,
+                    // so we also emit the structured event here.
+                    sendEvent({
+                        type: 'ice_connection_state_change',
+                        data: {
+                            sessionId: sessionId,
+                            state: iceState,
+                            connectionState: pc.connectionState
+                        }
+                    });
+
                     sendEvent({
                         type: 'js_log',
                         data: {
@@ -2796,14 +3504,7 @@ window.SoftphoneWebRtc = (function () {
             // Используем те же ICE серверы, что и в initUA (включая UDP 443)
             const iceServers = [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                // TURN-сервер на PBX (если настроен coturn) - раскомментируйте и укажите учетные данные:
-                // { urls: `turn:${pbxHost}:3478`, username: 'user', credential: 'pass' },
-                // Публичный TURN сервер как fallback (может не работать без учетных данных):
-                { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-                { urls: 'turn:openrelay.metered.ca:443?transport=udp', username: 'openrelayproject', credential: 'openrelayproject' }, // UDP 443 для обхода firewall
-                { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' }, // По умолчанию UDP
-                { urls: 'turn:openrelay.metered.ca:443?transport=tcp', username: 'openrelayproject', credential: 'openrelayproject' } // TCP 443 как fallback
+                { urls: 'stun:stun1.l.google.com:19302' }
             ];
 
             // Пользовательский TURN из конфигурации (заданный в C#) тоже добавляем в iceServers.
@@ -2826,7 +3527,7 @@ window.SoftphoneWebRtc = (function () {
                 iceServers.push(turnEntry);
                 console.log('[WebRTC] makeCall: Using custom TURN server from initUA config:', turnUrl);
             } else {
-                console.log('[WebRTC] makeCall: No custom TURN server found in initUA config (using fallback TURN only)');
+                console.log('[WebRTC] makeCall: No custom TURN server found in initUA config (STUN-only)');
             }
             // НЕ добавляем stun:pbx:3478 по умолчанию — если порт закрыт, это задерживает ICE gathering на 30+ секунд.
             console.log('[WebRTC] makeCall: ICE servers:', JSON.stringify(iceServers));
@@ -2855,9 +3556,15 @@ window.SoftphoneWebRtc = (function () {
             }
             await new Promise(resolve => setTimeout(resolve, 100));
 
+            // Relay-only включаем ТОЛЬКО если пользователь явно настроил TURN.
+            const forceRelay = !!(runtimeCfg.turnServer && typeof runtimeCfg.turnServer === 'string' && runtimeCfg.turnServer.trim() !== '');
+            const pcConfig = forceRelay
+                ? { iceServers: iceServers, iceTransportPolicy: 'relay' }
+                : { iceServers: iceServers };
+
             const options = {
                 mediaConstraints: mediaOpts,
-                pcConfig: { iceServers: iceServers },
+                pcConfig: pcConfig,
                 rtcOfferConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
                 eventHandlers: {
                     sending: (e) => {
@@ -2938,6 +3645,33 @@ window.SoftphoneWebRtc = (function () {
                 return;
             }
 
+            // Use the same ICE servers as initUA/makeCall to ensure TURN/STUN applies to answered sessions too.
+            const runtimeCfg = window._softphoneWebRtcCfg || {};
+            const iceServers = [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ];
+            if (runtimeCfg.turnServer && typeof runtimeCfg.turnServer === 'string' && runtimeCfg.turnServer.trim() !== '') {
+                let turnUrl = runtimeCfg.turnServer.trim();
+                if (!/^turns?:/i.test(turnUrl)) {
+                    turnUrl = 'turn:' + turnUrl;
+                }
+                const turnEntry = { urls: turnUrl };
+                if (runtimeCfg.turnUsername && typeof runtimeCfg.turnUsername === 'string' && runtimeCfg.turnUsername.trim() !== '') {
+                    turnEntry.username = runtimeCfg.turnUsername.trim();
+                }
+                if (runtimeCfg.turnPassword && typeof runtimeCfg.turnPassword === 'string' && runtimeCfg.turnPassword.trim() !== '') {
+                    turnEntry.credential = runtimeCfg.turnPassword.trim();
+                }
+                iceServers.push(turnEntry);
+            }
+            // Relay-only включаем ТОЛЬКО если пользователь явно настроил TURN.
+            const forceRelay = !!(runtimeCfg.turnServer && typeof runtimeCfg.turnServer === 'string' && runtimeCfg.turnServer.trim() !== '');
+            const pcConfig = forceRelay
+                ? { iceServers: iceServers, iceTransportPolicy: 'relay' }
+                : { iceServers: iceServers };
+            sendEvent({ type: 'js_log', data: { level: 'critical', message: '[WebRTC] answer: Using pcConfig iceServers count=' + iceServers.length } });
+
             // Захватываем медиа ТОЛЬКО при ответе
             console.log('[WebRTC] Requesting user media for answer...');
             const stream = await navigator.mediaDevices.getUserMedia({
@@ -2966,6 +3700,7 @@ window.SoftphoneWebRtc = (function () {
 
             sess.answer({
                 mediaStream: stream,
+                pcConfig: pcConfig,
                 rtcOfferConstraints: {
                     offerToReceiveAudio: true,
                     offerToReceiveVideo: false
@@ -3042,6 +3777,7 @@ window.SoftphoneWebRtc = (function () {
     // Завершение/отклонение звонка (работает и для входящего до ответа)
     function hangup(sessionId) {
         try {
+            teardownRemoteWebAudioPlayback();
             console.log('[WebRTC] ⚠️⚠️⚠️ HANGUP CALLED ⚠️⚠️⚠️');
             console.log('[WebRTC] SessionId parameter:', sessionId);
             console.log('[WebRTC] window._incomingSession:', window._incomingSession?.id);
@@ -3212,6 +3948,7 @@ window.SoftphoneWebRtc = (function () {
                         }
                         
                         // Отправляем событие call_ended
+                        try { s._softphoneHostCallEndedSent = true; } catch { }
                         sendEvent({
                             type: 'call_ended',
                             data: {
@@ -3590,7 +4327,7 @@ window.SoftphoneWebRtc = (function () {
         try {
             // Всегда отвечаем pong, независимо от состояния UA
             if (window.chrome?.webview) {
-                window.chrome.webview.postMessage(JSON.stringify({ type: "pong", ts: Date.now() }));
+                postToHost(JSON.stringify({ type: "pong", slot: _slot, ts: Date.now() }));
             } else {
                 // Fallback через sendEvent если chrome.webview недоступен
                 sendEvent({ type: 'pong', data: { timestamp: Date.now() } });
@@ -5357,6 +6094,8 @@ window.SoftphoneWebRtc = (function () {
         },
         setMute,
         sendDtmf,
+        setOriginatePending,
+        setOriginateAcceptedSessionId,
         enumerateAudioDevices,
         switchAudioDevice,
         startRecording,

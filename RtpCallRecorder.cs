@@ -933,6 +933,7 @@ namespace Softphone
                 if (!hasInbound && !hasOutbound)
                 {
                     MainWindow.Log($"[RtpCallRecorder] WARNING: Both PCM files are empty or missing, skipping conversion");
+                    _recordingFilePath = null;
                     return;
                 }
                 
@@ -980,11 +981,16 @@ namespace Softphone
                 else
                 {
                     MainWindow.Log($"[RtpCallRecorder] WARNING: ffmpeg conversion failed, PCM files kept");
+                    if (!string.IsNullOrEmpty(_recordingFilePath) && !File.Exists(_recordingFilePath))
+                    {
+                        _recordingFilePath = null;
+                    }
                 }
             }
             else
             {
                 MainWindow.Log($"[RtpCallRecorder] WARNING: Cannot convert - PCM paths or WAV path not set");
+                _recordingFilePath = null;
             }
 
             // Освобождаем Opus декодер
@@ -1065,6 +1071,82 @@ namespace Softphone
                 $"-acodec pcm_s16le -ar 48000 -ac 1 \"{wavPath}\"";
 
             return await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[RtpCallRecorder]", pcmPath);
+        }
+
+        /// <summary>
+        /// Recovers WAV when StopCallRecording was skipped but orphan *_inbound.pcm / *_outbound.pcm remain.
+        /// </summary>
+        public static async Task<bool> TryRecoverWavFromOrphanPcmAsync(string wavPath)
+        {
+            if (string.IsNullOrWhiteSpace(wavPath))
+                return false;
+
+            try
+            {
+                if (File.Exists(wavPath) && new FileInfo(wavPath).Length > 0)
+                    return true;
+
+                string? dir = Path.GetDirectoryName(wavPath);
+                string stem = Path.GetFileNameWithoutExtension(wavPath);
+                if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(stem) || !Directory.Exists(dir))
+                    return false;
+
+                string inPcm = Path.Combine(dir, stem + "_inbound.pcm");
+                string outPcm = Path.Combine(dir, stem + "_outbound.pcm");
+                bool hasIn = File.Exists(inPcm) && new FileInfo(inPcm).Length > 0;
+                bool hasOut = File.Exists(outPcm) && new FileInfo(outPcm).Length > 0;
+                if (!hasIn && !hasOut)
+                    return false;
+
+                MainWindow.Log($"[RtpCallRecorder] Recovering orphan PCM → WAV: {Path.GetFileName(wavPath)} (in={hasIn}, out={hasOut})");
+
+                var helper = new RtpCallRecorder();
+                bool converted = false;
+                if (hasIn && hasOut)
+                {
+                    converted = await helper.MixPcmFilesWithFfmpegAsync(inPcm, outPcm, wavPath).ConfigureAwait(false);
+                    if (!converted && hasIn)
+                        converted = await helper.ConvertPcmToWavWithFfmpegAsync(inPcm, wavPath).ConfigureAwait(false);
+                }
+                else if (hasIn)
+                    converted = await helper.ConvertPcmToWavWithFfmpegAsync(inPcm, wavPath).ConfigureAwait(false);
+                else
+                    converted = await helper.ConvertPcmToWavWithFfmpegAsync(outPcm, wavPath).ConfigureAwait(false);
+
+                if (converted && File.Exists(wavPath))
+                {
+                    MainWindow.Log($"[RtpCallRecorder] Orphan PCM recovery OK: {wavPath}");
+                    try
+                    {
+                        if (hasIn) File.Delete(inPcm);
+                        if (hasOut) File.Delete(outPcm);
+                    }
+                    catch { /* ignore */ }
+                    return true;
+                }
+
+                MainWindow.Log($"[RtpCallRecorder] Orphan PCM recovery failed for {Path.GetFileName(wavPath)}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[RtpCallRecorder] Orphan PCM recovery error: {ex.Message}");
+                return false;
+            }
+        }
+
+        public static bool TryRecoverWavFromOrphanPcm(string wavPath, int timeoutMs = 45000)
+        {
+            try
+            {
+                return TryRecoverWavFromOrphanPcmAsync(wavPath)
+                    .Wait(timeoutMs);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[RtpCallRecorder] Orphan PCM recovery sync wait failed: {ex.Message}");
+                return false;
+            }
         }
     }
 }

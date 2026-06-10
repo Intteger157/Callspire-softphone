@@ -190,7 +190,7 @@ namespace Softphone
         /// <summary>
         /// Обновляет access_token используя refresh_token
         /// </summary>
-        public async Task<(string? accessToken, string? refreshToken, int? expiresIn)> RefreshTokenAsync(string subdomain, string clientId, string clientSecret, string refreshToken)
+        public async Task<(string? accessToken, string? refreshToken, int? expiresIn)> RefreshTokenAsync(string subdomain, string clientId, string clientSecret, string refreshToken, string redirectUri)
         {
             try
             {
@@ -207,7 +207,8 @@ namespace Softphone
                         { "client_id", clientId },
                         { "client_secret", clientSecret },
                         { "grant_type", "refresh_token" },
-                        { "refresh_token", refreshToken }
+                        { "refresh_token", refreshToken },
+                        { "redirect_uri", redirectUri }
                     };
 
                     var content = new FormUrlEncodedContent(requestData);

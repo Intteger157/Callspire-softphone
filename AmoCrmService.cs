@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -98,8 +99,8 @@ namespace Softphone
     /// - GET /api/v4/contacts?query={phone} - поиск контактов по телефону
     /// - GET /api/v4/contacts/{id} - получение контакта по ID
     /// - GET /api/v4/leads?filter[contacts][0]={contact_id}&limit=50&order[updated_at]=desc&with=contacts - поиск лидов по контакту
-        /// - POST /api/v4/leads/{id}/notes - добавление примечаний (call_in/call_out для звонков с link на MP3)
-        /// - POST /api/v4/calls - добавление звонков с call_result (например "No Answer"); привязка по номеру телефона
+    /// - POST /api/v4/leads/{id}/notes - добавление примечаний (call_in/call_out для звонков с link на MP3)
+    /// - POST /api/v4/contacts/{id}/notes - call_in/call_out на контакт (нет открытой сделки)
     /// - GET /api/v4/account?with=drive_url - получение URL файлового сервиса и current_user_id
     /// - POST {drive_url}/v1.0/sessions - создание сессии для загрузки файла
     /// - GET {drive_url}/v1.0/files/{file_uuid} - получение download.href для загруженного файла
@@ -109,18 +110,49 @@ namespace Softphone
     {
         private readonly HttpClient _httpClient;
         private string? _subdomain;
+        private string? _apiWebBaseOverride;
         private string? _accessToken;
         private string? _driveUrl;
         private long? _currentUserId;
+        /// <summary>When using PBX Gateway OAuth, Kommo user id for call notes (mapped per extension).</summary>
+        private long? _gatewayActingUserId;
         private long? _lastProcessedLeadId;
+
+        /// <summary>Kommo: call_status 6 = no connection (used with call_result for missed-call card subtitle).</summary>
+        private const string AmoMissedCallResultText = "No Answer";
+        private const int AmoMissedCallStatusNoConnection = 6;
+
+        /// <summary>Builds call_result for a single call_out/call_in card (Call from … subtitle).</summary>
+        private static (string? callResult, int? callStatus) GetCallNoteResultParams(bool isMissedCall, string? callFromLabel)
+        {
+            string? callerLine = string.IsNullOrWhiteSpace(callFromLabel)
+                ? null
+                : $"Call from {callFromLabel.Trim()}";
+
+            if (isMissedCall)
+            {
+                if (callerLine != null)
+                    return ($"{AmoMissedCallResultText} · {callerLine}", AmoMissedCallStatusNoConnection);
+                return (AmoMissedCallResultText, AmoMissedCallStatusNoConnection);
+            }
+
+            if (callerLine != null)
+                return (callerLine, null);
+
+            return (null, null);
+        }
 
         // OAuth support
         private string? _clientId;
         private string? _clientSecret;
+        private string? _redirectUri;
         private string? _refreshToken;
         private DateTime? _tokenExpiresAt;
         private readonly SemaphoreSlim _tokenRefreshLock = new SemaphoreSlim(1, 1);
         private AmoCrmOAuthService? _oauthService;
+        private Func<bool, Task<(string accessToken, DateTime? expiresAt)>>? _gatewayTokenProvider;
+        private bool _useGatewayTokens;
+        private bool _initComplete;
 
         // Блокировка для предотвращения параллельного создания записей с одинаковым uniq
         private readonly ConcurrentDictionary<string, SemaphoreSlim> _callNoteLocks = new ConcurrentDictionary<string, SemaphoreSlim>();
@@ -157,6 +189,7 @@ namespace Softphone
         /// </summary>
         public async Task InitializeAsync(string subdomain, string accessToken)
         {
+            _initComplete = false;
             _subdomain = subdomain?.Trim();
             _accessToken = accessToken?.Trim();
 
@@ -166,6 +199,7 @@ namespace Softphone
             }
 
             // Сбрасываем OAuth поля
+            _apiWebBaseOverride = null;
             _clientId = null;
             _clientSecret = null;
             _refreshToken = null;
@@ -173,13 +207,15 @@ namespace Softphone
 
             SetHttpHeaders();
             await LoadAccountInfoAsync();
+            _initComplete = true;
         }
 
         /// <summary>
         /// Инициализирует сервис с OAuth токенами
         /// </summary>
-        public async Task InitializeOAuthAsync(string subdomain, string accessToken, string? refreshToken, DateTime? tokenExpiresAt, string? clientId = null, string? clientSecret = null)
+        public async Task InitializeOAuthAsync(string subdomain, string accessToken, string? refreshToken, DateTime? tokenExpiresAt, string? clientId = null, string? clientSecret = null, string? redirectUri = null)
         {
+            _initComplete = false;
             try
             {
                 MainWindow.Log($"[AmoCrmService] InitializeOAuthAsync called: subdomain={subdomain}, hasAccessToken={!string.IsNullOrEmpty(accessToken)}, hasRefreshToken={!string.IsNullOrEmpty(refreshToken)}, hasClientId={!string.IsNullOrEmpty(clientId)}, hasClientSecret={!string.IsNullOrEmpty(clientSecret)}");
@@ -190,6 +226,11 @@ namespace Softphone
                 _tokenExpiresAt = tokenExpiresAt;
                 _clientId = clientId?.Trim();
                 _clientSecret = clientSecret?.Trim();
+                _redirectUri = redirectUri?.Trim();
+                _useGatewayTokens = false;
+                _gatewayTokenProvider = null;
+                _gatewayActingUserId = null;
+                _apiWebBaseOverride = null;
 
                 if (string.IsNullOrEmpty(_subdomain) || string.IsNullOrEmpty(_accessToken))
                 {
@@ -212,6 +253,7 @@ namespace Softphone
                 MainWindow.Log("[AmoCrmService] HTTP headers set, loading account info...");
 
                 await LoadAccountInfoAsync();
+                _initComplete = true;
                 MainWindow.Log("[AmoCrmService] InitializeOAuthAsync completed successfully");
             }
             catch (Exception ex)
@@ -222,14 +264,80 @@ namespace Softphone
             }
         }
 
+        /// <summary>
+        /// OAuth session backed by PBX Gateway (shared company Kommo account).
+        /// </summary>
+        public async Task InitializeGatewayOAuthAsync(
+            string subdomain,
+            string accessToken,
+            DateTime? tokenExpiresAt,
+            Func<bool, Task<(string accessToken, DateTime? expiresAt)>> gatewayTokenProvider,
+            string? accountBaseUrl = null,
+            long? actingKommoUserId = null,
+            string? actingKommoUserName = null)
+        {
+            _initComplete = false;
+            _subdomain = subdomain?.Trim();
+            _accessToken = accessToken?.Trim();
+            _refreshToken = null;
+            _tokenExpiresAt = tokenExpiresAt;
+            _clientId = null;
+            _clientSecret = null;
+            _oauthService = null;
+            _gatewayTokenProvider = gatewayTokenProvider ?? throw new ArgumentNullException(nameof(gatewayTokenProvider));
+            _useGatewayTokens = true;
+            _gatewayActingUserId = actingKommoUserId;
+            _apiWebBaseOverride = AmoCrmAccountUrl.TryBuildWebBaseUrlFromReferer(accountBaseUrl)
+                ?? AmoCrmAccountUrl.TryBuildWebBaseUrl(accountBaseUrl)
+                ?? AmoCrmAccountUrl.TryBuildWebBaseUrl(subdomain);
+
+            if (string.IsNullOrEmpty(_subdomain) || string.IsNullOrEmpty(_accessToken))
+                throw new ArgumentException("Subdomain and access token are required");
+            if (string.IsNullOrEmpty(_apiWebBaseOverride))
+                throw new ArgumentException("Kommo account URL could not be determined from gateway session");
+
+            MainWindow.Log($"[AmoCrmService] Gateway OAuth API base: {_apiWebBaseOverride}");
+
+            SetHttpHeaders();
+            await LoadAccountInfoAsync();
+
+            if (_gatewayActingUserId.HasValue)
+            {
+                string namePart = string.IsNullOrWhiteSpace(actingKommoUserName)
+                    ? ""
+                    : $" ({actingKommoUserName.Trim()})";
+                MainWindow.Log($"[AmoCrmService] Gateway acting Kommo user for calls: {_gatewayActingUserId}{namePart}");
+            }
+            else if (_currentUserId.HasValue)
+            {
+                MainWindow.Log($"[AmoCrmService] Gateway acting Kommo user fallback (OAuth token owner): {_currentUserId}");
+            }
+
+            _initComplete = true;
+            MainWindow.Log("[AmoCrmService] Gateway OAuth initialization completed successfully");
+        }
+
+        private long? GetActingKommoUserId() => _gatewayActingUserId ?? _currentUserId;
+
+        public bool UsesGatewayTokens => _useGatewayTokens;
+
         private void SetHttpHeaders()
         {
             _httpClient.DefaultRequestHeaders.Clear();
             _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
             _httpClient.DefaultRequestHeaders.Add("User-Agent", "Callspire-Softphone/1.0");
+            // Kommo документирует hal+json; без Accept часть окружений отдаёт 204/пусто на contacts — как у клиентов с «полным» Accept.
+            _httpClient.DefaultRequestHeaders.Accept.Clear();
+            _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+            _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/hal+json"));
         }
 
-        public bool IsInitialized => !string.IsNullOrEmpty(_subdomain) && !string.IsNullOrEmpty(_accessToken);
+        public bool IsInitialized => _initComplete;
+
+        public string? KommoSubdomain => _subdomain;
+
+        public string? GetAccountWebBaseUrl() =>
+            _apiWebBaseOverride ?? AmoCrmAccountUrl.TryBuildWebBaseUrl(_subdomain);
 
         public (string? accessToken, string? refreshToken, DateTime? expiresAt) GetOAuthTokens()
         {
@@ -245,7 +353,41 @@ namespace Softphone
         /// </summary>
         private async Task EnsureValidTokenAsync(bool forceRefresh = false)
         {
-            if (string.IsNullOrEmpty(_refreshToken) || _oauthService == null || string.IsNullOrEmpty(_clientId) || string.IsNullOrEmpty(_clientSecret))
+            if (_useGatewayTokens && _gatewayTokenProvider != null)
+            {
+                bool needsGatewayRefresh = forceRefresh
+                    || !_tokenExpiresAt.HasValue
+                    || DateTime.UtcNow.AddMinutes(5) >= _tokenExpiresAt.Value;
+                if (!needsGatewayRefresh)
+                    return;
+
+                await _tokenRefreshLock.WaitAsync();
+                try
+                {
+                    bool stillNeeds = forceRefresh
+                        || !_tokenExpiresAt.HasValue
+                        || DateTime.UtcNow.AddMinutes(5) >= _tokenExpiresAt.Value;
+                    if (!stillNeeds)
+                        return;
+
+                    MainWindow.Log($"[AmoCrmService] Refreshing Kommo token via PBX Gateway (force={forceRefresh})...");
+                    var (accessToken, expiresAt) = await _gatewayTokenProvider(forceRefresh).ConfigureAwait(false);
+                    if (string.IsNullOrEmpty(accessToken))
+                        throw new UnauthorizedAccessException("PBX Gateway did not return a Kommo access token. Ask admin to re-authorize Kommo.");
+
+                    _accessToken = accessToken;
+                    _tokenExpiresAt = expiresAt;
+                    _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _accessToken);
+                    MainWindow.Log("[AmoCrmService] Gateway token refresh OK");
+                }
+                finally
+                {
+                    _tokenRefreshLock.Release();
+                }
+                return;
+            }
+
+            if (string.IsNullOrEmpty(_refreshToken) || _oauthService == null || string.IsNullOrEmpty(_clientId) || string.IsNullOrEmpty(_clientSecret) || string.IsNullOrEmpty(_redirectUri))
             {
                 return;
             }
@@ -264,7 +406,7 @@ namespace Softphone
                     {
                         MainWindow.Log($"[AmoCrmService] Access token {(forceRefresh ? "invalid/expired (forced refresh)" : "expired or expiring soon")}, refreshing...");
 
-                        var result = await _oauthService.RefreshTokenAsync(_subdomain!, _clientId!, _clientSecret!, _refreshToken!);
+                        var result = await _oauthService.RefreshTokenAsync(_subdomain!, _clientId!, _clientSecret!, _refreshToken!, _redirectUri!);
 
                         if (result.accessToken != null)
                         {
@@ -426,6 +568,10 @@ namespace Softphone
                             }
                             MainWindow.Log($"[AmoCrmService] ✅ Retry after token refresh succeeded");
                         }
+                        catch (UnauthorizedAccessException)
+                        {
+                            throw;
+                        }
                         catch (Exception refreshEx)
                         {
                             MainWindow.Log($"[AmoCrmService] ❌ Error refreshing token in LoadAccountInfoAsync: {refreshEx.Message}");
@@ -481,25 +627,19 @@ namespace Softphone
 
         private string GetApiBaseUrl()
         {
-            if (string.IsNullOrEmpty(_subdomain))
+            var webBase = _apiWebBaseOverride;
+            if (string.IsNullOrEmpty(webBase))
             {
-                throw new InvalidOperationException("Service not initialized. Call Initialize() first.");
+                if (string.IsNullOrEmpty(_subdomain))
+                    throw new InvalidOperationException("Service not initialized. Call Initialize() first.");
+
+                webBase = AmoCrmAccountUrl.TryBuildWebBaseUrl(_subdomain);
             }
 
-            if (_subdomain.Contains("."))
-            {
-                string domain = _subdomain;
-                if (domain.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                    domain = domain.Substring("https://".Length);
-                else if (domain.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-                    domain = domain.Substring("http://".Length);
-                domain = domain.TrimEnd('/');
-                return $"https://{domain}/api/v4";
-            }
-            else
-            {
-                return $"https://{_subdomain}.amocrm.ru/api/v4";
-            }
+            if (string.IsNullOrEmpty(webBase))
+                throw new InvalidOperationException("Invalid AmoCRM subdomain configured.");
+
+            return $"{webBase.TrimEnd('/')}/api/v4";
         }
 
         #endregion
@@ -519,9 +659,6 @@ namespace Softphone
 
             try
             {
-                await EnsureValidTokenAsync();
-                await RateLimitAsync();
-
                 string normalizedPhone = NormalizePhoneNumber(phoneNumber);
                 if (string.IsNullOrEmpty(normalizedPhone))
                 {
@@ -530,18 +667,66 @@ namespace Softphone
                 }
 
                 string apiUrl = $"{GetApiBaseUrl()}/contacts";
-                string query = $"query={Uri.EscapeDataString(normalizedPhone)}";
+                const int MaxAttempts = 3;
+                JObject? json = null;
 
-                var response = await _httpClient.GetAsync($"{apiUrl}?{query}");
-                string responseContent = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
+                foreach (string queryVariant in EnumeratePhoneSearchQueries(normalizedPhone))
                 {
-                    MainWindow.Log($"[AmoCrmService] Failed to search contact: {response.StatusCode} - {responseContent}");
-                    return null;
+                    string requestUrl = $"{apiUrl}?query={Uri.EscapeDataString(queryVariant)}";
+                    bool gotParsedJson = false;
+
+                    for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+                    {
+                        if (attempt > 1)
+                            await Task.Delay(TimeSpan.FromMilliseconds(250 + 220 * (attempt - 2)));
+
+                        await EnsureValidTokenAsync();
+                        await RateLimitAsync();
+
+                        using var response = await _httpClient.GetAsync(requestUrl);
+                        string responseContent = await response.Content.ReadAsStringAsync();
+                        HttpStatusCode code = response.StatusCode;
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            MainWindow.Log($"[AmoCrmService] Failed to search contact: {(int)code} — {TruncateAmoDiagnostic(responseContent)}");
+                            return null;
+                        }
+
+                        if (code == HttpStatusCode.NoContent)
+                        {
+                            MainWindow.Log($"[AmoCrmService] GET /contacts?query… (digits={normalizedPhone}, variant «{queryVariant}»): HTTP 204 — пробуем другой формат номера для поиска");
+                            json = null;
+                            break;
+                        }
+
+                        string ctx = $"GET /contacts?query… (digits={normalizedPhone}, variant={queryVariant}, attempt {attempt}/{MaxAttempts})";
+                        if (TryParseAmoJsonBody(responseContent, code, ctx, out json) && json != null)
+                        {
+                            var probe = json["_embedded"]?["contacts"] as JArray;
+                            if (probe != null && probe.Count > 0)
+                            {
+                                gotParsedJson = true;
+                                break;
+                            }
+
+                            MainWindow.Log($"[AmoCrmService] Поиск контакта: вариант «{queryVariant}» вернул пустой список, пробуем следующий формат");
+                            json = null;
+                            break;
+                        }
+
+                        MainWindow.Log(attempt >= MaxAttempts
+                            ? $"[AmoCrmService] Поиск контакта по телефону: исчерпаны попытки после невалидного ответа API (variant=«{queryVariant}»)."
+                            : $"[AmoCrmService] Повтор запроса поиска контакта (пустой/невалидный JSON)…");
+                    }
+
+                    if (gotParsedJson)
+                        break;
                 }
 
-                var json = JObject.Parse(responseContent);
+                if (json == null)
+                    return null;
+
                 var contacts = json["_embedded"]?["contacts"] as JArray;
 
                 if (contacts == null || contacts.Count == 0)
@@ -590,9 +775,6 @@ namespace Softphone
 
             try
             {
-                await EnsureValidTokenAsync();
-                await RateLimitAsync();
-
                 string normalizedPhone = NormalizePhoneNumber(phoneNumber);
                 if (string.IsNullOrEmpty(normalizedPhone))
                 {
@@ -601,18 +783,66 @@ namespace Softphone
                 }
 
                 string apiUrl = $"{GetApiBaseUrl()}/contacts";
-                string query = $"query={Uri.EscapeDataString(normalizedPhone)}";
+                const int MaxAttempts = 3;
+                JObject? json = null;
 
-                var response = await _httpClient.GetAsync($"{apiUrl}?{query}");
-                string responseContent = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
+                foreach (string queryVariant in EnumeratePhoneSearchQueries(normalizedPhone))
                 {
-                    MainWindow.Log($"[AmoCrmService] Failed to search contacts: {response.StatusCode} - {responseContent}");
-                    return result;
+                    string requestUrl = $"{apiUrl}?query={Uri.EscapeDataString(queryVariant)}";
+                    bool gotParsedJson = false;
+
+                    for (int attempt = 1; attempt <= MaxAttempts; attempt++)
+                    {
+                        if (attempt > 1)
+                            await Task.Delay(TimeSpan.FromMilliseconds(250 + 220 * (attempt - 2)));
+
+                        await EnsureValidTokenAsync();
+                        await RateLimitAsync();
+
+                        using var response = await _httpClient.GetAsync(requestUrl);
+                        string responseContent = await response.Content.ReadAsStringAsync();
+                        HttpStatusCode code = response.StatusCode;
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            MainWindow.Log($"[AmoCrmService] Failed to search contacts: {(int)code} — {TruncateAmoDiagnostic(responseContent)}");
+                            return result;
+                        }
+
+                        if (code == HttpStatusCode.NoContent)
+                        {
+                            MainWindow.Log($"[AmoCrmService] GET /contacts (all-matches)?query… (digits={normalizedPhone}, variant «{queryVariant}»): HTTP 204 — другой формат номера");
+                            json = null;
+                            break;
+                        }
+
+                        string ctx = $"GET /contacts (all-matches)?query… (digits={normalizedPhone}, variant={queryVariant}, attempt {attempt}/{MaxAttempts})";
+                        if (TryParseAmoJsonBody(responseContent, code, ctx, out json) && json != null)
+                        {
+                            var probe = json["_embedded"]?["contacts"] as JArray;
+                            if (probe != null && probe.Count > 0)
+                            {
+                                gotParsedJson = true;
+                                break;
+                            }
+
+                            MainWindow.Log($"[AmoCrmService] Поиск всех контактов: вариант «{queryVariant}» вернул пустой список, пробуем следующий");
+                            json = null;
+                            break;
+                        }
+
+                        MainWindow.Log(attempt >= MaxAttempts
+                            ? $"[AmoCrmService] Поиск всех контактов: исчерпаны попытки после невалидного ответа API (variant=«{queryVariant}»)."
+                            : $"[AmoCrmService] Повтор запроса поиска контактов (пустой/невалидный JSON)…");
+                    }
+
+                    if (gotParsedJson)
+                        break;
                 }
 
-                var json = JObject.Parse(responseContent);
+                if (json == null)
+                    return result;
+
                 var contacts = json["_embedded"]?["contacts"] as JArray;
 
                 if (contacts == null || contacts.Count == 0)
@@ -684,23 +914,50 @@ namespace Softphone
 
         private async Task<JObject?> GetContactByIdAsync(long contactId)
         {
-            try
+            const int MaxAttempts = 3;
+            for (int attempt = 1; attempt <= MaxAttempts; attempt++)
             {
-                await EnsureValidTokenAsync();
-                await RateLimitAsync();
-                string apiUrl = $"{GetApiBaseUrl()}/contacts/{contactId}";
-                var response = await _httpClient.GetAsync(apiUrl);
-                string responseContent = await response.Content.ReadAsStringAsync();
+                if (attempt > 1)
+                    await Task.Delay(TimeSpan.FromMilliseconds(250 + 220 * (attempt - 2)));
 
-                if (!response.IsSuccessStatusCode)
-                    return null;
+                try
+                {
+                    await EnsureValidTokenAsync();
+                    await RateLimitAsync();
+                    string apiUrl = $"{GetApiBaseUrl()}/contacts/{contactId}";
+                    using var response = await _httpClient.GetAsync(apiUrl);
+                    string responseContent = await response.Content.ReadAsStringAsync();
+                    HttpStatusCode code = response.StatusCode;
 
-                return JObject.Parse(responseContent);
+                    if (code == HttpStatusCode.NoContent)
+                    {
+                        MainWindow.Log($"[AmoCrmService] GET /contacts/{contactId}: 204 No Content — пробуем filter[id][] (обход особенности Kommo)");
+                        return await GetContactByFilterIdAsync(contactId);
+                    }
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        MainWindow.Log($"[AmoCrmService] GET /contacts/{contactId} failed: {(int)code} — {TruncateAmoDiagnostic(responseContent)}");
+                        return null;
+                    }
+
+                    string ctx = $"GET /contacts/{contactId} (attempt {attempt}/{MaxAttempts})";
+                    if (TryParseAmoJsonBody(responseContent, code, ctx, out JObject? parsed) && parsed != null)
+                        return parsed;
+
+                    MainWindow.Log(attempt >= MaxAttempts
+                        ? $"[AmoCrmService] GET /contacts/{contactId}: исчерпаны попытки после невалидного ответа."
+                        : $"[AmoCrmService] GET /contacts/{contactId}: повтор после пустого/невалидного JSON…");
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[AmoCrmService] GET /contacts/{contactId}: исключение — {ex.Message}");
+                    if (attempt >= MaxAttempts)
+                        return await GetContactByFilterIdAsync(contactId);
+                }
             }
-            catch
-            {
-                return null;
-            }
+
+            return await GetContactByFilterIdAsync(contactId);
         }
 
         private bool HasMatchingPhone(JObject contact, string normalizedPhone)
@@ -754,6 +1011,63 @@ namespace Softphone
             }
 
             return normalized;
+        }
+
+        /// <summary>
+        /// Варианты строки для GET /contacts?query=… — индекс Kommo может матчиться по разным записи поля телефона (+7…, 8…, только цифры).
+        /// </summary>
+        private static IEnumerable<string> EnumeratePhoneSearchQueries(string normalizedPhone)
+        {
+            if (string.IsNullOrEmpty(normalizedPhone))
+                yield break;
+
+            yield return normalizedPhone;
+
+            // Российский мобильный: 79… ↔ +79… ↔ 89…
+            if (normalizedPhone.Length >= 10 && normalizedPhone.StartsWith("7", StringComparison.Ordinal))
+            {
+                yield return "+" + normalizedPhone;
+                yield return "8" + normalizedPhone.Substring(1);
+            }
+        }
+
+        /// <summary>
+        /// Альтернатива GET /contacts/{id}: Kommo иногда отдаёт 204 на одиночную карточку, но возвращает контакт в списке с filter[id][].
+        /// См. <see href="https://developers.kommo.com/reference/contacts-list"/>.
+        /// </summary>
+        private async Task<JObject?> GetContactByFilterIdAsync(long contactId)
+        {
+            try
+            {
+                await EnsureValidTokenAsync();
+                await RateLimitAsync();
+                string apiUrl = $"{GetApiBaseUrl()}/contacts?filter[id][]={contactId}&limit=1";
+
+                using var response = await _httpClient.GetAsync(apiUrl);
+                string responseContent = await response.Content.ReadAsStringAsync();
+                HttpStatusCode code = response.StatusCode;
+
+                if (code == HttpStatusCode.NoContent || !response.IsSuccessStatusCode)
+                {
+                    MainWindow.Log($"[AmoCrmService] GET /contacts?filter[id][]={contactId} → HTTP {(int)code}");
+                    return null;
+                }
+
+                string ctx = $"GET /contacts?filter[id][]={contactId}";
+                if (!TryParseAmoJsonBody(responseContent, code, ctx, out JObject? json) || json == null)
+                    return null;
+
+                var contacts = json["_embedded"]?["contacts"] as JArray;
+                if (contacts == null || contacts.Count == 0)
+                    return null;
+
+                return contacts[0] as JObject;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[AmoCrmService] GetContactByFilterIdAsync({contactId}): {ex.Message}");
+                return null;
+            }
         }
 
         #endregion
@@ -1090,25 +1404,109 @@ namespace Softphone
             }
         }
 
-        private async Task<JObject?> GetLeadByIdAsync(long leadId)
+        private static string TruncateAmoDiagnostic(string? body, int maxLen = 400)
         {
+            if (string.IsNullOrWhiteSpace(body)) return "(empty)";
+            body = body.Replace('\r', ' ').Replace('\n', ' ');
+            return body.Length <= maxLen ? body : body[..maxLen] + "...";
+        }
+
+        /// <summary>
+        /// AmoCRM иногда отдаёт 200 OK с пустым телом или не-JSON (HTML прокси, обрыв сети).
+        /// Тогда Newtonsoft даёт JsonReader «Path '', line 0, position 0» без контекста.
+        /// </summary>
+        private static bool TryParseAmoJsonBody(string? responseContent, HttpStatusCode code, string context, out JObject? json)
+        {
+            json = null;
+            if (string.IsNullOrWhiteSpace(responseContent))
+            {
+                string hint = code == HttpStatusCode.NoContent
+                    ? " (204 — у Kommo/Amo так бывает при «нет данных» по запросу; не обязательно ошибка авторизации)"
+                    : "";
+                MainWindow.Log($"[AmoCrmService] {context}: HTTP {(int)code}, пустое тело ответа{hint}");
+                return false;
+            }
+
             try
             {
-                await EnsureValidTokenAsync();
-                await RateLimitAsync();
-                string apiUrl = $"{GetApiBaseUrl()}/leads/{leadId}?with=contacts";
-                var response = await _httpClient.GetAsync(apiUrl);
-                string responseContent = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
-                    return null;
-
-                return JObject.Parse(responseContent);
+                json = JObject.Parse(responseContent);
+                return true;
             }
-            catch
+            catch (Exception ex)
             {
-                return null;
+                MainWindow.Log($"[AmoCrmService] {context}: HTTP {(int)code}, ошибка парсинга JSON — {ex.Message}; body={TruncateAmoDiagnostic(responseContent)}");
+                return false;
             }
+        }
+
+        private async Task<JObject?> GetLeadByIdAsync(long leadId)
+        {
+            // Amo может вернуть 204 «сделки нет» или 403 при ограничениях роли — раньше это сваливалось в тихий null /
+            // ошибку парсинга пустого тела (204 считается IsSuccess и у HttpClient.Content бывает пустая строка).
+            for (int pass = 0; pass < 2; pass++)
+            {
+                string with = pass == 0 ? "?with=contacts" : "";
+                string apiUrl = $"{GetApiBaseUrl()}/leads/{leadId}{with}";
+
+                try
+                {
+                    await EnsureValidTokenAsync();
+                    await RateLimitAsync();
+
+                    using var response = await _httpClient.GetAsync(apiUrl);
+                    string responseContent = await response.Content.ReadAsStringAsync();
+                    HttpStatusCode code = response.StatusCode;
+
+                    if (code == HttpStatusCode.NoContent)
+                    {
+                        MainWindow.Log($"[AmoCrmService] GET /leads/{leadId}{with}: 204 No Content — в API Amo сделки с таким ID нет (или она недоступна этому ключу). В интерфейсе карточка может быть видна пользователю; проверьте права интеграции и что OAuth привязан к аккаунту {AmoCrmAccountUrl.TryBuildWebBaseUrl(_subdomain)}.");
+                        return null;
+                    }
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        MainWindow.Log($"[AmoCrmService] GET /leads/{leadId}{with} failed: {(int)code} — {TruncateAmoDiagnostic(responseContent)}");
+
+                        bool noRetry = code is HttpStatusCode.Unauthorized
+                            or HttpStatusCode.Forbidden
+                            or HttpStatusCode.NotFound;
+                        if (noRetry || pass == 1)
+                            return null;
+                        MainWindow.Log($"[AmoCrmService] Повтор без with=contacts…");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(responseContent))
+                    {
+                        MainWindow.Log($"[AmoCrmService] GET /leads/{leadId}{with}: успех {(int)code}, но пустое тело ответа");
+                        return null;
+                    }
+
+                    try
+                    {
+                        return JObject.Parse(responseContent);
+                    }
+                    catch (Exception parseEx)
+                    {
+                        MainWindow.Log($"[AmoCrmService] GET /leads/{leadId}{with}: не удалось распарсить JSON — {parseEx.Message}; body={TruncateAmoDiagnostic(responseContent)}");
+                        if (pass == 0)
+                        {
+                            MainWindow.Log($"[AmoCrmService] Повтор без with=contacts…");
+                            continue;
+                        }
+                        return null;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[AmoCrmService] GET /leads/{leadId}{with}: исключение — {ex.Message}");
+                    if (pass == 1)
+                        return null;
+                    MainWindow.Log($"[AmoCrmService] Повтор без with=contacts…");
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -1358,9 +1756,10 @@ namespace Softphone
         /// 1. Ищем лиды через общий поиск Kommo по query=phone (ограничено до MaxLeadsToProcess, сортировка по updated_at desc).
         /// 2. Для каждого лида проверяем, что среди его контактов (с подгрузкой полных контактов)
         ///    есть хотя бы один контакт с точно этим номером.
-        /// 3. Фильтруем копии и закрытые лиды.
+        /// 3. По умолчанию фильтруем копии и закрытые лиды. Для ручной выгрузки можно передать openLeadsOnly=false,
+        ///    чтобы выбрать закрытую сделку, если открытых нет (API поиска контактов может вернуть 204).
         /// </summary>
-        public async Task<List<LeadSelectionWindow.LeadInfo>> GetLeadsByPhoneAsync(string phoneNumber)
+        public async Task<List<LeadSelectionWindow.LeadInfo>> GetLeadsByPhoneAsync(string phoneNumber, bool openLeadsOnly = true)
         {
             var result = new List<LeadSelectionWindow.LeadInfo>();
 
@@ -1386,16 +1785,19 @@ namespace Softphone
                 string apiUrl = $"{GetApiBaseUrl()}/leads";
                 string query = $"query={Uri.EscapeDataString(normalizedPhone)}&limit={MaxLeadsToProcess}&order[updated_at]=desc&with=contacts";
 
-                var response = await _httpClient.GetAsync($"{apiUrl}?{query}");
+                using var response = await _httpClient.GetAsync($"{apiUrl}?{query}");
                 string responseContent = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    MainWindow.Log($"[AmoCrmService] Failed to search leads by phone {phoneNumber}: {response.StatusCode} - {responseContent}");
+                    MainWindow.Log($"[AmoCrmService] Failed to search leads by phone {phoneNumber}: {response.StatusCode} - {TruncateAmoDiagnostic(responseContent)}");
                     return result;
                 }
 
-                var json = JObject.Parse(responseContent);
+                HttpStatusCode code = response.StatusCode;
+                string parseCtx = $"GET /leads?query… (normalized={normalizedPhone})";
+                if (!TryParseAmoJsonBody(responseContent, code, parseCtx, out JObject? json) || json == null)
+                    return result;
                 var leadsArray = json["_embedded"]?["leads"] as JArray;
                 if (leadsArray == null || leadsArray.Count == 0)
                 {
@@ -1431,10 +1833,9 @@ namespace Softphone
                         continue;
                     }
 
-                    // Пропускаем закрытые
                     var closedAt = lead["closed_at"];
                     bool isOpen = closedAt == null || closedAt.Type == JTokenType.Null;
-                    if (!isOpen)
+                    if (!isOpen && openLeadsOnly)
                     {
                         MainWindow.Log($"[AmoCrmService] Пропускаем закрытый лид {leadId}: '{leadName}' при поиске по телефону");
                         continue;
@@ -1475,6 +1876,22 @@ namespace Softphone
                             hasContactWithPhone = true;
                             break;
                         }
+
+                        // Список лидов от Amo может отдавать контакт в урезанном виде; GET /contacts/{id} иногда возвращает 204.
+                        // Пробуем сопоставить телефон прямо по встроенному JSON контакта.
+                        if (contact is JObject embeddedContactJo && HasMatchingPhone(embeddedContactJo, normalizedPhone))
+                        {
+                            hasContactWithPhone = true;
+                            break;
+                        }
+                    }
+
+                    if (!hasContactWithPhone && !openLeadsOnly && contactCount > 0)
+                    {
+                        // Лид уже отфильтрован запросом с query по номеру; если карточки контактов недоступны (204 и т.д.),
+                        // всё равно показываем сделку в ручном выборе, включая закрытые — иначе пользователь упирается в «нет контакта».
+                        MainWindow.Log($"[AmoCrmService] Лид {leadId}: связанные контакты не удалось загрузить/сверить с телефоном; включаем в список (поиск лидов по номеру, закрытые разрешены).");
+                        hasContactWithPhone = true;
                     }
 
                     if (!hasContactWithPhone)
@@ -1484,7 +1901,8 @@ namespace Softphone
                     }
 
                     var price = lead["price"]?.Value<long?>();
-                    string description = $"Contacts: {contactCount}";
+                    string description = isOpen ? "" : "Closed · ";
+                    description += $"Contacts: {contactCount}";
                     if (price.HasValue && price.Value > 0)
                     {
                         description += $", Price: {price.Value:N0}";
@@ -1493,7 +1911,7 @@ namespace Softphone
                     result.Add(new LeadSelectionWindow.LeadInfo
                     {
                         Id = leadId.Value,
-                        Name = leadName,
+                        Name = isOpen ? leadName : $"[Closed] {leadName}",
                         Description = description
                     });
                 }
@@ -1514,7 +1932,7 @@ namespace Softphone
         /// <summary>
         /// Обрабатывает завершенный звонок: находит контакт → находит лид → загружает запись
         /// </summary>
-        public async Task<ProcessCallResult> ProcessCallAsync(string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callLog = null, string? audioFilePath = null, bool enableLeadSelection = false, DateTime? callTime = null)
+        public async Task<ProcessCallResult> ProcessCallAsync(string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callLog = null, string? audioFilePath = null, bool enableLeadSelection = false, DateTime? callTime = null, string? outboundCallerId = null)
         {
             if (!IsInitialized)
             {
@@ -1529,56 +1947,55 @@ namespace Softphone
 
             try
             {
-                // Если по сигнализации длительность = 0, но у нас есть WAV-файл,
-                // попробуем оценить длительность по размеру файла.
-                if (durationSeconds <= 0 && !string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
-                {
-                    try
-                    {
-                        var fileInfo = new FileInfo(audioFilePath);
-                        long fileLength = fileInfo.Length;
-
-                        // Предполагаемый формат: pcm_s16le, 48 kHz, mono (см. WebRtcCallRecorder / ffmpeg)
-                        double bytesPerSecond = 48000.0 * 2.0; // 2 байта на сэмпл * 48000 сэмплов
-                        double seconds = fileLength / bytesPerSecond;
-                        int estimatedDuration = (int)Math.Round(seconds);
-                        if (estimatedDuration < 1)
-                            estimatedDuration = 1;
-
-                        MainWindow.Log($"[AmoCrmService] Длительность по сигнализации = 0, оценена по WAV: {estimatedDuration} сек (file={fileLength} bytes)");
-                        durationSeconds = estimatedDuration;
-                    }
-                    catch (Exception ex)
-                    {
-                        MainWindow.Log($"[AmoCrmService] Не удалось оценить длительность по WAV-файлу: {ex.Message}");
-                    }
-                }
+                bool isOriginateCall = callLog?.IndexOf("Originate", StringComparison.OrdinalIgnoreCase) >= 0;
+                CallWindowHelpers.ApplyRecordingMetrics(ref durationSeconds, ref wasAnswered, audioFilePath, isOriginateCall: isOriginateCall == true);
 
                 MainWindow.Log($"[AmoCrmService] ===== Начало обработки звонка =====");
                 MainWindow.Log($"[AmoCrmService] Телефон: {phoneNumber}");
                 MainWindow.Log($"[AmoCrmService] Тип: {(isIncoming ? "Входящий" : "Исходящий")}");
                 MainWindow.Log($"[AmoCrmService] Длительность: {durationSeconds} сек");
                 MainWindow.Log($"[AmoCrmService] Файл записи: {(string.IsNullOrEmpty(audioFilePath) ? "нет" : audioFilePath)}");
+                if (!string.IsNullOrWhiteSpace(outboundCallerId))
+                    MainWindow.Log($"[AmoCrmService] Call from label for Amo card: {outboundCallerId.Trim()}");
+
+                DateTime callTimeForProcessing = callTime ?? DateTime.UtcNow;
 
                 // Находим контакт
                 MainWindow.Log($"[AmoCrmService] Поиск контакта по телефону: {phoneNumber}");
                 long? contactId = await FindContactByPhoneAsync(phoneNumber);
+                ProcessCallResult result;
                 if (!contactId.HasValue)
                 {
-                    MainWindow.Log($"[AmoCrmService] ❌ Контакт не найден для телефона: {phoneNumber}");
-                    MainWindow.Log($"[AmoCrmService] ===== Обработка завершена с ошибкой =====");
-                    return new ProcessCallResult
+                    MainWindow.Log($"[AmoCrmService] Контакт не найден для телефона: {phoneNumber} — пробуем поиск лида по номеру");
+                    var leadsByPhone = await GetLeadsByPhoneAsync(phoneNumber, openLeadsOnly: true);
+                    if (leadsByPhone.Count == 0)
+                        leadsByPhone = await GetLeadsByPhoneAsync(phoneNumber, openLeadsOnly: false);
+
+                    if (leadsByPhone.Count > 0)
                     {
-                        Success = false,
-                        UploadStatus = AmoCrmUploadStatus.NotUploaded,
-                        Reason = "Contact not found in AmoCRM"
-                    };
+                        var bestLead = leadsByPhone[0];
+                        MainWindow.Log($"[AmoCrmService] Fallback: найден лид {bestLead.Id} ({bestLead.Name}) по номеру — прикрепляем звонок к лиду");
+                        result = await ProcessCallForSpecificLeadAsync(
+                            bestLead.Id, phoneNumber, isIncoming, durationSeconds, wasAnswered,
+                            callLog, audioFilePath, callTimeForProcessing, outboundCallerId);
+                    }
+                    else
+                    {
+                        MainWindow.Log($"[AmoCrmService] ❌ Контакт и лид не найдены для телефона: {phoneNumber}");
+                        MainWindow.Log($"[AmoCrmService] ===== Обработка завершена с ошибкой =====");
+                        return new ProcessCallResult
+                        {
+                            Success = false,
+                            UploadStatus = AmoCrmUploadStatus.NotUploaded,
+                            Reason = "Contact not found in AmoCRM"
+                        };
+                    }
                 }
-                MainWindow.Log($"[AmoCrmService] ✅ Контакт найден: ID = {contactId}");
-
-                DateTime callTimeForProcessing = callTime ?? DateTime.UtcNow;
-
-                ProcessCallResult result = await ProcessCallForExistingLeadAsync(contactId.Value, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, enableLeadSelection, callTimeForProcessing);
+                else
+                {
+                    MainWindow.Log($"[AmoCrmService] ✅ Контакт найден: ID = {contactId}");
+                    result = await ProcessCallForExistingLeadAsync(contactId.Value, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, enableLeadSelection, callTimeForProcessing, outboundCallerId);
+                }
 
                 if (result.Success && result.LeadId.HasValue)
                 {
@@ -1613,7 +2030,7 @@ namespace Softphone
         /// <summary>
         /// Обрабатывает звонок для конкретного лида (используется при звонке из браузера AmoCRM)
         /// </summary>
-        public async Task<ProcessCallResult> ProcessCallForSpecificLeadAsync(long leadId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callLog = null, string? audioFilePath = null, DateTime? callTime = null)
+        public async Task<ProcessCallResult> ProcessCallForSpecificLeadAsync(long leadId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callLog = null, string? audioFilePath = null, DateTime? callTime = null, string? outboundCallerId = null)
         {
             if (!IsInitialized)
             {
@@ -1629,24 +2046,116 @@ namespace Softphone
             try
             {
                 MainWindow.Log($"[AmoCrmService] Processing call for specific lead ID: {leadId} (from browser)");
+                if (!string.IsNullOrWhiteSpace(outboundCallerId))
+                    MainWindow.Log($"[AmoCrmService] Call from label for Amo card: {outboundCallerId.Trim()}");
 
-                // Проверяем, существует ли лид
-                var lead = await GetLeadByIdAsync(leadId);
-                if (lead == null)
+                bool isOriginateCall = callLog?.IndexOf("Originate", StringComparison.OrdinalIgnoreCase) >= 0;
+                CallWindowHelpers.ApplyRecordingMetrics(ref durationSeconds, ref wasAnswered, audioFilePath, isOriginateCall: isOriginateCall == true);
+
+                // Проверяем, существует ли лид (иногда GET /leads/{id} даёт 204/403 при видимой в UI сделке)
+                bool hasFile = !string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath);
+                DateTime callTimeForUpdate = callTime ?? DateTime.UtcNow;
+
+                if (await GetLeadByIdAsync(leadId) == null)
                 {
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Lead {leadId} not found");
+                    MainWindow.Log($"[AmoCrmService] ⚠️ Lead {leadId} недоступен через GET API — fallback: прямая запись на ID из браузера, затем контакт по телефону");
+
+                    bool isMissedCallFallback = !wasAnswered && !hasFile;
+
+                    // 1) Прямая попытка на лид из Amo (без предварительного GET)
+                    try
+                    {
+                        if (isMissedCallFallback)
+                        {
+                            bool ok = await ManuallyUploadMissedCallToLeadAsync(leadId, phoneNumber, isIncoming, callTimeForUpdate, outboundCallerId);
+                            if (ok)
+                            {
+                                return new ProcessCallResult
+                                {
+                                    Success = true,
+                                    UploadStatus = AmoCrmUploadStatus.Uploaded,
+                                    LeadId = leadId,
+                                    Reason = "Missed call note on browser lead (GET lead unavailable)"
+                                };
+                            }
+                        }
+                        else
+                        {
+                            string? downloadLinkDirect = await UpdateLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, callTimeForUpdate, outboundCallerId);
+
+                            if (hasFile)
+                            {
+                                if (!string.IsNullOrEmpty(downloadLinkDirect))
+                                {
+                                    return new ProcessCallResult
+                                    {
+                                        Success = true,
+                                        UploadStatus = AmoCrmUploadStatus.Uploaded,
+                                        LeadId = leadId,
+                                        Reason = "Recording on browser lead (GET lead unavailable)"
+                                    };
+                                }
+                                MainWindow.Log($"[AmoCrmService] Fallback: прямая загрузка на лид {leadId} не дала ссылки — пробуем контакт");
+                            }
+                            else if (!string.IsNullOrEmpty(audioFilePath))
+                            {
+                                return new ProcessCallResult
+                                {
+                                    Success = true,
+                                    UploadStatus = AmoCrmUploadStatus.NotUploaded,
+                                    Reason = "Recording file not found (may still be processing); browser lead GET unavailable",
+                                    LeadId = leadId
+                                };
+                            }
+                            else
+                            {
+                                return new ProcessCallResult
+                                {
+                                    Success = true,
+                                    UploadStatus = AmoCrmUploadStatus.NotUploaded,
+                                    Reason = "No recording file; browser lead GET unavailable",
+                                    LeadId = leadId
+                                };
+                            }
+                        }
+                    }
+                    catch (Exception exDirect)
+                    {
+                        MainWindow.Log($"[AmoCrmService] Fallback: прямая запись на лид {leadId} не удалась: {exDirect.Message}");
+                    }
+
+                    // 2) Контакт по телефону — открытая сделка или примечание на контакт (типичный кейс закрытой сделки)
+                    long? contactId = await FindContactByPhoneAsync(phoneNumber);
+                    if (!contactId.HasValue)
+                    {
+                        return new ProcessCallResult
+                        {
+                            Success = false,
+                            UploadStatus = AmoCrmUploadStatus.Failed,
+                            Reason = $"Lead {leadId} unavailable via API; contact not found for phone"
+                        };
+                    }
+
+                    MainWindow.Log($"[AmoCrmService] Fallback: контакт {contactId} — открытый лид или запись на контакт");
+                    ProcessCallResult byContact = await ProcessCallForExistingLeadAsync(contactId.Value, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, enableLeadSelection: false, callTimeForUpdate, outboundCallerId);
+
+                    string prefix = $"Browser lead {leadId} unavailable via GET API. ";
+                    string? combinedReason = null;
+                    if (!string.IsNullOrEmpty(byContact.Reason))
+                        combinedReason = prefix + byContact.Reason;
+                    else if (!byContact.Success || byContact.UploadStatus == AmoCrmUploadStatus.Failed)
+                        combinedReason = prefix.TrimEnd();
+
                     return new ProcessCallResult
                     {
-                        Success = false,
-                        UploadStatus = AmoCrmUploadStatus.Failed,
-                        Reason = $"Lead {leadId} not found"
+                        Success = byContact.Success,
+                        UploadStatus = byContact.UploadStatus,
+                        LeadId = byContact.LeadId,
+                        Reason = combinedReason
                     };
                 }
 
                 MainWindow.Log($"[AmoCrmService] ✅ Lead {leadId} found, uploading call record");
-
-                bool hasFile = !string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath);
-                DateTime callTimeForUpdate = callTime ?? DateTime.UtcNow;
 
                 // Проверяем, является ли это недозвоном ДО вызова UpdateLeadAsync
                 // Недозвон = звонок не был принят (wasAnswered=false) И нет записи
@@ -1658,7 +2167,7 @@ namespace Softphone
                 if (isMissedCall)
                 {
                     MainWindow.Log($"[AmoCrmService] Missed call detected for specific lead {leadId} (no recording, wasAnswered=false, duration=0) — creating missed call note");
-                    bool success = await ManuallyUploadMissedCallToLeadAsync(leadId, phoneNumber, isIncoming);
+                    bool success = await ManuallyUploadMissedCallToLeadAsync(leadId, phoneNumber, isIncoming, callTimeForUpdate, outboundCallerId);
                     return new ProcessCallResult
                     {
                         Success = success,
@@ -1670,7 +2179,7 @@ namespace Softphone
 
                 try
                 {
-                    string? downloadLink = await UpdateLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, callTimeForUpdate);
+                    string? downloadLink = await UpdateLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, callTimeForUpdate, outboundCallerId);
 
                     // Если UpdateLeadAsync вернул null, это может быть недозвон (обработанный внутри UpdateLeadAsync)
                     // Но мы уже обработали недозвон выше, поэтому если downloadLink == null и нет файла - это нормально
@@ -1745,7 +2254,7 @@ namespace Softphone
         /// <summary>
         /// Обрабатывает звонок для существующего лида контакта (не создает новые лиды)
         /// </summary>
-        public async Task<ProcessCallResult> ProcessCallForExistingLeadAsync(long contactId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callLog = null, string? audioFilePath = null, string? audioFileLink = null, bool enableLeadSelection = false, DateTime? callTime = null)
+        public async Task<ProcessCallResult> ProcessCallForExistingLeadAsync(long contactId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callLog = null, string? audioFilePath = null, string? audioFileLink = null, bool enableLeadSelection = false, DateTime? callTime = null, string? outboundCallerId = null)
         {
             if (!IsInitialized)
             {
@@ -1760,10 +2269,11 @@ namespace Softphone
 
             try
             {
-                MainWindow.Log($"[AmoCrmService] Поиск лида для контакта {contactId} (ответственный: user_id={_currentUserId?.ToString() ?? "?"})...");
+                MainWindow.Log($"[AmoCrmService] Поиск лида для контакта {contactId} (ответственный: user_id={GetActingKommoUserId()?.ToString() ?? "?"})...");
 
                 long? existingLeadId = null;
                 bool userCancelled = false;
+                bool uploadedInDialog = false;
 
                 if (enableLeadSelection)
                 {
@@ -1786,7 +2296,10 @@ namespace Softphone
                                 if (result == true && selectionWindow.SelectedLeadId.HasValue)
                                 {
                                     existingLeadId = selectionWindow.SelectedLeadId.Value;
-                                    MainWindow.Log($"[AmoCrmService] User selected lead ID: {existingLeadId} and uploaded recording");
+                                    uploadedInDialog = selectionWindow.RecordingUploadedInDialog;
+                                    MainWindow.Log(uploadedInDialog
+                                        ? $"[AmoCrmService] User selected lead ID: {existingLeadId} and uploaded recording in dialog"
+                                        : $"[AmoCrmService] User selected lead ID: {existingLeadId}");
                                 }
                                 else
                                 {
@@ -1839,7 +2352,7 @@ namespace Softphone
 
                     try
                     {
-                        string? downloadLink = await UpdateContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, audioFileLink, callTimeForContactUpdate);
+                        string? downloadLink = await UpdateContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, audioFileLink, callTimeForContactUpdate, outboundCallerId);
 
                         if (hasFileForContact)
                         {
@@ -1900,12 +2413,23 @@ namespace Softphone
                 long leadId = existingLeadId.Value;
                 MainWindow.Log($"[AmoCrmService] ✅ Найден лид: ID = {leadId}");
 
+                if (uploadedInDialog)
+                {
+                    return new ProcessCallResult
+                    {
+                        Success = true,
+                        UploadStatus = AmoCrmUploadStatus.Uploaded,
+                        Reason = null,
+                        LeadId = leadId
+                    };
+                }
+
                 bool hasFile = !string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath);
                 DateTime callTimeForUpdate = callTime ?? DateTime.UtcNow;
 
                 try
                 {
-                    string? downloadLink = await UpdateLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, audioFileLink, callTimeForUpdate);
+                    string? downloadLink = await UpdateLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, audioFileLink, callTimeForUpdate, outboundCallerId);
 
                     if (hasFile)
                     {
@@ -1980,7 +2504,7 @@ namespace Softphone
         /// callLog НЕ добавляется в AmoCRM — остаётся только в логах софтфона.
         /// </summary>
         /// <returns>downloadLink если файл был успешно загружен, null иначе</returns>
-        private async Task<string?> UpdateLeadAsync(long leadId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? callLog, string? audioFilePath, string? audioFileLink, DateTime? callTime = null)
+        private async Task<string?> UpdateLeadAsync(long leadId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? callLog, string? audioFilePath, string? audioFileLink, DateTime? callTime = null, string? outboundCallerId = null)
         {
             DateTime callTimeForLock = callTime ?? DateTime.UtcNow;
             string lockKey = $"{leadId}_{phoneNumber}_{callTimeForLock:yyyyMMddHHmmss}";
@@ -2006,11 +2530,12 @@ namespace Softphone
                 // Не проверяем durationSeconds, так как звонок может быть отклонен после гудков (486 Busy Here)
                 bool isMissedCall = !wasAnswered && !hasRecording;
 
-                // 1) Недозвон: добавляем звонок через POST /api/v4/calls с call_result (текст под карточкой 00:00).
+                // 1) Недозвон: только call_in/call_out на лиде. POST /api/v4/calls не вызываем — иначе две карточки в ленте.
                 if (isMissedCall)
                 {
-                    MainWindow.Log("[AmoCrmService] Missed call detected — adding via /api/v4/calls with call_result='No Answer'");
-                    await AddCallViaCallsApiAsync(phoneNumber, isIncoming, 0, "No Answer", 6, callTime); // 6 = нет связи
+                    MainWindow.Log("[AmoCrmService] Missed call detected — call_out/call_in note on lead only");
+                    var missedResult = GetCallNoteResultParams(isMissedCall: true, outboundCallerId);
+                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds: 0, wasAnswered: false, audioFileLink: null, callTime, missedResult.callResult, missedResult.callStatus);
                     return null;
                 }
                 
@@ -2019,6 +2544,8 @@ namespace Softphone
                 {
                     MainWindow.Log($"[AmoCrmService] Call was connected (has recording), uploading recording file (wasAnswered={wasAnswered}, duration={durationSeconds}s)");
                 }
+
+                var answeredResult = GetCallNoteResultParams(isMissedCall: false, outboundCallerId);
 
                 // 2) Обычный звонок: загружаем файл при наличии и создаём call_in / call_out
                 string? downloadLink = await AttachFilesToLeadAsync(leadId, audioFilePath);
@@ -2039,19 +2566,19 @@ namespace Softphone
                 {
                     // Файл загружен сейчас — call_in/call_out с ссылкой
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} с файлом...");
-                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, callTime);
+                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
                 else if (!string.IsNullOrEmpty(audioFileLink))
                 {
                     // Файл загружен ранее — используем переданную ссылку
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} с ранее загруженным файлом...");
-                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, audioFileLink, callTime);
+                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, audioFileLink, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
                 else if (!hasRecording)
                 {
                     // Отвеченный звонок без записи - создаем примечание только если файла действительно нет
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} без записи (duration={durationSeconds})...");
-                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime);
+                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
                 else
                 {
@@ -2078,7 +2605,7 @@ namespace Softphone
         /// Если у контакта нет открытых сделок — по алгоритму CallGear запись кладём в контакт.
         /// </summary>
         /// <returns>downloadLink если файл был успешно загружен, null иначе</returns>
-        private async Task<string?> UpdateContactAsync(long contactId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? callLog, string? audioFilePath, string? audioFileLink, DateTime? callTime = null)
+        private async Task<string?> UpdateContactAsync(long contactId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? callLog, string? audioFilePath, string? audioFileLink, DateTime? callTime = null, string? outboundCallerId = null)
         {
             DateTime callTimeForLock = callTime ?? DateTime.UtcNow;
             string lockKey = $"contact_{contactId}_{phoneNumber}_{callTimeForLock:yyyyMMddHHmmss}";
@@ -2096,8 +2623,9 @@ namespace Softphone
 
                 if (isMissedCall)
                 {
-                    MainWindow.Log("[AmoCrmService] Missed call detected — adding via /api/v4/calls with call_result='No Answer'");
-                    await AddCallViaCallsApiAsync(phoneNumber, isIncoming, 0, "No Answer", 6, callTime); // 6 = нет связи
+                    MainWindow.Log("[AmoCrmService] Missed call detected — call_out/call_in note on contact only");
+                    var missedResult = GetCallNoteResultParams(isMissedCall: true, outboundCallerId);
+                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds: 0, wasAnswered: false, audioFileLink: null, callTime, missedResult.callResult, missedResult.callStatus);
                     return null;
                 }
 
@@ -2105,6 +2633,8 @@ namespace Softphone
                 {
                     MainWindow.Log($"[AmoCrmService] Call was connected (has recording), uploading recording file to contact (wasAnswered={wasAnswered}, duration={durationSeconds}s)");
                 }
+
+                var answeredResult = GetCallNoteResultParams(isMissedCall: false, outboundCallerId);
 
                 string? downloadLink = await AttachFilesToContactAsync(contactId, audioFilePath);
                 if (!string.IsNullOrEmpty(downloadLink))
@@ -2123,18 +2653,18 @@ namespace Softphone
                 if (!string.IsNullOrEmpty(downloadLink))
                 {
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} к контакту с файлом...");
-                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, callTime);
+                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
                 else if (!string.IsNullOrEmpty(audioFileLink))
                 {
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} к контакту с ранее загруженным файлом...");
-                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, audioFileLink, callTime);
+                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, audioFileLink, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
                 else if (!hasRecording)
                 {
                     // Создаем примечание без записи только если файла действительно нет
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} к контакту без записи (duration={durationSeconds})...");
-                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime);
+                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
                 else
                 {
@@ -2254,83 +2784,19 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Добавляет звонок через POST /api/v4/calls (как CallGear).
-        /// Позволяет передать call_result (текст под карточкой, например "No Answer") и call_status.
-        /// Привязка к сделке/контакту выполняется по алгоритму Kommo по номеру телефона (entity_id указать нельзя).
-        /// Документация: https://developers.kommo.com/reference/add-calls
-        /// </summary>
-        /// <param name="callStatus">6 = нет связи, 7 = линия занята (остальные: 1–5 см. документацию)</param>
-        private async Task AddCallViaCallsApiAsync(string phoneNumber, bool isIncoming, int durationSeconds, string? callResult = null, int? callStatus = null, DateTime? callTime = null)
-        {
-            try
-            {
-                await EnsureValidTokenAsync();
-                await RateLimitAsync();
-
-                string direction = isIncoming ? "inbound" : "outbound";
-                string uniqSource = $"{direction}_{NormalizePhoneNumber(phoneNumber)}_{(callTime ?? DateTime.UtcNow):yyyyMMddHHmmss}";
-                string uniq;
-                using (var sha = SHA256.Create())
-                {
-                    byte[] hashBytes = sha.ComputeHash(Encoding.UTF8.GetBytes(uniqSource));
-                    uniq = BitConverter.ToString(hashBytes, 0, 8).Replace("-", "").ToLowerInvariant();
-                }
-
-                var callPayload = new JObject
-                {
-                    ["direction"] = direction,
-                    ["duration"] = durationSeconds,
-                    ["source"] = "Callspire",
-                    ["phone"] = phoneNumber,
-                    ["uniq"] = uniq
-                };
-                if (!string.IsNullOrEmpty(callResult))
-                    callPayload["call_result"] = callResult;
-                if (callStatus.HasValue)
-                    callPayload["call_status"] = callStatus.Value;
-                if (_currentUserId.HasValue)
-                {
-                    callPayload["responsible_user_id"] = _currentUserId.Value;
-                    callPayload["created_by"] = _currentUserId.Value;
-                }
-                if (callTime.HasValue)
-                    callPayload["created_at"] = (int)(callTime.Value.ToUniversalTime() - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-
-                var body = new JArray { callPayload };
-                var content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
-                string apiUrl = $"{GetApiBaseUrl()}/calls";
-                MainWindow.Log($"[AmoCrmService] 📝 POST /api/v4/calls (call_result={callResult ?? "null"}, call_status={callStatus})");
-                var response = await _httpClient.PostAsync(apiUrl, content);
-                string responseContent = await response.Content.ReadAsStringAsync();
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    MainWindow.Log($"[AmoCrmService] ❌ Ошибка добавления звонка через /calls: {response.StatusCode} - {responseContent}");
-                }
-                else
-                {
-                    MainWindow.Log($"[AmoCrmService] ✅ Звонок добавлен через /api/v4/calls (uniq={uniq})");
-                }
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[AmoCrmService] Error adding call via /calls: {ex.Message}");
-            }
-        }
-
-        /// <summary>
         /// Добавляет примечание типа call_in или call_out к лиду.
         /// Использует params.link для кнопок "Прослушать" и "Скачать" в AmoCRM.
         /// uniq генерируется через SHA256 от стабильных полей для идемпотентности.
+        /// Для недозвона можно передать callResult/callStatus — в UI как у карточки «No Answer» (если API примет поля).
         /// </summary>
-        private async Task AddCallNoteToLeadAsync(long leadId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? audioFileLink = null, DateTime? callTime = null)
+        private async Task<bool> AddCallNoteToLeadAsync(long leadId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? audioFileLink = null, DateTime? callTime = null, string? callResult = null, int? callStatus = null)
         {
             try
             {
-                if (!_currentUserId.HasValue)
+                if (!GetActingKommoUserId().HasValue)
                 {
-                    MainWindow.Log("[AmoCrmService] Current user ID not available, cannot create call note");
-                    return;
+                    MainWindow.Log("[AmoCrmService] Kommo acting user ID not available, cannot create call note");
+                    return false;
                 }
 
                 // Генерируем стабильный уникальный идентификатор звонка (SHA256)
@@ -2358,46 +2824,62 @@ namespace Softphone
 
                     string noteType = isIncoming ? "call_in" : "call_out";
 
-                    var callParams = new JObject
+                    bool tryCallResultInParams = !string.IsNullOrEmpty(callResult);
+                    while (true)
                     {
-                        ["uniq"] = uniq,
-                        ["duration"] = durationSeconds,
-                        ["source"] = "Callspire",
-                        ["phone"] = phoneNumber
-                    };
+                        var callParams = new JObject
+                        {
+                            ["uniq"] = uniq,
+                            ["duration"] = durationSeconds,
+                            ["source"] = "Callspire",
+                            ["phone"] = phoneNumber
+                        };
 
-                    if (!string.IsNullOrEmpty(audioFileLink))
-                    {
-                        callParams["link"] = audioFileLink;
-                    }
+                        if (!string.IsNullOrEmpty(audioFileLink))
+                        {
+                            callParams["link"] = audioFileLink;
+                        }
 
-                    // Комментарий (comment) НЕ поддерживается API Kommo для call_in/call_out — возвращает 400 FieldNotExpected
+                        if (tryCallResultInParams)
+                        {
+                            callParams["call_result"] = callResult!;
+                            if (callStatus.HasValue)
+                                callParams["call_status"] = callStatus.Value;
+                        }
 
-                    var noteObject = new JObject
-                    {
-                        ["note_type"] = noteType,
-                        ["created_by"] = _currentUserId.Value,
-                        ["responsible_user_id"] = _currentUserId.Value,
-                        ["params"] = callParams
-                    };
+                        var noteObject = new JObject
+                        {
+                            ["note_type"] = noteType,
+                            ["created_by"] = GetActingKommoUserId()!.Value,
+                            ["responsible_user_id"] = GetActingKommoUserId()!.Value,
+                            ["params"] = callParams
+                        };
 
-                    var notesArray = new JArray { noteObject };
+                        var notesArray = new JArray { noteObject };
 
-                    string json = notesArray.ToString(Formatting.None);
-                    var content = new StringContent(json, Encoding.UTF8, "application/json");
+                        string json = notesArray.ToString(Formatting.None);
+                        var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                    string apiUrl = $"{GetApiBaseUrl()}/leads/{leadId}/notes";
-                    MainWindow.Log($"[AmoCrmService] 📝 POST {apiUrl}");
-                    var response = await _httpClient.PostAsync(apiUrl, content);
-                    string responseContent = await response.Content.ReadAsStringAsync();
+                        string apiUrl = $"{GetApiBaseUrl()}/leads/{leadId}/notes";
+                        MainWindow.Log($"[AmoCrmService] 📝 POST {apiUrl} (call_result in params={(tryCallResultInParams ? "yes" : "no")})");
+                        var response = await _httpClient.PostAsync(apiUrl, content);
+                        string responseContent = await response.Content.ReadAsStringAsync();
 
-                    if (!response.IsSuccessStatusCode)
-                    {
+                        if (response.IsSuccessStatusCode)
+                        {
+                            MainWindow.Log($"[AmoCrmService] ✅ Заметка {noteType} успешно создана в лиде {leadId} (uniq={uniq})");
+                            return true;
+                        }
+
+                        if (tryCallResultInParams && response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                        {
+                            MainWindow.Log($"[AmoCrmService] ⚠️ call note with call_result rejected: {response.StatusCode} - {responseContent}. Retrying without call_result/call_status.");
+                            tryCallResultInParams = false;
+                            continue;
+                        }
+
                         MainWindow.Log($"[AmoCrmService] ❌ Ошибка создания заметки в лиде {leadId}: {response.StatusCode} - {responseContent}");
-                    }
-                    else
-                    {
-                        MainWindow.Log($"[AmoCrmService] ✅ Заметка {noteType} успешно создана в лиде {leadId} (uniq={uniq})");
+                        return false;
                     }
                 }
                 finally
@@ -2409,20 +2891,22 @@ namespace Softphone
             catch (Exception ex)
             {
                 MainWindow.Log($"[AmoCrmService] Error adding call note to lead: {ex.Message}");
+                return false;
             }
         }
 
         /// <summary>
         /// Добавляет примечание типа call_in или call_out к контакту.
         /// Использует params.link для кнопок "Прослушать" и "Скачать" в AmoCRM.
+        /// Для недозвона: callResult/callStatus в params (подпись в карточке, см. Kommo /calls). При 400 — повтор без них.
         /// </summary>
-        private async Task AddCallNoteToContactAsync(long contactId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? audioFileLink = null, DateTime? callTime = null)
+        private async Task AddCallNoteToContactAsync(long contactId, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered, string? audioFileLink = null, DateTime? callTime = null, string? callResult = null, int? callStatus = null)
         {
             try
             {
-                if (!_currentUserId.HasValue)
+                if (!GetActingKommoUserId().HasValue)
                 {
-                    MainWindow.Log("[AmoCrmService] Current user ID not available, cannot create call note for contact");
+                    MainWindow.Log("[AmoCrmService] Kommo acting user ID not available, cannot create call note for contact");
                     return;
                 }
 
@@ -2446,42 +2930,62 @@ namespace Softphone
                     await RateLimitAsync();
 
                     string noteType = isIncoming ? "call_in" : "call_out";
-                    var callParams = new JObject
+
+                    bool tryCallResultInParams = !string.IsNullOrEmpty(callResult);
+                    while (true)
                     {
-                        ["uniq"] = uniq,
-                        ["duration"] = durationSeconds,
-                        ["source"] = "Callspire",
-                        ["phone"] = phoneNumber
-                    };
+                        var callParams = new JObject
+                        {
+                            ["uniq"] = uniq,
+                            ["duration"] = durationSeconds,
+                            ["source"] = "Callspire",
+                            ["phone"] = phoneNumber
+                        };
 
-                    if (!string.IsNullOrEmpty(audioFileLink))
-                    {
-                        callParams["link"] = audioFileLink;
-                    }
+                        if (!string.IsNullOrEmpty(audioFileLink))
+                        {
+                            callParams["link"] = audioFileLink;
+                        }
 
-                    var noteObject = new JObject
-                    {
-                        ["note_type"] = noteType,
-                        ["created_by"] = _currentUserId.Value,
-                        ["responsible_user_id"] = _currentUserId.Value,
-                        ["params"] = callParams
-                    };
+                        if (tryCallResultInParams)
+                        {
+                            callParams["call_result"] = callResult!;
+                            if (callStatus.HasValue)
+                                callParams["call_status"] = callStatus.Value;
+                        }
 
-                    var notesArray = new JArray { noteObject };
-                    string json = notesArray.ToString(Formatting.None);
-                    var content = new StringContent(json, Encoding.UTF8, "application/json");
+                        var noteObject = new JObject
+                        {
+                            ["note_type"] = noteType,
+                            ["created_by"] = GetActingKommoUserId()!.Value,
+                            ["responsible_user_id"] = GetActingKommoUserId()!.Value,
+                            ["params"] = callParams
+                        };
 
-                    string apiUrl = $"{GetApiBaseUrl()}/contacts/{contactId}/notes";
-                    var response = await _httpClient.PostAsync(apiUrl, content);
-                    string responseContent = await response.Content.ReadAsStringAsync();
+                        var notesArray = new JArray { noteObject };
+                        string json = notesArray.ToString(Formatting.None);
+                        var content = new StringContent(json, Encoding.UTF8, "application/json");
 
-                    if (!response.IsSuccessStatusCode)
-                    {
+                        string apiUrl = $"{GetApiBaseUrl()}/contacts/{contactId}/notes";
+                        MainWindow.Log($"[AmoCrmService] POST contact notes (call_result in params={(tryCallResultInParams ? "yes" : "no")})");
+                        var response = await _httpClient.PostAsync(apiUrl, content);
+                        string responseContent = await response.Content.ReadAsStringAsync();
+
+                        if (response.IsSuccessStatusCode)
+                        {
+                            MainWindow.Log($"[AmoCrmService] Successfully added {noteType} note to contact {contactId} (uniq={uniq})");
+                            break;
+                        }
+
+                        if (tryCallResultInParams && response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                        {
+                            MainWindow.Log($"[AmoCrmService] ⚠️ contact call note with call_result rejected: {response.StatusCode} - {responseContent}. Retrying without call_result/call_status.");
+                            tryCallResultInParams = false;
+                            continue;
+                        }
+
                         MainWindow.Log($"[AmoCrmService] Failed to add call note to contact: {response.StatusCode} - {responseContent}");
-                    }
-                    else
-                    {
-                        MainWindow.Log($"[AmoCrmService] Successfully added {noteType} note to contact {contactId} (uniq={uniq})");
+                        break;
                     }
                 }
                 finally
@@ -2501,6 +3005,55 @@ namespace Softphone
         #region File Upload
 
         /// <summary>
+        /// If the requested path is missing or empty, try same basename with other audio extensions in the same folder (WebRTC may finalize as .webm/.mp3 while Amo job still references .wav).
+        /// </summary>
+        private static string? ResolveExistingRecordingPath(string? audioFilePath)
+        {
+            if (string.IsNullOrEmpty(audioFilePath))
+                return audioFilePath;
+
+            try
+            {
+                if (File.Exists(audioFilePath))
+                {
+                    var fi = new FileInfo(audioFilePath);
+                    if (fi.Length > 0)
+                        return audioFilePath;
+                }
+
+                var dir = Path.GetDirectoryName(audioFilePath);
+                var stem = Path.GetFileNameWithoutExtension(audioFilePath);
+                if (string.IsNullOrEmpty(dir) || string.IsNullOrEmpty(stem) || !Directory.Exists(dir))
+                    return audioFilePath;
+
+                foreach (var ext in new[] { ".wav", ".webm", ".mp3", ".m4a" })
+                {
+                    var candidate = Path.Combine(dir, stem + ext);
+                    if (!File.Exists(candidate))
+                        continue;
+                    try
+                    {
+                        if (new FileInfo(candidate).Length > 0)
+                            return candidate;
+                    }
+                    catch { /* ignore */ }
+                }
+
+                // SIP: WAV missing but orphan *_inbound.pcm / *_outbound.pcm left after skipped StopCallRecording.
+                if (RtpCallRecorder.TryRecoverWavFromOrphanPcm(audioFilePath)
+                    && File.Exists(audioFilePath)
+                    && new FileInfo(audioFilePath).Length > 0)
+                {
+                    MainWindow.Log($"[AmoCrmService] Recovered SIP recording from orphan PCM: {Path.GetFileName(audioFilePath)}");
+                    return audioFilePath;
+                }
+            }
+            catch { /* ignore */ }
+
+            return audioFilePath;
+        }
+
+        /// <summary>
         /// Прикрепляет файл записи к лиду. Ждёт до 30 секунд, пока файл появится на диске.
         /// </summary>
         private async Task<string?> AttachFilesToLeadAsync(long leadId, string? audioFilePath)
@@ -2510,6 +3063,8 @@ namespace Softphone
                 MainWindow.Log($"[AmoCrmService] AttachFilesToLeadAsync: audioFilePath is null or empty");
                 return null;
             }
+
+            audioFilePath = ResolveExistingRecordingPath(audioFilePath);
 
             // Ждем файл до 30 секунд (запись может конвертироваться асинхронно)
             int maxAttempts = 30;
@@ -2562,6 +3117,8 @@ namespace Softphone
                 return null;
             }
 
+            audioFilePath = ResolveExistingRecordingPath(audioFilePath);
+
             int maxAttempts = 30;
             int attempt = 0;
             while (attempt < maxAttempts && !File.Exists(audioFilePath))
@@ -2596,7 +3153,7 @@ namespace Softphone
         /// <summary>
         /// Публичный метод для ручной загрузки файла записи к лиду
         /// </summary>
-        public async Task<bool> ManuallyUploadRecordingToLeadAsync(long leadId, string filePath, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false)
+        public async Task<bool> ManuallyUploadRecordingToLeadAsync(long leadId, string filePath, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callFromLabel = null)
         {
             try
             {
@@ -2619,7 +3176,8 @@ namespace Softphone
                 {
                     MainWindow.Log($"[AmoCrmService] ✅ File uploaded successfully, download link: {downloadLink}");
                     MainWindow.Log($"[AmoCrmService] Adding call note ({(isIncoming ? "call_in" : "call_out")}) with file link...");
-                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, null);
+                    var noteResult = GetCallNoteResultParams(isMissedCall: false, callFromLabel);
+                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, null, noteResult.callResult, noteResult.callStatus);
                     MainWindow.Log($"[AmoCrmService] ✅ Successfully uploaded recording and created call note for lead {leadId}");
 
                     return true;
@@ -2638,10 +3196,9 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Публичный метод для ручного создания карточки недозвона (без записи).
-        /// Создаёт карточку звонка call_in/call_out с duration=0, чтобы AmoCRM фиксировала как проделанную работу.
+        /// Создаёт одну карточку недозвона: заметку call_in/call_out на лиде (без /calls — иначе дубликат в ленте).
         /// </summary>
-        public async Task<bool> ManuallyUploadMissedCallToLeadAsync(long leadId, string phoneNumber, bool isIncoming)
+        public async Task<bool> ManuallyUploadMissedCallToLeadAsync(long leadId, string phoneNumber, bool isIncoming, DateTime? callTime = null, string? outboundCallerId = null)
         {
             try
             {
@@ -2651,17 +3208,91 @@ namespace Softphone
                     return false;
                 }
 
-                MainWindow.Log($"[AmoCrmService] Manual upload: creating missed call card (call_in/call_out, duration=0) for lead {leadId}, phone={phoneNumber}");
+                MainWindow.Log($"[AmoCrmService] Manual upload: missed call for lead {leadId}, phone={phoneNumber}");
 
-                await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, 0, false, null, null);
+                var missedResult = GetCallNoteResultParams(isMissedCall: true, outboundCallerId);
+                bool noteCreated = await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, 0, false, null, callTime, missedResult.callResult, missedResult.callStatus);
 
-                MainWindow.Log($"[AmoCrmService] ✅ Successfully created missed call card for lead {leadId}");
+                if (noteCreated)
+                {
+                    MainWindow.Log($"[AmoCrmService] ✅ Successfully created missed call card for lead {leadId}");
+                    return true;
+                }
 
-                return true;
+                MainWindow.Log($"[AmoCrmService] ❌ Failed to create missed call note for lead {leadId}");
+                return false;
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[AmoCrmService] Error in manual missed call upload: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Ручная загрузка записи на контакт (нет открытой сделки) — файл + call_in/call_out.
+        /// </summary>
+        public async Task<bool> ManuallyUploadRecordingToContactAsync(long contactId, string filePath, string phoneNumber, bool isIncoming, int durationSeconds, bool wasAnswered = false, string? callFromLabel = null)
+        {
+            try
+            {
+                if (!IsInitialized)
+                {
+                    MainWindow.Log("[AmoCrmService] Service not initialized, cannot upload recording to contact");
+                    return false;
+                }
+
+                if (!File.Exists(filePath))
+                {
+                    MainWindow.Log($"[AmoCrmService] ⚠️ File does not exist: {Path.GetFileName(filePath)}");
+                    return false;
+                }
+
+                MainWindow.Log($"[AmoCrmService] Manual upload: recording to contact {contactId}: {Path.GetFileName(filePath)}");
+                string? downloadLink = await UploadFileToContactAsync(contactId, filePath);
+
+                if (!string.IsNullOrEmpty(downloadLink))
+                {
+                    var noteResult = GetCallNoteResultParams(isMissedCall: false, callFromLabel);
+                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, downloadLink, null, noteResult.callResult, noteResult.callStatus);
+                    MainWindow.Log($"[AmoCrmService] ✅ Recording and call note created for contact {contactId}");
+                    return true;
+                }
+
+                MainWindow.Log($"[AmoCrmService] ❌ Failed to upload recording to contact {contactId}");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[AmoCrmService] Error in manual contact upload: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Ручная карточка недозвона на контакт — заметка call_in/call_out (без /calls — иначе дубликат).
+        /// </summary>
+        public async Task<bool> ManuallyUploadMissedCallToContactAsync(long contactId, string phoneNumber, bool isIncoming, DateTime? callTime = null, string? callFromLabel = null)
+        {
+            try
+            {
+                if (!IsInitialized)
+                {
+                    MainWindow.Log("[AmoCrmService] Service not initialized, cannot upload missed call to contact");
+                    return false;
+                }
+
+                MainWindow.Log($"[AmoCrmService] Manual upload: missed call for contact {contactId}, phone={phoneNumber}");
+
+                var missedResult = GetCallNoteResultParams(isMissedCall: true, callFromLabel);
+                await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, 0, false, null, callTime, missedResult.callResult, missedResult.callStatus);
+
+                MainWindow.Log($"[AmoCrmService] ✅ Missed call card created for contact {contactId}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[AmoCrmService] Error in manual missed call to contact: {ex.Message}");
                 return false;
             }
         }

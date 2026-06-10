@@ -27,6 +27,8 @@ namespace Softphone
         public string? Stack { get; set; } // Stack trace ошибки
         public object? Stats { get; set; }
         public JsonElement? Data { get; set; }
+        /// <summary>Слот подключения, для которого пришло событие ("main" | "secondary").</summary>
+        public string Slot { get; set; } = "main";
     }
 
     /// <summary>
@@ -339,6 +341,7 @@ namespace Softphone
             {
                 // Поддержка как анонимных объектов, так и Dictionary
                 string? cmdValue = null;
+                string slotValue = "main";
                 
                 if (command is Dictionary<string, object> dictCmd)
                 {
@@ -346,6 +349,10 @@ namespace Softphone
                     if (dictCmd.TryGetValue("cmd", out var cmdObj))
                     {
                         cmdValue = cmdObj?.ToString();
+                    }
+                    if (dictCmd.TryGetValue("slot", out var slotObj))
+                    {
+                        slotValue = slotObj?.ToString() ?? "main";
                     }
                 }
                 else
@@ -356,6 +363,11 @@ namespace Softphone
                     if (cmdProp != null)
                     {
                         cmdValue = cmdProp.GetValue(command)?.ToString();
+                    }
+                    var slotProp = cmdType.GetProperty("slot");
+                    if (slotProp != null)
+                    {
+                        slotValue = slotProp.GetValue(command)?.ToString() ?? "main";
                     }
                 }
                 
@@ -647,17 +659,26 @@ namespace Softphone
 
                 if (script != null)
                 {
+                    // Route to the correct iframe slot. For "main" the legacy
+                    // window.SoftphoneWebRtc.X pattern resolves through the index.html
+                    // property getter; for "secondary" we rewrite to the explicit router.
+                    if (!string.Equals(slotValue, "main", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var safeSlot = slotValue.Replace("'", "\\'");
+                        script = script.Replace("window.SoftphoneWebRtc.", $"window.Soft('{safeSlot}').");
+                    }
+
                     // Avoid log spam from watchdog heartbeat (ping/pong) and periodic stats polling.
                     // These run frequently and make the log window unusable.
                     bool isNoisyHeartbeat =
                         cmdValue == "ping" || cmdValue == "getStats" ||
-                        script.Contains("window.SoftphoneWebRtc.ping()", StringComparison.OrdinalIgnoreCase) ||
-                        script.Contains("window.SoftphoneWebRtc.getStats()", StringComparison.OrdinalIgnoreCase);
+                        script.Contains(".ping()", StringComparison.OrdinalIgnoreCase) ||
+                        script.Contains(".getStats()", StringComparison.OrdinalIgnoreCase);
 
                     // Never log initUA script: it includes credentials in JSON.
                     bool isSensitive =
                         cmdValue == "initUA" ||
-                        script.Contains("window.SoftphoneWebRtc.initUA(", StringComparison.OrdinalIgnoreCase);
+                        script.Contains(".initUA(", StringComparison.OrdinalIgnoreCase);
 
                     if (!isNoisyHeartbeat && !isSensitive)
                     {
@@ -834,12 +855,45 @@ namespace Softphone
     }
 
     /// <summary>
-    /// WebRTC сервис (singleton)
+    /// WebRTC сервис. Существует в двух экземплярах — по одному на слот подключения
+    /// ("main" / "secondary"). Оба используют один общий WebRtcEngineHost (один WebView2),
+    /// но команды и события маркируются полем slot, чтобы изолировать сессии.
     /// </summary>
     public sealed class WebRtcService : IWebRtcService
     {
-        public static WebRtcService Instance { get; } = new WebRtcService();
-        private WebRtcService() { }
+        /// <summary>Слот основного подключения.</summary>
+        public static WebRtcService Main { get; } = new WebRtcService("main");
+
+        /// <summary>Слот второго подключения.</summary>
+        public static WebRtcService Secondary { get; } = new WebRtcService("secondary");
+
+        /// <summary>
+        /// Получить сервис по имени слота ("main" | "secondary"). Для неизвестного слота возвращает Main.
+        /// </summary>
+        public static WebRtcService GetSlot(string slot)
+        {
+            return string.Equals(slot, "secondary", StringComparison.OrdinalIgnoreCase) ? Secondary : Main;
+        }
+
+        /// <summary>
+        /// Перебор обоих слотов (для broadcast-операций вроде shutdown).
+        /// </summary>
+        public static IEnumerable<WebRtcService> AllSlots
+        {
+            get { yield return Main; yield return Secondary; }
+        }
+
+        /// <summary>
+        /// Legacy-алиас для обратной совместимости. Возвращает сервис основного слота.
+        /// </summary>
+        [Obsolete("Используйте WebRtcService.Main или WebRtcService.GetSlot(...).")]
+        public static WebRtcService Instance => Main;
+
+        /// <summary>Идентификатор слота этого экземпляра ("main" | "secondary").</summary>
+        public string Slot => _slot;
+
+        private readonly string _slot;
+        private WebRtcService(string slot) { _slot = slot; }
 
         private WebRtcEngineHost? _engine;
         private readonly object _lock = new object();
@@ -863,6 +917,8 @@ namespace Softphone
         private DateTime _lastInitUaSentUtc = DateTime.MinValue;
         private bool _initialConnectionSafetyNetScheduled = false; // prevents multiple safety-net timers for initial connection
         private bool _wsConnectedAfterInitUa = false; // tracks if ws_connected arrived after last initUA
+        private bool _autoReconnectPaused = false;
+        private string? _autoReconnectPausedReason = null;
 
         private sealed class UaConfigSnapshot
         {
@@ -913,6 +969,7 @@ namespace Softphone
                 state = _state;
                 canAttempt =
                     AutoReconnectEnabled &&
+                    !_autoReconnectPaused &&
                     cfg != null &&
                     engine != null &&
                     !_isResetting &&
@@ -956,6 +1013,11 @@ namespace Softphone
 
             lock (_lock)
             {
+                if (_autoReconnectPaused)
+                {
+                    return;
+                }
+
                 if (DateTime.UtcNow < _suppressAutoReconnectUntilUtc)
                 {
                     // We are in a grace window right after initUA; ignore transient unregistered/disconnect events.
@@ -1020,6 +1082,44 @@ namespace Softphone
             }
         }
 
+        /// <summary>
+        /// Temporarily pauses auto-reconnect attempts (both scheduling and immediate tries).
+        /// Useful when the app is using SIP calls and WebRTC reconnect loops would just spam logs.
+        /// </summary>
+        public void PauseAutoReconnect(string reason)
+        {
+            lock (_lock)
+            {
+                if (_autoReconnectPaused) return;
+                _autoReconnectPaused = true;
+                _autoReconnectPausedReason = reason;
+                CancelScheduledReconnectLocked("pause");
+            }
+            MainWindow.Log($"[WebRtcService] AutoReconnect: paused (reason={reason})");
+        }
+
+        /// <summary>
+        /// Resumes auto-reconnect attempts. If we're not registered, we schedule a reconnect attempt.
+        /// </summary>
+        public void ResumeAutoReconnect(string reason)
+        {
+            bool shouldKick = false;
+            lock (_lock)
+            {
+                if (!_autoReconnectPaused) return;
+                _autoReconnectPaused = false;
+                _autoReconnectPausedReason = null;
+                shouldKick = AutoReconnectEnabled && !_registered && _engine != null && _lastUaConfig != null;
+            }
+            MainWindow.Log($"[WebRtcService] AutoReconnect: resumed (reason={reason})");
+
+            if (shouldKick)
+            {
+                // Small delay to avoid fighting with post-call UI teardown.
+                ScheduleReconnect("resume", immediate: false);
+            }
+        }
+
         // Асинхронная проверка активности звонка перед переподключением
         private async Task CheckCallActivityAndScheduleReconnect(string reason, bool immediate, WebRtcCallState state, string? activeSessionId, WebRtcEngineHost? engine)
         {
@@ -1030,7 +1130,7 @@ namespace Softphone
                 if (engine != null && engine.IsInitialized && !string.IsNullOrEmpty(activeSessionId))
                 {
                     // Используем SendAsync для проверки активности через новую команду
-                    var checkCommand = new { cmd = "checkCallActivity", sessionId = activeSessionId };
+                    var checkCommand = new { cmd = "checkCallActivity", sessionId = activeSessionId, slot = _slot };
                     
                     // Создаем TaskCompletionSource для получения результата
                     var tcs = new TaskCompletionSource<bool>();
@@ -1203,15 +1303,70 @@ namespace Softphone
                 }
             }
         }
+
+        /// <summary>
+        /// When true, the in-memory UA config matches these values and the UA is registered.
+        /// Settings "Test Connection" uses this to avoid a second JsSIP registration: many PBXs
+        /// reject a parallel REGISTER for the same extension with 401 Unauthorized.
+        /// </summary>
+        public bool MatchesActiveRegistration(string wsUri, string sipUri, string authUsername, string password)
+        {
+            lock (_lock)
+            {
+                if (!_registered || _lastUaConfig == null || _engine == null || !_engine.IsInitialized)
+                    return false;
+
+                static string NormWs(string? s) => SipEndpointHelper.NormalizeWebRtcWsUri(s?.Trim() ?? "");
+                static string NormSip(string? s) => (s ?? "").Trim();
+
+                if (!string.Equals(NormWs(wsUri), NormWs(_lastUaConfig.WsUri), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (!string.Equals(NormSip(sipUri), NormSip(_lastUaConfig.SipUri), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                if (!string.Equals((authUsername ?? "").Trim(), (_lastUaConfig.Username ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                return string.Equals(password ?? "", _lastUaConfig.Password ?? "", StringComparison.Ordinal);
+            }
+        }
         
         /// <summary>
-        /// Отправляет команду в JavaScript engine
+        /// Отправляет команду в JavaScript engine, авто-инжектируя slot этого сервиса.
         /// </summary>
         public async Task SendCommandAsync(object command)
         {
             if (_engine != null)
             {
-                await _engine.SendAsync(command);
+                await _engine.SendAsync(InjectSlot(command));
+            }
+        }
+
+        /// <summary>
+        /// Гарантирует, что в команду добавлен slot этого экземпляра.
+        /// Поскольку анонимные типы immutable, объект конвертируется в Dictionary при необходимости.
+        /// </summary>
+        private object InjectSlot(object command)
+        {
+            try
+            {
+                if (command is Dictionary<string, object> dict)
+                {
+                    if (!dict.ContainsKey("slot"))
+                    {
+                        dict["slot"] = _slot;
+                    }
+                    return dict;
+                }
+
+                // Анонимный объект: сериализуем -> десериализуем в Dictionary и добавляем slot
+                var json = System.Text.Json.JsonSerializer.Serialize(command);
+                var bag = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(json) ?? new Dictionary<string, object>();
+                bag["slot"] = _slot;
+                return bag;
+            }
+            catch
+            {
+                // В worst case вернём оригинал; engine.SendAsync обрабатывает оба формата.
+                return command;
             }
         }
 
@@ -1243,9 +1398,19 @@ namespace Softphone
         {
             lock (_lock)
             {
+                // Idempotent: if we're already attached to this host, just refresh the subscription
+                // to make sure no other code path accidentally double-registered OnEngineEvent.
+                // Double-registration would cause recording_chunk events to be processed twice and
+                // corrupt the recorded audio buffer.
+                if (_engine != null)
+                {
+                    try { _engine.EngineEvent -= OnEngineEvent; } catch { /* ignore */ }
+                }
+
                 _engine = engine;
+                _engine.EngineEvent -= OnEngineEvent; // defensive: no-op if not subscribed
                 _engine.EngineEvent += OnEngineEvent;
-                MainWindow.Log($"[WebRtcService] AttachEngine: engine attached, IsInitialized={engine.IsInitialized}");
+                MainWindow.Log($"[WebRtcService] AttachEngine: engine attached (slot={_slot}), IsInitialized={engine.IsInitialized}");
             }
         }
 
@@ -1318,13 +1483,30 @@ namespace Softphone
         {
             try
             {
+                var evt = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(json);
+
+                // Slot demultiplexing: phone.js tags every event with the iframe's slot.
+                // Each WebRtcService instance only processes events for its own slot.
+                // Events without slot are treated as "main" for backward compatibility.
+                if (evt.TryGetProperty("slot", out var slotEl) && slotEl.ValueKind == JsonValueKind.String)
+                {
+                    var eventSlot = slotEl.GetString() ?? "main";
+                    if (!string.Equals(eventSlot, _slot, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return; // Not for this slot.
+                    }
+                }
+                else if (!string.Equals(_slot, "main", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Untagged event reaches both subscribers — only the "main" slot consumes it.
+                    return;
+                }
+
                 // Any event from JS indicates the WebView2 runtime is alive (even if pong is missing).
                 lock (_lock)
                 {
                     _lastEngineEventUtc = DateTime.UtcNow;
                 }
-
-                var evt = System.Text.Json.JsonSerializer.Deserialize<JsonElement>(json);
                 
                 // Поддержка обоих форматов: type и cmd (для совместимости)
                 string? type = null;
@@ -1339,14 +1521,14 @@ namespace Softphone
                 
                 if (string.IsNullOrEmpty(type))
                 {
-                    MainWindow.Log($"[WebRtcService] OnEngineEvent: Event without type/cmd field: {json}");
+                    MainWindow.Log($"[WebRtcService][{_slot}] OnEngineEvent: Event without type/cmd field: {json}");
                     return;
                 }
                 
                 // Логируем только критичные события (без полного JSON)
                 if (type == "reg_failed" || type == "ua_registration_failed" || type == "error" || type == "ws_disconnected")
                 {
-                    MainWindow.Log($"[WebRtcService] Event: {type}");
+                    MainWindow.Log($"[WebRtcService][{_slot}] Event: {type}");
                 }
                 
                 // Обработка события js_log для логирования сообщений из JavaScript
@@ -1471,8 +1653,12 @@ namespace Softphone
                 var dto = new WebRtcEventDto
                 {
                     Type = type ?? "",
-                    SessionId = sessionId
+                    SessionId = sessionId,
+                    Slot = _slot
                 };
+
+                // When HandleIncomingCall rejects (already in call), subscribers must NOT run — otherwise UI opens a duplicate CallWindow.
+                bool suppressIncomingSubscriberDispatch = false;
 
                 lock (_lock)
                 {
@@ -1549,7 +1735,7 @@ namespace Softphone
                                     {
                                         if (currentEngine != null && currentEngine.IsInitialized && !string.IsNullOrEmpty(currentSessionId))
                                         {
-                                            var checkCommand = new { cmd = "checkCallActivity", sessionId = currentSessionId };
+                                            var checkCommand = new { cmd = "checkCallActivity", sessionId = currentSessionId, slot = _slot };
                                             await currentEngine.SendAsync(checkCommand);
                                             // Результат будет получен через событие call_activity_check
                                             // Пока что полагаемся на базовую проверку состояния
@@ -1616,7 +1802,7 @@ namespace Softphone
                             ScheduleReconnect("ws_disconnected", immediate: true);
                             break;
                         case "incoming":
-                            HandleIncomingCall(evt, sessionId, dto);
+                            suppressIncomingSubscriberDispatch = !HandleIncomingCall(evt, sessionId, dto);
                             break;
                         case "makeCall_started":
                             MainWindow.Log($"[WebRtcService] OnEngineEvent: makeCall started");
@@ -1768,7 +1954,8 @@ namespace Softphone
                                 {
                                     Type = "call_accepted",
                                     SessionId = sessionId ?? _activeSessionId,
-                                    Data = audioConnectedData
+                                    Data = audioConnectedData,
+                                    Slot = _slot
                                 };
                                 
                                 // Отправляем событие подписчикам
@@ -1789,6 +1976,17 @@ namespace Softphone
                                             }
                                         }
                                     }
+                                }
+                            }
+                            break;
+                        case "ice_connection_state_change":
+                            // Pass through ICE state changes so UI can decide when media is actually ready.
+                            if (string.IsNullOrEmpty(sessionId) && evt.TryGetProperty("data", out var iceDataEl) && iceDataEl.ValueKind == JsonValueKind.Object)
+                            {
+                                if (iceDataEl.TryGetProperty("sessionId", out var iceSessionIdEl))
+                                {
+                                    sessionId = GetAsString(iceSessionIdEl);
+                                    dto.SessionId = sessionId;
                                 }
                             }
                             break;
@@ -2043,6 +2241,9 @@ namespace Softphone
                     }
                 }
 
+                if (suppressIncomingSubscriberDispatch)
+                    return;
+
                 // Event handlers are user-code; one buggy subscriber must not prevent others from receiving critical events
                 // (e.g., CallWindow must always receive call_failed/call_ended to stop ringback and close).
                 var handlers = Event;
@@ -2078,12 +2279,13 @@ namespace Softphone
             }
         }
 
-        private void HandleIncomingCall(JsonElement evt, string? sessionId, WebRtcEventDto dto)
+        /// <returns>true if incoming was accepted and UI/subscribers should see this event; false if suppressed.</returns>
+        private bool HandleIncomingCall(JsonElement evt, string? sessionId, WebRtcEventDto dto)
         {
             if (string.IsNullOrEmpty(sessionId))
             {
                 MainWindow.Log("[WebRtcService] WARNING: Incoming call without sessionId, ignoring");
-                return;
+                return false;
             }
 
             // Дедуп
@@ -2093,7 +2295,7 @@ namespace Softphone
                 if (timeSinceLastCall.TotalMilliseconds < 1000)
                 {
                     MainWindow.Log($"[WebRtcService] Incoming call {sessionId} ignored (dedup)");
-                    return;
+                    return false;
                 }
             }
 
@@ -2110,11 +2312,12 @@ namespace Softphone
             }
 
             // КРИТИЧНО: Проверяем активный звонок и принудительно очищаем состояние Ringing/Connected если оно "зависло"
+            bool duplicatePhaseIncoming = false;
             lock (_lock)
             {
                 // Если состояние Ringing или Connected, но нет активной сессии - это "зависшее" состояние
                 // Очищаем его перед обработкой нового входящего звонка
-                if ((_state == WebRtcCallState.Ringing || _state == WebRtcCallState.Connected || _state == WebRtcCallState.Calling) 
+                if ((_state == WebRtcCallState.Ringing || _state == WebRtcCallState.Connected || _state == WebRtcCallState.Calling)
                     && string.IsNullOrEmpty(_activeSessionId) && string.IsNullOrEmpty(_ringingSessionId))
                 {
                     MainWindow.Log($"[WebRtcService] HandleIncomingCall: Clearing stuck state {_state} (no active session)");
@@ -2122,11 +2325,25 @@ namespace Softphone
                     _activeSessionId = null;
                     _ringingSessionId = null;
                 }
-                
+
                 if (_state != WebRtcCallState.Idle && _state != WebRtcCallState.Ended)
                 {
-                    MainWindow.Log($"[WebRtcService] Incoming call {sessionId} ignored (active call in state {_state})");
-                    return;
+                    // phone.js вызывает wireSessionEvents → шлёт new_session, затем отдельно шлёт incoming.
+                    // new_session уже перевёл нас в Ringing и заполнил session ids. Старый guard здесь отбрасывал
+                    // второе событие → подписчики не получали incoming → PBX Originate (автоответ) переставал работать.
+                    if (_state == WebRtcCallState.Ringing
+                        && !string.IsNullOrEmpty(_activeSessionId)
+                        && !string.IsNullOrEmpty(_ringingSessionId)
+                        && sessionId == _activeSessionId
+                        && sessionId == _ringingSessionId)
+                    {
+                        duplicatePhaseIncoming = true;
+                    }
+                    else
+                    {
+                        MainWindow.Log($"[WebRtcService] Incoming call {sessionId} ignored (active call in state {_state})");
+                        return false;
+                    }
                 }
             }
 
@@ -2139,9 +2356,12 @@ namespace Softphone
                 _incomingCallDedup.TryRemove(key, out _);
             }
 
-            _ringingSessionId = sessionId;
-            _activeSessionId = sessionId;
-            _state = WebRtcCallState.Ringing;
+            if (!duplicatePhaseIncoming)
+            {
+                _ringingSessionId = sessionId;
+                _activeSessionId = sessionId;
+                _state = WebRtcCallState.Ringing;
+            }
 
             // Извлекаем callerNumber
             if (evt.TryGetProperty("data", out var dataEl) && dataEl.ValueKind == JsonValueKind.Object)
@@ -2151,6 +2371,8 @@ namespace Softphone
                     dto.CallerNumber = GetAsString(callerEl);
                 }
             }
+
+            return true;
         }
 
         public async Task MakeCallAsync(string number)
@@ -2178,7 +2400,7 @@ namespace Softphone
                         {
                             try
                             {
-                                await _engine.SendAsync(new { cmd = "cleanupSessions" });
+                                await _engine.SendAsync(new { cmd = "cleanupSessions", slot = _slot });
                                 MainWindow.Log("[WebRtcService] MakeCallAsync: cleanupSessions command sent");
                             }
                             catch (Exception cleanupEx)
@@ -2212,7 +2434,7 @@ namespace Softphone
             {
                 try
                 {
-                    await _engine.SendAsync(new { cmd = "makeCall", number });
+                    await _engine.SendAsync(new { cmd = "makeCall", number, slot = _slot });
                     MainWindow.Log($"[WebRtcService] MakeCallAsync: Command sent successfully");
                 }
                 catch (Exception ex)
@@ -2268,7 +2490,7 @@ namespace Softphone
 
             if (_engine != null)
             {
-                await _engine.SendAsync(new { cmd = "answer" });
+                await _engine.SendAsync(new { cmd = "answer", slot = _slot });
                 MainWindow.Log($"[WebRtcService] AnswerAsync: Answer command sent");
             }
         }
@@ -2287,7 +2509,8 @@ namespace Softphone
                 var cmd = new Dictionary<string, object> 
                 { 
                     { "cmd", "setMute" },
-                    { "mute", mute }
+                    { "mute", mute },
+                    { "slot", _slot }
                 };
                 
                 // Логируем перед отправкой - ожидаем увидеть "Executing script" в WebRtcEngineHost
@@ -2315,7 +2538,8 @@ namespace Softphone
                 var cmd = new Dictionary<string, object> 
                 { 
                     { "cmd", "sendDtmf" },
-                    { "digit", digit.ToString() }
+                    { "digit", digit.ToString() },
+                    { "slot", _slot }
                 };
                 MainWindow.Log($"[WebRtcService] SendDTMFAsync: Sending DTMF command (digit='{digit}')");
 
@@ -2407,7 +2631,7 @@ namespace Softphone
                 Event += handler;
                 
                 // Отправляем команду
-                await _engine.SendAsync(new { cmd = "enumerateAudioDevices" });
+                await _engine.SendAsync(new { cmd = "enumerateAudioDevices", slot = _slot });
                 
                 // Ждем ответа с таймаутом 5 секунд
                 var timeoutTask = Task.Delay(5000);
@@ -2439,7 +2663,11 @@ namespace Softphone
 
             try
             {
-                var cmd = new Dictionary<string, object> { { "cmd", "switchAudioDevice" } };
+                var cmd = new Dictionary<string, object>
+                {
+                    { "cmd", "switchAudioDevice" },
+                    { "slot", _slot }
+                };
                 if (!string.IsNullOrEmpty(inputDeviceId))
                 {
                     cmd["inputDeviceId"] = inputDeviceId;
@@ -2480,7 +2708,7 @@ namespace Softphone
 
             if (_engine != null)
             {
-                await _engine.SendAsync(new { cmd = "hangup", sessionId });
+                await _engine.SendAsync(new { cmd = "hangup", sessionId, slot = _slot });
                 MainWindow.Log($"[WebRtcService] HangupAsync: Hangup command sent for session {sessionId ?? "null"}");
                 
                 // Сбрасываем состояние через небольшую задержку, если событие call_ended не придет
@@ -2514,6 +2742,32 @@ namespace Softphone
             }
         }
 
+        public Task NotifyOriginatePendingAsync(bool pending)
+        {
+            if (_engine == null || !_engine.IsInitialized)
+                return Task.CompletedTask;
+
+            var flag = pending ? "true" : "false";
+            return _engine.SendAsync(new Dictionary<string, object>
+            {
+                { "cmd", "executeScript" },
+                { "script", $"try{{window.SoftphoneWebRtc.setOriginatePending({flag});}}catch(e){{}}" }
+            });
+        }
+
+        public Task NotifyOriginateAcceptedAsync(string sessionId)
+        {
+            if (_engine == null || !_engine.IsInitialized)
+                return Task.CompletedTask;
+
+            var escaped = System.Text.Json.JsonSerializer.Serialize(sessionId);
+            return _engine.SendAsync(new Dictionary<string, object>
+            {
+                { "cmd", "executeScript" },
+                { "script", $"try{{window.SoftphoneWebRtc.setOriginateAcceptedSessionId({escaped});}}catch(e){{}}" }
+            });
+        }
+
         public async Task SetHoldAsync(bool hold, string? sessionId = null)
         {
             if (_engine == null || !_engine.IsInitialized)
@@ -2527,7 +2781,8 @@ namespace Softphone
             var cmd = new Dictionary<string, object>
             {
                 { "cmd", "setHold" },
-                { "hold", hold }
+                { "hold", hold },
+                { "slot", _slot }
             };
             if (!string.IsNullOrEmpty(sessionId))
             {
@@ -2567,7 +2822,7 @@ namespace Softphone
             {
                 if (_engine != null)
                 {
-                    await _engine.SendAsync(new { cmd = "resetEngine" });
+                    await _engine.SendAsync(new { cmd = "resetEngine", slot = _slot });
                 }
             }
             finally
@@ -2636,9 +2891,10 @@ namespace Softphone
                     }
                 }
 
-                MainWindow.Log($"[WebRtcService] ReinitializeUAAsync: Reinitializing UA with new credentials (user={username}, sipUri={sipUri}, debug={DebugEnabled})");
+                MainWindow.Log($"[WebRtcService] ReinitializeUAAsync: Reinitializing UA with new credentials (user={username}, sipUri={sipUri}, passLen={(string.IsNullOrEmpty(password) ? 0 : password.Length)}, debug={DebugEnabled})");
 
-                // Загружаем TURN‑параметры из настроек (если заданы)
+                // Загружаем TURN‑параметры из настроек (если заданы).
+                // TURN теперь хранится per-connection (MainWebRtcTurn*); legacy WebRtcTurn* оставлен для миграции.
                 string? turnServer = null;
                 string? turnUsername = null;
                 string? turnPassword = null;
@@ -2651,9 +2907,9 @@ namespace Softphone
                         var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
                         if (settings != null)
                         {
-                            turnServer = settings.WebRtcTurnUri;
-                            turnUsername = settings.WebRtcTurnUsername;
-                            turnPassword = settings.WebRtcTurnPassword;
+                            turnServer = settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri;
+                            turnUsername = settings.MainWebRtcTurnUsername ?? settings.WebRtcTurnUsername;
+                            turnPassword = TurnPasswordProvider.GetMainTurnPassword(settings);
                         }
                     }
                 }
@@ -2661,6 +2917,8 @@ namespace Softphone
                 {
                     // best‑effort: отсутствие TURN‑настроек не критично
                 }
+
+                MainWindow.Log($"[WebRtcService] ReinitializeUAAsync: TURN to initUA - server={(string.IsNullOrWhiteSpace(turnServer) ? "<none>" : turnServer)}, userSet={!string.IsNullOrWhiteSpace(turnUsername)}, passSet={!string.IsNullOrWhiteSpace(turnPassword)}");
 
                 await _engine.SendAsync(new
                 {
@@ -2672,7 +2930,8 @@ namespace Softphone
                     enableDebug = DebugEnabled,
                     turnServer,
                     turnUsername,
-                    turnPassword
+                    turnPassword,
+                    slot = _slot
                 });
                 MainWindow.Log("[WebRtcService] ReinitializeUAAsync: initUA command sent");
 
@@ -2687,8 +2946,11 @@ namespace Softphone
                             // If ws_connected didn't arrive after grace window, schedule reconnect
                             if (!_wsConnectedAfterInitUa && !_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected)
                             {
-                                MainWindow.Log("[WebRtcService] ReinitializeUAAsync: ws_connected did not arrive after grace window, scheduling reconnect");
-                                ScheduleReconnect("no_ws_connected_after_initua", immediate: false);
+                                if (!_autoReconnectPaused)
+                                {
+                                    MainWindow.Log("[WebRtcService] ReinitializeUAAsync: ws_connected did not arrive after grace window, scheduling reconnect");
+                                    ScheduleReconnect("no_ws_connected_after_initua", immediate: false);
+                                }
                             }
                         }
                     }
@@ -2709,8 +2971,11 @@ namespace Softphone
                                 // Only trigger if still not registered AND reconnect attempt is still 0 (no auto-reconnect happened)
                                 if (!_registered && _engine != null && !_isResetting && _state != WebRtcCallState.Connected && _reconnectAttempt == 0)
                                 {
-                                    MainWindow.Log("[WebRtcService] ReinitializeUAAsync: Initial connection safety-net triggered - no registration after 6s, scheduling reconnect");
-                                    ScheduleReconnect("initial_connection_safety_net", immediate: false);
+                                    if (!_autoReconnectPaused)
+                                    {
+                                        MainWindow.Log("[WebRtcService] ReinitializeUAAsync: Initial connection safety-net triggered - no registration after 6s, scheduling reconnect");
+                                        ScheduleReconnect("initial_connection_safety_net", immediate: false);
+                                    }
                                 }
                             }
                         }
@@ -2767,7 +3032,7 @@ namespace Softphone
                             if (engine == null || !engine.IsInitialized) return;
 
                             // Ping (SendAsync has its own timeout).
-                            await engine.SendAsync(new { cmd = "ping" });
+                            await engine.SendAsync(new { cmd = "ping", slot = _slot });
 
                             // Cooldown: don't spam reset if we're already resetting.
                             if (resetting || (DateTime.UtcNow - lastReset).TotalSeconds < 20) return;
@@ -2791,7 +3056,7 @@ namespace Softphone
                             // Request stats only during active calls.
                             if (state == WebRtcCallState.Connected)
                             {
-                                _ = engine.SendAsync(new { cmd = "getStats" });
+                                _ = engine.SendAsync(new { cmd = "getStats", slot = _slot });
                             }
                         }
                         catch (Exception ex)

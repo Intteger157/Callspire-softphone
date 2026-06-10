@@ -49,6 +49,10 @@ project.lock.json
 project.fragment.lock.json
 artifacts/
 
+# Ad-hoc compile verification output (dotnet build -o ...)
+_compile_verify_out*/
+_build_test_out/
+
 # Rider
 .idea/
 *.sln.iml
@@ -59,8 +63,14 @@ artifacts/
 # AmoCRM Widget - отдельный репозиторий
 amocrm-widget/
 
-# Callspire PBX Gateway — отдельный репозиторий (github.com/.../Callspire-PBX-Gateway)
-callspire-pbx-gateway/
+# Callspire PBX Gateway: интеграция веб-софтфона — в репо (см. callspire-pbx-gateway/README.md)
+callspire-pbx-gateway/.venv/
+
+# SpeexDSP sources — clone locally per native-aec/README.md
+native-aec/speexdsp/
+
+# Legacy path alias (if present)
+callspire-web-softphone/
 
 # Update server runtime data (installers + update.json)
 update-server/**/data/

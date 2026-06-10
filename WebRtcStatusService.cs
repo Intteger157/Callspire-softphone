@@ -103,17 +103,26 @@ namespace Softphone
             {
                 if (_sharedEnv != null) return _sharedEnv;
                 
+                // MUST differ from MainWindow's WebRTC WebView2 folder (…\WebView2). Two concurrent
+                // environments on the same user-data path deadlock or hang EnsureCoreWebView2Async.
                 var userData = Path.Combine(
                     AppDataHelper.GetAppDataPath(),
-                    "WebView2");
+                    "WebView2SettingsTest");
                 
                 Directory.CreateDirectory(userData);
-                MainWindow.Log($"[WebRTC] Creating shared WebView2 Environment in: {userData}");
+                MainWindow.Log($"[WebRTC] Creating Settings-test WebView2 Environment in: {userData}");
                 
-                // Используем CreateAsync с опциями для ускорения инициализации
-                var options = new CoreWebView2EnvironmentOptions();
+                // WebRTC in Chromium/WebView2 can pick VPN/virtual interfaces (e.g. 198.18.0.0/15),
+                // which breaks TURN allocation/connection (no relay candidates) and causes initial IVR audio loss.
+                // These flags reduce that by limiting which interfaces are exposed/used by WebRTC.
+                var options = new CoreWebView2EnvironmentOptions
+                {
+                    AdditionalBrowserArguments =
+                        "--force-webrtc-ip-handling-policy=default_public_interface_only " +
+                        "--webrtc-ip-handling-policy=default_public_interface_only"
+                };
                 _sharedEnv = await CoreWebView2Environment.CreateAsync(null, userData, options);
-                MainWindow.Log("[WebRTC] Shared WebView2 Environment created successfully");
+                MainWindow.Log("[WebRTC] Settings-test WebView2 Environment created successfully");
                 
                 return _sharedEnv;
             }
@@ -529,7 +538,9 @@ namespace Softphone
                     CoreWebView2HostResourceAccessKind.Allow);
                 
                 _navigationStartTime = DateTime.Now;
-                _webView.Source = new Uri("https://softphone.local/index.html");
+                // WebRtcStatusService runs an isolated test session, so it loads the slot
+                // page directly (bypassing the multi-slot index.html iframe container).
+                _webView.Source = new Uri("https://softphone.local/slot.html?slot=test");
                 MainWindow.Log("[WebRTC] Loading WebRTC client page...");
             }
             else

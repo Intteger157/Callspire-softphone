@@ -10,6 +10,7 @@ namespace Softphone
     public partial class LeadSelectionWindow : Window
     {
         public long? SelectedLeadId { get; private set; }
+        public bool RecordingUploadedInDialog { get; private set; }
         private string? _amoCrmSubdomain;
         private bool _showFirstLeadOnly; // Режим показа только первого лида
         private string? _phoneNumber;
@@ -151,6 +152,10 @@ namespace Softphone
                         return;
                     }
 
+                    string? callFromLabel = (!_isIncoming && _callTime.HasValue && !string.IsNullOrEmpty(_phoneNumber))
+                        ? AmoCallFromLabelResolver.ResolveFromHistory(_phoneNumber, _callTime.Value)
+                        : null;
+
                     // Upload recording to selected lead
                     bool success = await amoCrmService.ManuallyUploadRecordingToLeadAsync(
                         selectedLead.Id,
@@ -158,11 +163,13 @@ namespace Softphone
                         _phoneNumber,
                         _isIncoming,
                         _durationSeconds,
-                        _wasAnswered);
+                        _wasAnswered,
+                        callFromLabel);
 
                     if (success)
                     {
                         SelectedLeadId = selectedLead.Id;
+                        RecordingUploadedInDialog = true;
                         CustomMessageBox.Show(
                             $"Recording file successfully uploaded to AmoCRM lead {selectedLead.Id}.",
                             "Upload Successful",
@@ -222,27 +229,14 @@ namespace Softphone
                 try
                 {
                     string subdomain = _amoCrmSubdomain ?? "mdkb"; // Fallback to default
-                    string baseUrl;
-                    
-                    // Обрабатываем разные форматы subdomain
-                    if (subdomain.Contains("."))
+                    string? baseUrl = AmoCrmAccountUrl.TryBuildWebBaseUrl(subdomain);
+                    if (string.IsNullOrEmpty(baseUrl))
                     {
-                        // Полный домен (например, mdkb.amocrm.com)
-                        if (subdomain.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
-                            subdomain.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-                        {
-                            baseUrl = subdomain;
-                        }
-                        else
-                        {
-                            baseUrl = $"https://{subdomain}";
-                        }
+                        var mainWindow = Application.Current.MainWindow as MainWindow;
+                        baseUrl = mainWindow?.GetAmoCrmService()?.GetAccountWebBaseUrl();
                     }
-                    else
-                    {
-                        // Только поддомен (например, mdkb) — используем amocrm.com
-                        baseUrl = $"https://{subdomain}.amocrm.com";
-                    }
+                    if (string.IsNullOrEmpty(baseUrl))
+                        return;
                     
                     string url = $"{baseUrl.TrimEnd('/')}/leads/detail/{leadId}";
                     Process.Start(new ProcessStartInfo

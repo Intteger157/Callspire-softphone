@@ -4,7 +4,6 @@
         xmlns:ic="clr-namespace:FluentIcons.Wpf;assembly=FluentIcons.Wpf"
         Title="Message" 
         SizeToContent="WidthAndHeight"
-        MinHeight="200"
         MinWidth="400"
         MaxHeight="800"
         MaxWidth="900"
@@ -16,12 +15,73 @@
         ShowInTaskbar="False"
         SnapsToDevicePixels="True"
         UseLayoutRounding="True">
-    <!-- WindowChrome не нужен для AllowsTransparency="True" -->
-    
-    <!-- Theme dictionaries are provided by App.xaml (System/Dark/Light). -->
-    
-    <!-- Фоновый Grid заполняет все окно полностью, чтобы скрыть серые углы -->
-    <!-- Тень убрана, чтобы избежать артефактов в углах -->
+
+    <Window.Resources>
+        <Style x:Key="DialogPrimaryButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="MinWidth" Value="80"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Background" Value="{DynamicResource AccentBlueBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#4752C4"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" Value="#3A45C1"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="DialogSecondaryButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="32"/>
+            <Setter Property="MinWidth" Value="80"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="Background" Value="{DynamicResource BackgroundMediumBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+
     <Grid Background="{DynamicResource DialogBackgroundBrush}" Margin="0">
         <Grid SnapsToDevicePixels="True" UseLayoutRounding="True">
             <Border x:Name="WindowSurface"
@@ -32,17 +92,15 @@
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- Title Bar -->
                     <Border x:Name="TitleBarBorder"
                             Grid.Row="0"
                             Background="{DynamicResource DialogChromeBrush}" 
                             CornerRadius="8,8,0,0"
-                            ClipToBounds="False"
-                            Margin="0">
+                            ClipToBounds="False">
                         <Grid MouseDown="TitleBar_MouseDown">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
@@ -66,14 +124,12 @@
                         </Grid>
                     </Border>
 
-                    <!-- Content -->
-                    <Grid Grid.Row="1" Margin="20">
+                    <Grid Grid.Row="1" Margin="20,16,20,12">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*" MinWidth="300"/>
+                            <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         
-                        <!-- Icon (do not depend on system icon fonts; Win10 can miss Segoe Fluent Icons) -->
                         <ic:SymbolIcon Grid.Column="0"
                                        Name="IconSymbol"
                                        Symbol="Info"
@@ -82,83 +138,59 @@
                                        IconVariant="Regular"
                                        Foreground="{DynamicResource AccentBlueBrush}"
                                        VerticalAlignment="Top"
-                                       Margin="0,4,16,0"/>
+                                       Margin="0,2,12,0"/>
                         
-                        <!-- Message with ScrollViewer -->
-                        <ScrollViewer Grid.Column="1" 
-                                      VerticalScrollBarVisibility="Hidden"
-                                      HorizontalScrollBarVisibility="Disabled"
-                                      PanningMode="VerticalOnly"
-                                      Padding="0"
-                                      Margin="0"
-                                      MaxHeight="600">
-                            <TextBlock Name="MessageTextBlock"
-                                       Text="Message text" 
-                                       Foreground="{DynamicResource TextPrimaryBrush}" 
-                                       FontSize="14"
-                                       TextWrapping="Wrap"
-                                       VerticalAlignment="Top"
-                                       MinWidth="300"/>
-                        </ScrollViewer>
+                        <TextBlock Name="MessageTextBlock"
+                                   Grid.Column="1"
+                                   Text="Message text" 
+                                   Foreground="{DynamicResource TextPrimaryBrush}" 
+                                   FontSize="14"
+                                   TextWrapping="Wrap"
+                                   VerticalAlignment="Top"
+                                   MaxWidth="380"/>
                     </Grid>
 
-                    <!-- Buttons -->
                     <Border Grid.Row="2" 
                             Background="{DynamicResource DialogChromeBrush}" 
                             CornerRadius="0,0,8,8" 
-                            ClipToBounds="True">
-                        <Grid Margin="16,12">
+                            ClipToBounds="False"
+                            Padding="0,0,0,1">
+                        <Grid x:Name="ButtonsPanel" Margin="16,12,16,14">
                             <Button Name="OkButton"
-                                    Content="OK" 
-                                    Width="80"
-                                    Height="32"
-                                    Background="{DynamicResource AccentBlueBrush}"
-                                    Foreground="White"
-                                    BorderThickness="0"
-                                    FontSize="14"
-                                    FontWeight="SemiBold"
-                                    Cursor="Hand"
+                                    Content="OK"
+                                    Style="{StaticResource DialogPrimaryButtonStyle}"
                                     Click="OkButton_Click"
-                                    HorizontalAlignment="Right">
-                                <Button.Style>
-                                    <Style TargetType="Button">
-                                        <Setter Property="Template">
-                                            <Setter.Value>
-                                                <ControlTemplate TargetType="Button">
-                                                    <Border Background="{TemplateBinding Background}"
-                                                            CornerRadius="4"
-                                                            SnapsToDevicePixels="True">
-                                                        <ContentPresenter HorizontalAlignment="Center" 
-                                                                          VerticalAlignment="Center" 
-                                                                          Margin="16,8"/>
-                                                    </Border>
-                                                    <ControlTemplate.Triggers>
-                                                        <Trigger Property="IsMouseOver" Value="True">
-                                                            <Setter Property="Background" Value="#4752C4"/>
-                                                        </Trigger>
-                                                        <Trigger Property="IsPressed" Value="True">
-                                                            <Setter Property="Background" Value="#3A45C1"/>
-                                                        </Trigger>
-                                                    </ControlTemplate.Triggers>
-                                                </ControlTemplate>
-                                            </Setter.Value>
-                                        </Setter>
-                                    </Style>
-                                </Button.Style>
-                            </Button>
+                                    HorizontalAlignment="Right"/>
+
+                            <StackPanel x:Name="YesNoButtonsPanel"
+                                        Orientation="Horizontal"
+                                        HorizontalAlignment="Right"
+                                        Visibility="Collapsed">
+                                <Button x:Name="YesButton"
+                                        Content="Yes"
+                                        MinWidth="90"
+                                        Margin="0,0,8,0"
+                                        Style="{StaticResource DialogPrimaryButtonStyle}"
+                                        Click="YesButton_Click"/>
+                                <Button x:Name="NoButton"
+                                        Content="No"
+                                        MinWidth="80"
+                                        Style="{StaticResource DialogSecondaryButtonStyle}"
+                                        Click="NoButton_Click"/>
+                            </StackPanel>
                         </Grid>
                     </Border>
                 </Grid>
             </Border>
 
-            <!-- Border stroke overlay (no layout inset) -->
             <Border x:Name="WindowStroke"
                     Background="Transparent"
                     BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="1"
                     CornerRadius="8"
+                    SnapsToDevicePixels="True"
                     IsHitTestVisible="False"
-                    Visibility="Collapsed"/>
+                    Visibility="Visible"/>
         </Grid>
     </Grid>
 </Window>

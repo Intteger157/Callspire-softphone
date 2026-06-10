@@ -125,6 +125,11 @@ namespace Softphone
         {
             try
             {
+                // Win10 needs an explicit 1px stroke for window separation.
+                // On Win11 we prefer native DWM chrome (mica + shadow) and keep the WPF stroke hidden
+                // to avoid double borders.
+                TrySetWindowStrokeVisibility(window, visible: !IsWindows11OrGreater());
+
                 if (IsWindows11OrGreater())
                 {
                     // Win11: все окна непрозрачные для единообразия
@@ -161,6 +166,21 @@ namespace Softphone
                         }
                         catch { }
                     }
+                }
+            }
+            catch
+            {
+                // best-effort
+            }
+        }
+
+        private static void TrySetWindowStrokeVisibility(Window window, bool visible)
+        {
+            try
+            {
+                if (window.FindName("WindowStroke") is Border stroke)
+                {
+                    stroke.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
                 }
             }
             catch

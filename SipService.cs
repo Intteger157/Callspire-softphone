@@ -2,7 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Linq;
-using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
@@ -17,6 +18,9 @@ using SIPSorceryMedia.Windows;
 using SIPSorceryMedia.Abstractions;
 using Newtonsoft.Json;
 using NAudio.CoreAudioApi;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
+using System.Net;
 
 namespace Softphone
 {
@@ -32,6 +36,14 @@ namespace Softphone
         
         // Флаг для вторичного подключения (не проверяет WebRTC, всегда работает через SIP)
         private readonly bool _isSecondaryConnection;
+
+        // SIP signalling transport: UDP vs TLS
+        private readonly bool _useTls;
+
+        // SIP media security: RTP vs SRTP (SDES)
+        private readonly bool _useSrtp;
+
+        // SRTP (SDES) is handled natively by SIPSorcery when enabled (see EnableNativeSrtp).
         
         // Кэшированный локальный IP адрес (выбирается один раз при инициализации)
         private string? _cachedLocalIPAddress;
@@ -56,8 +68,37 @@ namespace Softphone
         private Task<bool>? _activeCallTask; // Задача активного звонка для возможности отмены
         private System.Threading.CancellationTokenSource? _callCancellationTokenSource; // Для отмены звонка
         private bool _isCallCancelled = false; // Флаг отмены звонка пользователем (чтобы не воспроизводить гудки для последующих ответов)
+        private volatile bool _outgoingInviteTerminated; // 487 / CANCEL confirmed — block late 200 OK from starting a new recorder
         private bool _isCallRejected = false; // Флаг отклонения входящего звонка (чтобы не начинать запись)
+        private System.Threading.CancellationTokenSource? _earlyMediaRingbackFallbackCts; // 183 w/ SDP but no RTP yet → start local ringback
+        // Outgoing INVITE tracking: we must bind "final response" to a specific Call-ID,
+        // otherwise parallel INVITEs (401 auth retry, number-format retry) can stomp each other
+        // and prematurely close the call UI while signalling continues.
+        private readonly object _outgoingInviteLock = new();
+        private TaskCompletionSource<int>? _pendingOutgoingInviteFinalResponseTcs;
+        private TaskCompletionSource<string>? _pendingOutgoingInviteCallIdTcs;
+        private readonly Dictionary<string, TaskCompletionSource<int>> _outgoingInviteFinalByCallId = new(StringComparer.OrdinalIgnoreCase);
+        private string? _currentOutgoingAttemptId;
+        private string? _currentOutgoingDialNumber;
+        private string? _currentOutgoingCallId;
+
+        private void TrySignalOutgoingInviteFinal(string? callId, int statusCode)
+        {
+            if (string.IsNullOrWhiteSpace(callId)) return;
+            TaskCompletionSource<int>? tcs = null;
+            lock (_outgoingInviteLock)
+            {
+                _outgoingInviteFinalByCallId.TryGetValue(callId, out tcs);
+            }
+            try { tcs?.TrySetResult(statusCode); } catch { }
+        }
         // NOTE: SIP call recording is disabled. Recording is supported for WebRTC calls only.
+
+        // Registration/call recovery helpers (primarily for secondary SIP trunks).
+        private readonly object _registrationLock = new object();
+        private TaskCompletionSource<bool>? _registrationTcs;
+        private int? _lastInviteFailureStatusCode;
+        private DateTime _lastInvite403AtUtc = DateTime.MinValue;
         
         /// <summary>
         /// Создает ToneGenerator при первом использовании (ленивая инициализация)
@@ -68,6 +109,47 @@ namespace Softphone
             {
                 _toneGenerator = new ToneGenerator();
             }
+        }
+
+        private void ScheduleRingbackFallbackAfter183(string timestamp)
+        {
+            // If we got 183 with SDP, some carriers provide early media (RTP ringback).
+            // But if RTP never arrives, user hears silence. In that case we start local ringback
+            // after a short grace period, and stop it as soon as RTP arrives / call is answered / cancelled.
+            try { _earlyMediaRingbackFallbackCts?.Cancel(); } catch { }
+            try { _earlyMediaRingbackFallbackCts?.Dispose(); } catch { }
+            _earlyMediaRingbackFallbackCts = new System.Threading.CancellationTokenSource();
+            var token = _earlyMediaRingbackFallbackCts.Token;
+
+            _ = System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    await System.Threading.Tasks.Task.Delay(1800, token);
+                    if (token.IsCancellationRequested) return;
+
+                    // If we already have real early media audio, do nothing.
+                    if (_earlyMediaAudioDetected) return;
+
+                    // If RTP is already flowing (even comfort-noise / near-silent early media),
+                    // do not start local ringback. Carriers often send quiet CN first, then real ringback;
+                    // overlaying ToneGenerator here correlates with one-way-audio after answer (181 / multi-183).
+                    if (System.Threading.Volatile.Read(ref _rtpPacketsReceived) > 0) return;
+
+                    if (_isCallCancelled) return;
+
+                    // Only start ringback if we're still in a "setting up call" state.
+                    if (_userAgent?.IsCallActive == true) return; // already connected (or at least active)
+                    if (_voipMediaSession == null) return;
+
+                    EnsureToneGenerator();
+                    _toneGenerator?.PlayRingbackTone();
+                    _localRingbackFallbackActive = true;
+                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}{timestamp} 183 received but early media is silent — starting local ringback fallback.");
+                }
+                catch (OperationCanceledException) { }
+                catch { }
+            });
         }
         
         // Информация о входящем звонке
@@ -108,6 +190,15 @@ namespace Softphone
 
         public bool IsRegistered { get; private set; }
         public bool IsInCall => _userAgent?.IsCallActive == true;
+
+        /// <summary>
+        /// True while media/ringback is being set up or torn down — avoid disposing the whole stack (e.g. periodic trunk refresh).
+        /// </summary>
+        public bool IsOccupiedForStackRefresh =>
+            (_userAgent?.IsCallActive == true) ||
+            _voipMediaSession != null ||
+            _toneGenerator != null;
+
         public bool IsMuted { get; private set; }
         public bool IsOnHold { get; private set; }
 
@@ -128,12 +219,66 @@ namespace Softphone
                 }
             }
         }
+
+        /// <summary>
+        /// Returns true once after a SIP recording stop that produced no WAV file, then clears the latch.
+        /// CallWindow uses empty <see cref="CallHistoryService.UpdateCallDetails"/> path to drop stale placeholders.
+        /// </summary>
+        public bool TryConsumeSipRecordingWithNoOutputFile()
+        {
+            lock (_recorderLock)
+            {
+                if (!_sipRecordingStopHadNoOutputFile) return false;
+                _sipRecordingStopHadNoOutputFile = false;
+                return true;
+            }
+        }
+
+        /// <summary>Stops active SIP RTP recording and finalizes WAV if a recorder is running.</summary>
+        public void FinalizeCallRecordingIfActive()
+        {
+            StopCallRecording();
+        }
+
+        /// <summary>Waits for in-flight SIP recording finalize and attempts orphan PCM recovery.</summary>
+        public async Task FinalizeCallRecordingIfActiveAsync(int waitMs = 90000)
+        {
+            StopCallRecording();
+            Task? task;
+            lock (_recorderLock)
+            {
+                task = _recordingFinalizeTask;
+            }
+            if (task != null)
+            {
+                try
+                {
+                    await Task.WhenAny(task, Task.Delay(waitMs)).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}FinalizeCallRecordingIfActiveAsync wait: {ex.Message}");
+                }
+            }
+
+            string? path;
+            lock (_recorderLock)
+            {
+                path = _lastRecordingFilePath;
+            }
+            if (!string.IsNullOrEmpty(path) && (!File.Exists(path) || new FileInfo(path).Length == 0))
+            {
+                if (RtpCallRecorder.TryRecoverWavFromOrphanPcm(path))
+                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}Recovered WAV from orphan PCM: {path}");
+            }
+        }
         
         // RTP call recorder для записи SIP звонков
         // Используем lock для защиты от race conditions при множественных звонках
         private RtpCallRecorder? _rtpCallRecorder;
         private readonly object _recorderLock = new object();
         private bool _isStoppingRecording = false; // Флаг для предотвращения множественных вызовов StopCallRecording
+        private Task? _recordingFinalizeTask;
         
         // Filtering audio sink - prevents DTMF/CN packets from being decoded as audio
         private FilteringAudioSink? _filteringAudioSink;
@@ -144,6 +289,8 @@ namespace Softphone
         private int _rtpLastSequenceNumber = -1;
         private Dictionary<int, int> _rtpPayloadTypeCounts = new Dictionary<int, int>();
         private int _rtpNegotiatedPayloadType = -1; // Payload type из согласованного кодека
+        private volatile bool _earlyMediaAudioDetected = false; // True once we see non-silent early media (ringback/IVR)
+        private volatile bool _localRingbackFallbackActive = false;
         private System.Threading.Timer? _rtpStatsTimer;
         private DateTime _rtpStatsStartTime;
         private long _rtpTotalBytesReceived;
@@ -160,6 +307,8 @@ namespace Softphone
         private string? _lastCalledNumber; // Сохраняем номер последнего вызова для записи после 200 OK
         // Последний путь к файлу записи (сохраняем его даже после Dispose рекордера).
         private string? _lastRecordingFilePath;
+        /// <summary>After the last StopCallRecording, SIP recorder had no output WAV on disk (consumed by CallWindow).</summary>
+        private bool _sipRecordingStopHadNoOutputFile;
         
         /// <summary>
         /// Отправляет DTMF-тон во время активного звонка.
@@ -218,10 +367,242 @@ namespace Softphone
         private int _audioSampleRate = 8000;
         private int _audioBitrate = 64000;
 
-        public SipService(string username, string password, string server, int port = 5060, 
+        private static SIPRegistrationUserAgent CreateRegistrationUserAgent(
+            SIPTransport sipTransport,
+            string username,
+            string password,
+            string serverAddress,
+            string aorUri,
+            int expiry,
+            bool useTls)
+        {
+            // IMPORTANT:
+            // For UDP registrations the legacy ctor is the most reliable across SIPSorcery versions.
+            // Our reflection-based ctor selection can mis-map string parameters on some versions,
+            // resulting in an invalid Contact header (e.g., Contact becomes the server itself),
+            // which some providers reject with 403 without a 401 challenge.
+            if (!useTls)
+            {
+                var legacyUdp = new SIPRegistrationUserAgent(sipTransport, username, password, serverAddress, expiry: expiry);
+                try
+                {
+                    MainWindow.Log($"[SipService] CreateRegistrationUserAgent: using legacy ctor for UDP (useTls={useTls}, aor='{aorUri}', serverAddress='{serverAddress}')");
+                }
+                catch { }
+                return legacyUdp;
+            }
+
+            try
+            {
+                var protocol = useTls ? SIPProtocolsEnum.tls : SIPProtocolsEnum.udp;
+
+                SIPURI? parsedAor = null;
+                try { parsedAor = SIPURI.ParseSIPURI(aorUri); } catch { }
+                SIPURI? parsedRegistrar = null;
+                try
+                {
+                    // Some providers reject REGISTER if the Request-URI becomes sip:registrar@host.
+                    // Prefer a domain-style registrar URI (sip:host[:port]) and only fall back to a dummy user
+                    // if the SIPURI parser is strict.
+                    var scheme = useTls ? "sips" : "sip";
+                    try
+                    {
+                        var registrarUriNoUser = $"{scheme}:{serverAddress}";
+                        parsedRegistrar = SIPURI.ParseSIPURI(registrarUriNoUser);
+                    }
+                    catch
+                    {
+                        // Fallback: strict parsers may require a user part.
+                        var registrarUriWithUser = $"{scheme}:registrar@{serverAddress}";
+                        parsedRegistrar = SIPURI.ParseSIPURI(registrarUriWithUser);
+                    }
+                }
+                catch { }
+
+                // Try to find a ctor that allows explicitly passing protocol and/or SIPURI (sips:).
+                // We avoid relying on parameter names; instead we map by parameter TYPES.
+                var ctors = typeof(SIPRegistrationUserAgent).GetConstructors()
+                    .OrderByDescending(c =>
+                    {
+                        var ps = c.GetParameters();
+                        // Strongly prefer overloads that allow explicit protocol.
+                        int score = 0;
+                        if (ps.Any(p => p.ParameterType == typeof(SIPProtocolsEnum))) score += 100;
+                        // Prefer overloads that accept SIPURI (so we can pass sips: AOR/registrar).
+                        score += ps.Count(p => p.ParameterType == typeof(SIPURI)) * 10;
+                        // Slightly prefer longer overloads (more control).
+                        score += ps.Length;
+                        return score;
+                    })
+                    .ToArray();
+
+                foreach (var ctor in ctors)
+                {
+                    var ps = ctor.GetParameters();
+
+                    // We only attempt constructors that at least start with SIPTransport.
+                    if (ps.Length < 4 || ps[0].ParameterType != typeof(SIPTransport))
+                        continue;
+
+                    // Prefer constructors that can accept SIPProtocolsEnum when TLS is requested.
+                    if (useTls && !ps.Any(p => p.ParameterType == typeof(SIPProtocolsEnum)) && !ps.Any(p => p.ParameterType == typeof(SIPURI)))
+                        continue;
+
+                    var args = new object?[ps.Length];
+                    int sipUriIndex = 0;
+                    int strIndex = 0;
+                    int intIndex = 0;
+                    for (int i = 0; i < ps.Length; i++)
+                    {
+                        var p = ps[i];
+
+                        if (i == 0) { args[i] = sipTransport; continue; }
+
+                        if (p.ParameterType == typeof(SIPProtocolsEnum)) { args[i] = protocol; continue; }
+
+                        if (p.ParameterType == typeof(SIPURI))
+                        {
+                            // Many overloads accept both AOR and Registrar as SIPURI.
+                            // Fill first SIPURI with AOR, second with Registrar (best-effort).
+                            if (sipUriIndex == 0) args[i] = parsedAor;
+                            else if (sipUriIndex == 1) args[i] = parsedRegistrar ?? parsedAor;
+                            else args[i] = parsedRegistrar ?? parsedAor;
+                            sipUriIndex++;
+                            continue;
+                        }
+
+                        if (p.ParameterType == typeof(string))
+                        {
+                            // Deterministic positional mapping for strings:
+                            // 0=username, 1=password, 2=serverAddress, 3=aorUri, others=serverAddress.
+                            args[i] = strIndex switch
+                            {
+                                0 => username,
+                                1 => password,
+                                2 => serverAddress,
+                                3 => aorUri,
+                                _ => serverAddress
+                            };
+                            strIndex++;
+                            continue;
+                        }
+
+                        if (p.ParameterType == typeof(int))
+                        {
+                            // Prefer mapping the first int to expiry (common for "expiry"/"expires").
+                            args[i] = intIndex == 0 ? expiry : expiry;
+                            intIndex++;
+                            continue;
+                        }
+
+                        args[i] = p.HasDefaultValue ? p.DefaultValue : null;
+                    }
+
+                    // If ctor expects SIPURI but we couldn't parse, skip it.
+                    if (ps.Any(p => p.ParameterType == typeof(SIPURI)) && parsedAor == null)
+                        continue;
+                    if (ps.Any(p => p.ParameterType == typeof(SIPURI)) && sipUriIndex >= 2 && parsedRegistrar == null)
+                    {
+                        // If it needs both AOR+Registrar as SIPURI, but registrar parse failed, skip.
+                        continue;
+                    }
+
+                    var ua = ctor.Invoke(args) as SIPRegistrationUserAgent;
+                    if (ua != null)
+                    {
+                        try
+                        {
+                            MainWindow.Log($"[SipService] CreateRegistrationUserAgent: selected ctor '{ctor}' (useTls={useTls}, aor='{aorUri}', registrar='{(parsedRegistrar?.ToString() ?? "<null>")}', protocol={protocol})");
+                        }
+                        catch { }
+                        // If we managed to select a rich ctor (with SIPEndPoint/SIPURI and/or protocol),
+                        // avoid "best-effort" forcing — it can clobber internal fields and create false "Could not resolve" noise.
+                        // Only force when we fall back to the legacy ctor.
+                        return ua;
+                    }
+                }
+            }
+            catch { }
+
+            // Fallback: legacy ctor without protocol.
+            var legacy = new SIPRegistrationUserAgent(sipTransport, username, password, serverAddress, expiry: expiry);
+            try
+            {
+                MainWindow.Log($"[SipService] CreateRegistrationUserAgent: using legacy ctor (useTls={useTls}, aor='{aorUri}', serverAddress='{serverAddress}')");
+                if (useTls)
+                {
+                    try
+                    {
+                        var all = typeof(SIPRegistrationUserAgent).GetConstructors();
+                        foreach (var c in all)
+                        {
+                            var ps = c.GetParameters();
+                            var sig = string.Join(", ", ps.Select(p => p.ParameterType.Name));
+                            MainWindow.Log($"[SipService] CreateRegistrationUserAgent: ctor candidate: ({sig})");
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            if (useTls)
+            {
+                TryForceRegistrationTransport(legacy, SIPProtocolsEnum.tls, aorUri, serverAddress);
+            }
+            return legacy;
+        }
+
+        private static void TryForceRegistrationTransport(
+            SIPRegistrationUserAgent regUa,
+            SIPProtocolsEnum protocol,
+            string aorUri,
+            string serverAddress)
+        {
+            try
+            {
+                int setCount = 0;
+
+                // 1) Set any writable properties of type SIPProtocolsEnum.
+                foreach (var prop in regUa.GetType().GetProperties(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    try
+                    {
+                        if (!prop.CanWrite) continue;
+                        if (prop.PropertyType != typeof(SIPProtocolsEnum)) continue;
+                        prop.SetValue(regUa, protocol);
+                        setCount++;
+                    }
+                    catch { }
+                }
+
+                // 2) Set any fields of type SIPProtocolsEnum.
+                foreach (var field in regUa.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+                {
+                    try
+                    {
+                        if (field.FieldType != typeof(SIPProtocolsEnum)) continue;
+                        field.SetValue(regUa, protocol);
+                        setCount++;
+                    }
+                    catch { }
+                }
+
+                // Keep forcing minimal: protocol enum only.
+                // Overwriting SIPURI/string fields can break internal resolution logic and produce false "Could not resolve" errors.
+                MainWindow.Log($"[SipService] CreateRegistrationUserAgent: forced TLS best-effort (protocol only, setOps={setCount})");
+            }
+            catch (Exception ex)
+            {
+                try { MainWindow.Log($"[SipService] CreateRegistrationUserAgent: force TLS failed: {ex.Message}"); } catch { }
+            }
+        }
+
+        public SipService(string username, string password, string server, int port = 5060,
             int? microphoneDeviceNumber = null, int? speakerDeviceNumber = null,
             string audioCodec = "PCMU", int audioSampleRate = 8000, int audioBitrate = 64000,
-            bool isSecondaryConnection = false)
+            bool isSecondaryConnection = false,
+            bool useTls = false,
+            bool useSrtp = false)
         {
             _username = username ?? throw new ArgumentNullException(nameof(username));
             _password = password ?? throw new ArgumentNullException(nameof(password));
@@ -233,8 +614,85 @@ namespace Softphone
             _audioSampleRate = audioSampleRate;
             _audioBitrate = audioBitrate;
             _isSecondaryConnection = isSecondaryConnection;
+            _useTls = useTls;
+            _useSrtp = useSrtp;
             _instanceHash = this.GetHashCode();
-            SetStatus($"SipService created, hash: {_instanceHash}, secondary: {_isSecondaryConnection}");
+            SetStatus($"SipService created, hash: {_instanceHash}, secondary: {_isSecondaryConnection}, tls: {_useTls}, srtp: {_useSrtp}");
+        }
+
+
+        private static bool IsPrivateIp(IPAddress ip)
+        {
+            if (ip.AddressFamily != AddressFamily.InterNetwork) return false;
+            var b = ip.GetAddressBytes();
+            // 10.0.0.0/8
+            if (b[0] == 10) return true;
+            // 172.16.0.0/12
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+            // 192.168.0.0/16
+            if (b[0] == 192 && b[1] == 168) return true;
+            // 100.64.0.0/10 (CGNAT)
+            if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
+            // 198.18.0.0/15 (benchmarking, non-routable on Internet)
+            if (b[0] == 198 && (b[1] == 18 || b[1] == 19)) return true;
+            return false;
+        }
+
+        private static IPAddress? TryGetPublicIpFromContactHeader(SIPResponse response)
+        {
+            try
+            {
+                var header = response.Header;
+                if (header?.Contact == null || header.Contact.Count == 0) return null;
+                var contact = header.Contact[0];
+                var uri = contact?.ContactURI;
+                var host = uri?.Host;
+                if (string.IsNullOrWhiteSpace(host)) return null;
+                if (IPAddress.TryParse(host, out var ip) && !IsPrivateIp(ip)) return ip;
+
+                // Hostname: resolve and pick a public IPv4 address.
+                try
+                {
+                    var addrs = Dns.GetHostAddresses(host);
+                    var pub4 = addrs.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !IsPrivateIp(a));
+                    if (pub4 != null) return pub4;
+                    var pubAny = addrs.FirstOrDefault(a => !IsPrivateIp(a));
+                    if (pubAny != null) return pubAny;
+                }
+                catch { }
+            }
+            catch { }
+            return null;
+        }
+
+        private static string? TryGetSdpConnectionIp(string sdp)
+        {
+            foreach (var raw in sdp.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var line = raw.Trim();
+                if (line.StartsWith("c=IN IP4", StringComparison.OrdinalIgnoreCase))
+                {
+                    var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length >= 3) return parts[2];
+                }
+            }
+            return null;
+        }
+
+        private static string ReplaceSdpConnectionIp(string sdp, string newIp)
+        {
+            // Replace first c=IN IP4 line only.
+            var lines = sdp.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None).ToList();
+            for (int i = 0; i < lines.Count; i++)
+            {
+                var line = lines[i].Trim();
+                if (line.StartsWith("c=IN IP4", StringComparison.OrdinalIgnoreCase))
+                {
+                    lines[i] = $"c=IN IP4 {newIp}";
+                    break;
+                }
+            }
+            return string.Join("\r\n", lines);
         }
 
         /// <summary>
@@ -1431,10 +1889,41 @@ namespace Softphone
                     MainWindow.Log($"[SipService] {connLabel}Error getting local IP: {ex.Message}");
                 }
                 
-                _voipMediaSession = new VoIPMediaSession(mediaEndPoints, bindAddress: rtpBindAddress)
+                if (_useSrtp)
                 {
-                    AcceptRtpFromAny = true
-                };
+                    // Native SDES-SRTP in SIPSorcery 6.2.0 is enabled via RtpSecureMediaOptionEnum.SdpCryptoNegotiation.
+                    // This ensures the offer SDP uses RTP/SAVP and contains a=crypto lines.
+                    var cfg = new VoIPMediaSessionConfig
+                    {
+                        MediaEndPoint = mediaEndPoints,
+                        BindAddress = rtpBindAddress,
+                        BindPort = 0,
+                        RtpSecureMediaOption = RtpSecureMediaOptionEnum.SdpCryptoNegotiation
+                    };
+
+                    _voipMediaSession = new VoIPMediaSession(cfg)
+                    {
+                        AcceptRtpFromAny = true
+                    };
+
+                    // Prefer the common SDES suite used by Asterisk when media_encryption=sdes.
+                    // If multiple suites are supported, SIPSorcery will negotiate based on intersection.
+                    try
+                    {
+                        _voipMediaSession.SrtpCryptoSuites = new List<SDPSecurityDescription.CryptoSuites>
+                        {
+                            SDPSecurityDescription.CryptoSuites.AES_CM_128_HMAC_SHA1_80
+                        };
+                    }
+                    catch { }
+                }
+                else
+                {
+                    _voipMediaSession = new VoIPMediaSession(mediaEndPoints, bindAddress: rtpBindAddress)
+                    {
+                        AcceptRtpFromAny = true
+                    };
+                }
                 
                 string mode = _wasapiAudioEndPoint != null ? "WASAPI Communications" : "WinMM + FilteringAudioSink";
                 MainWindow.Log($"[SipService] {connLabel}Audio chain: {mode} → VoIPMediaSession (native codecs, RTP bind={rtpBindAddress})");
@@ -1502,16 +1991,45 @@ namespace Softphone
             IPAddress localIPAddr = IPAddress.Any;
             
             var connectionLabel = _isSecondaryConnection ? "[Connection2]" : "";
-            MainWindow.Log($"[SipService] {connectionLabel} Binding UDP channel to all interfaces (IPAddress.Any)");
+            MainWindow.Log($"[SipService] {connectionLabel} Binding {(_useTls ? "TLS" : "UDP")} channel to all interfaces (IPAddress.Any)");
 
-            // UDP-канал на конкретном IP (если useDirectInternet) или на всех интерфейсах
+            // Channel on all interfaces (ephemeral port). Actual transport depends on settings (UDP/TLS).
             var listenEndPoint = new IPEndPoint(localIPAddr, 0);
-            var udpChannel = new SIPUDPChannel(listenEndPoint);
-            _sipTransport.AddSIPChannel(udpChannel);
+            int actualPort;
+            if (_useTls)
+            {
+                // NOTE: SIPSorcery uses OS TLS stack. We rely on the library defaults for certificates/validation.
+                // If your PBX requires client certs or custom validation, we can extend this later.
+                var tlsChannel = new SIPTLSChannel(listenEndPoint);
+                _sipTransport.AddSIPChannel(tlsChannel);
+                actualPort = tlsChannel.ListeningEndPoint.Port;
+
+                // SIPSorcery may create a default UDP channel inside SIPTransport().
+                // If TLS is enabled, make sure UDP channels are removed so REGISTER can't silently fall back to UDP.
+                RemoveUdpChannelsFromTransport(_sipTransport);
+
+                try
+                {
+                    // Log active channels/protocols for debugging.
+                    var chans = _sipTransport.GetSIPChannels();
+                    foreach (var ch in chans)
+                    {
+                        try
+                        {
+                            MainWindow.Log($"[SipService] {connectionLabel} Active SIP channel: {ch.GetType().Name} {ch.ListeningEndPoint}");
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+            else
+            {
+                var udpChannel = new SIPUDPChannel(listenEndPoint);
+                _sipTransport.AddSIPChannel(udpChannel);
+                actualPort = udpChannel.ListeningEndPoint.Port;
+            }
             
-            // Получаем реальный порт, который был назначен каналу
-            // Это важно для правильного Contact URI в регистрации
-            var actualPort = udpChannel.ListeningEndPoint.Port;
             SetStatus($"SIP transport listening on {localIPStr}:{actualPort}");
             
             // Получаем внешний IP через STUN для NAT traversal (асинхронно, не блокируем инициализацию)
@@ -1542,10 +2060,95 @@ namespace Softphone
             {
                 try
                 {
-                    if (request != null && request.Method == SIPMethodsEnum.INVITE)
+                    if (request != null && (request.Method == SIPMethodsEnum.INVITE || request.Method == SIPMethodsEnum.REGISTER))
                     {
                         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-                        SetStatus($"[{timestamp}] SIP Request OUT: INVITE to {remoteEndPoint}");
+                        var connLabel = _isSecondaryConnection ? "[Connection2]" : "";
+                        var callId = request.Header?.CallId ?? "unknown";
+                        string cseqNo = "?";
+                        try
+                        {
+                            // Be resilient across SIPSorcery versions: CSeq can be a struct/class or an int.
+                            var cseqObj = request.Header?.CSeq;
+                            if (cseqObj != null)
+                            {
+                                var cseqType = cseqObj.GetType();
+                                if (cseqType == typeof(int))
+                                {
+                                    cseqNo = cseqObj.ToString() ?? "?";
+                                }
+                                else
+                                {
+                                    var noProp = cseqType.GetProperty("CSeqNumber");
+                                    var noVal = noProp?.GetValue(cseqObj);
+                                    if (noVal != null) cseqNo = noVal.ToString() ?? "?";
+                                }
+                            }
+                        }
+                        catch { }
+                        MainWindow.Log($"[SipService] {connLabel}[{timestamp}] SIP OUT {request.Method}: Call-ID={callId}, CSeq={cseqNo}, local={localEndPoint} remote={remoteEndPoint} useTls={_useTls} reqUri='{request.URI}'");
+                        if (request.Method == SIPMethodsEnum.REGISTER)
+                        {
+                            try
+                            {
+                                var to = request.Header?.To?.ToString();
+                                var from = request.Header?.From?.ToString();
+                                var contact = request.Header?.Contact?.FirstOrDefault()?.ToString();
+                                MainWindow.Log($"[SipService] {connLabel}[{timestamp}] REGISTER hdr: To={to}, From={from}, Contact={contact}");
+                            }
+                            catch { }
+
+                            try
+                            {
+                                // Helpful when debugging 403 without 401 challenge.
+                                var txt = request.ToString();
+                                if (!string.IsNullOrWhiteSpace(txt))
+                                {
+                                    var preview = txt.Length > 1200 ? txt.Substring(0, 1200) + "..." : txt;
+                                    MainWindow.Log($"[SipService] {connLabel}[{timestamp}] REGISTER preview: {preview}");
+                                }
+                            }
+                            catch { }
+                        }
+                        if (request.Method == SIPMethodsEnum.INVITE)
+                        {
+                            SetStatus($"[{timestamp}] SIP Request OUT: INVITE to {remoteEndPoint}");
+                            try
+                            {
+                                var inviteCallId = request.Header?.CallId;
+                                if (!string.IsNullOrWhiteSpace(inviteCallId))
+                                {
+                                    lock (_outgoingInviteLock)
+                                    {
+                                        if (_pendingOutgoingInviteFinalResponseTcs != null)
+                                        {
+                                            if (!_outgoingInviteFinalByCallId.ContainsKey(inviteCallId))
+                                                _outgoingInviteFinalByCallId[inviteCallId] = _pendingOutgoingInviteFinalResponseTcs;
+                                        }
+
+                                        // Complete "call-id observed" latch for the current attempt.
+                                        _currentOutgoingCallId = inviteCallId;
+                                        try { _pendingOutgoingInviteCallIdTcs?.TrySetResult(inviteCallId); } catch { }
+                                    }
+                                }
+                            }
+                            catch { }
+
+                            // High-signal INVITE debugging (helps detect "mystery second calls").
+                            try
+                            {
+                                string? attempt, dial;
+                                lock (_outgoingInviteLock)
+                                {
+                                    attempt = _currentOutgoingAttemptId;
+                                    dial = _currentOutgoingDialNumber;
+                                }
+                                var to = request.Header?.To?.ToString();
+                                var from = request.Header?.From?.ToString();
+                                MainWindow.Log($"[SipService] {connLabel}[{timestamp}] INVITE meta: attempt={attempt ?? "<none>"}, dial='{dial ?? "<unknown>"}', From={from}, To={to}");
+                            }
+                            catch { }
+                        }
                         
                         // Модифицируем SDP: заменяем локальный IP на внешний (для NAT traversal)
                         try
@@ -1554,6 +2157,10 @@ namespace Softphone
                             
                             if (!string.IsNullOrEmpty(sdpBody) && sdpBody.Contains("v=0") && sdpBody.Contains("m=audio"))
                             {
+                                // SRTP (SDES) is handled natively by SIPSorcery when VoIPMediaSession is
+                                // created with RtpSecureMediaOptionEnum.SdpCryptoNegotiation.
+                                // Do not patch SDP crypto lines here.
+
                                 // Заменяем 0.0.0.0 на локальный IP в SDP для NAT traversal
                                 // Это работает, если NAT не симметричный (Cone NAT) - NAT автоматически пробросит порт
                                 // Если RTP пакеты не приходят, возможные причины:
@@ -1561,23 +2168,63 @@ namespace Softphone
                                 // 2. Firewall блокирует входящие UDP пакеты
                                 // 3. Провайдер не может достучаться до локального IP
                                 string localIP = GetLocalIPAddress();
+                                string? publicIP = null;
+                                try { publicIP = GetCachedPublicIP(); } catch { }
                                 
                                 // Заменяем 0.0.0.0 на локальный IP в SDP
                                 if (sdpBody.Contains("c=IN IP4 0.0.0.0"))
                                 {
                                     string modifiedSdp = sdpBody.Replace("c=IN IP4 0.0.0.0", $"c=IN IP4 {localIP}");
+                                    // For secondary connection behind NAT, prefer advertising our public (STUN) address to PBX/SBC.
+                                    if (_isSecondaryConnection && !string.IsNullOrWhiteSpace(publicIP))
+                                    {
+                                        modifiedSdp = modifiedSdp.Replace($"c=IN IP4 {localIP}", $"c=IN IP4 {publicIP}");
+                                        MainWindow.Log($"[SipService] [Connection2] SDP c= rewritten to public IP {publicIP} (was {localIP})");
+                                    }
+
                                     request.Body = modifiedSdp;
+                                    // IMPORTANT: We mutate the SIP request after it has been built.
+                                    // Ensure Content-Length stays in sync, otherwise proxies like Kamailio reject it.
+                                    try
+                                    {
+                                        if (request.Header != null)
+                                        {
+                                            request.Header.ContentType = "application/sdp";
+                                            request.Header.ContentLength = Encoding.UTF8.GetByteCount(modifiedSdp);
+                                        }
+                                    }
+                                    catch { }
                                     MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}✅ Replaced 0.0.0.0 with local IP {localIP} in SDP");
                                 }
                                 else
                                 {
-                                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}ℹ️ Using local IP {localIP} in SDP for NAT traversal");
+                                    // If SDP already contains a connection line with our local IP, and we have public IP, rewrite it.
+                                    if (_isSecondaryConnection && !string.IsNullOrWhiteSpace(publicIP) && sdpBody.Contains($"c=IN IP4 {localIP}"))
+                                    {
+                                        string modifiedSdp = sdpBody.Replace($"c=IN IP4 {localIP}", $"c=IN IP4 {publicIP}");
+                                        request.Body = modifiedSdp;
+                                        try
+                                        {
+                                            if (request.Header != null)
+                                            {
+                                                request.Header.ContentType = "application/sdp";
+                                                request.Header.ContentLength = Encoding.UTF8.GetByteCount(modifiedSdp);
+                                            }
+                                        }
+                                        catch { }
+                                        MainWindow.Log($"[SipService] [Connection2] SDP c= rewritten to public IP {publicIP} (was {localIP})");
+                                    }
+                                    else
+                                    {
+                                        MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}ℹ️ Using local IP {localIP} in SDP for NAT traversal");
+                                    }
                                 }
                                 
-                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}ℹ️ If RTP packets don't arrive, possible solutions:");
-                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}   1. Use WebRTC instead of SIP (has TURN support)");
-                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}   2. Configure port forwarding on router (UDP ports 10000-20000)");
-                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}   3. Deploy TURN server (coturn/eturnal) and configure RTP proxy");
+                                // Keep NAT troubleshooting concise; TURN is for WebRTC, not SIP.
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}ℹ️ If RTP packets don't arrive over SIP, possible solutions:");
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}   1. Ensure the PBX/SBC relays media (direct_media=no) and advertises a reachable RTP IP.");
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}   2. Configure port forwarding on router/firewall (UDP RTP ports).");
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}   3. Use a proper SIP SBC/media relay close to the client network.");
                             }
                         }
                         catch (Exception natEx)
@@ -1671,42 +2318,8 @@ namespace Softphone
                     {
                         int statusCode = response.StatusCode;
                         var statusReason = response.ReasonPhrase ?? "";
-                        SIPMethodsEnum cseq = SIPMethodsEnum.UNKNOWN;
-                        if (response.Header?.CSeq != null)
-                        {
-                            // CSeq может быть объектом с свойством Method или просто int
-                            // Используем рефлексию для безопасного доступа
-                            try
-                            {
-                                var cseqObj = response.Header.CSeq;
-                                var cseqType = cseqObj.GetType();
-                                
-                                // Проверяем, является ли это объектом с свойством Method
-                                if (cseqType != typeof(int))
-                                {
-                                    var methodProperty = cseqType.GetProperty("Method");
-                                    if (methodProperty != null)
-                                    {
-                                        var methodValue = methodProperty.GetValue(cseqObj);
-                                        if (methodValue != null)
-                                        {
-                                            if (methodValue is SIPMethodsEnum methodEnum)
-                                            {
-                                                cseq = methodEnum;
-                                            }
-                                            else if (methodValue is int methodInt && Enum.IsDefined(typeof(SIPMethodsEnum), methodInt))
-                                            {
-                                                cseq = (SIPMethodsEnum)methodInt;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch
-                            {
-                                // Если не получилось, оставляем UNKNOWN
-                            }
-                        }
+                        // Use SIPSorcery's CSeqMethod property directly (SIPHeader.CSeq is int, CSeqMethod is SIPMethodsEnum)
+                        SIPMethodsEnum cseq = response.Header?.CSeqMethod ?? SIPMethodsEnum.UNKNOWN;
                         var callId = response.Header?.CallId ?? "unknown";
                         
                         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
@@ -1717,44 +2330,31 @@ namespace Softphone
                         // Проверяем, что это ответ на INVITE по наличию Call-ID в активных звонках
                         // или по статус-кодам, характерным для INVITE (100, 180, 183)
                         
-                        // Пропускаем ответы на REGISTER (401, 200) - они не должны воспроизводить гудки
-                        bool isRegisterResponse = false;
-                        if (response.Header?.CSeq != null)
+                        // Determine if this is a REGISTER response.
+                        // SIPSorcery SIPHeader.CSeq is int (sequence number) and CSeqMethod is SIPMethodsEnum.
+                        // The previous reflection-based approach on CSeq (which is int) never ran,
+                        // so isRegisterResponse was always false — causing REGISTER 200 OKs to be
+                        // processed as INVITE responses and corrupting the media session.
+                        bool isRegisterResponse = response.Header?.CSeqMethod == SIPMethodsEnum.REGISTER;
+
+                        // Fallback: if CSeqMethod is UNKNOWN (shouldn't happen with SIPSorcery 6.x),
+                        // also check the Call-ID. A REGISTER Call-ID never matches the current INVITE dialog.
+                        if (!isRegisterResponse && response.Header?.CSeqMethod == SIPMethodsEnum.UNKNOWN)
                         {
-                            try
+                            var responseCallId = response.Header?.CallId;
+                            if (!string.IsNullOrEmpty(responseCallId)
+                                && !string.IsNullOrEmpty(_currentOutgoingCallId)
+                                && !string.Equals(responseCallId, _currentOutgoingCallId, StringComparison.OrdinalIgnoreCase))
                             {
-                                var cseqObj = response.Header.CSeq;
-                                var cseqType = cseqObj.GetType();
-                                if (cseqType != typeof(int))
-                                {
-                                    var methodProperty = cseqType.GetProperty("Method");
-                                    if (methodProperty != null)
-                                    {
-                                        var methodValue = methodProperty.GetValue(cseqObj);
-                                        if (methodValue != null)
-                                        {
-                                            if (methodValue is SIPMethodsEnum methodEnum && methodEnum == SIPMethodsEnum.REGISTER)
-                                            {
-                                                isRegisterResponse = true;
-                                            }
-                                            else if (methodValue is int methodInt && methodInt == (int)SIPMethodsEnum.REGISTER)
-                                            {
-                                                isRegisterResponse = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch
-                            {
-                                // Если не удалось определить метод, проверяем по другим признакам
+                                // Response Call-ID does not match the current outgoing INVITE — treat as non-INVITE
+                                isRegisterResponse = true;
                             }
                         }
-                        
-                        // Если это ответ на REGISTER, пропускаем обработку гудков
+
+                        // Skip non-INVITE responses (REGISTER, OPTIONS, etc.)
                         if (isRegisterResponse)
                         {
-                            return; // Не обрабатываем ответы на REGISTER
+                            return;
                         }
                         
                         // Обрабатываем только ответы на INVITE
@@ -1797,6 +2397,50 @@ namespace Softphone
                                     string? sdpBody = response.Body.ToString();
                                     if (!string.IsNullOrEmpty(sdpBody))
                                     {
+                                        // Secondary: if SDP advertises a private RTP IP (common when Asterisk behind NAT),
+                                        // rewrite it to the remote SIP endpoint address so RTP can actually reach us.
+                                        try
+                                        {
+                                            if (_isSecondaryConnection)
+                                            {
+                                                string? contactHostDbg = null;
+                                                try
+                                                {
+                                                    contactHostDbg = response?.Header?.Contact?.FirstOrDefault()?.ContactURI?.Host;
+                                                }
+                                                catch { }
+
+                                                var publicFromContact = TryGetPublicIpFromContactHeader(response!);
+                                                var publicFromRemote = (remoteEndPoint != null && remoteEndPoint.Address != null && !IsPrivateIp(remoteEndPoint.Address))
+                                                    ? remoteEndPoint.Address
+                                                    : null;
+                                                var rewriteTarget = publicFromContact ?? publicFromRemote;
+
+                                                var sdpIpStr = TryGetSdpConnectionIp(sdpBody);
+                                                if (!string.IsNullOrWhiteSpace(sdpIpStr) &&
+                                                    IPAddress.TryParse(sdpIpStr, out var sdpIp) &&
+                                                    IsPrivateIp(sdpIp) &&
+                                                    rewriteTarget != null)
+                                                {
+                                                    var rewritten = ReplaceSdpConnectionIp(sdpBody, rewriteTarget.ToString());
+                                                    if (response?.Body != null) response.Body = rewritten;
+                                                    sdpBody = rewritten;
+                                                    var src = publicFromContact != null ? "Contact" : "SIP remote";
+                                                    MainWindow.Log($"[SipService] [Connection2] Rewrote SDP c= IP from private {sdpIp} to {rewriteTarget} (from {src}).");
+                                                }
+                                                else if (!string.IsNullOrWhiteSpace(sdpIpStr) &&
+                                                         IPAddress.TryParse(sdpIpStr, out var sdpIp2) &&
+                                                         IsPrivateIp(sdpIp2) &&
+                                                         rewriteTarget == null)
+                                                {
+                                                    MainWindow.Log($"[SipService] [Connection2] SDP c= is private ({sdpIp2}) but no public rewrite target found. contactHost='{contactHostDbg ?? "<null>"}', contactIp='{publicFromContact?.ToString() ?? "<null>"}', remoteIp='{(remoteEndPoint?.Address?.ToString() ?? "<null>")}'.");
+                                                }
+                                            }
+                                        }
+                                        catch { }
+
+                                        // SRTP crypto negotiation is handled natively by SIPSorcery.
+
                                         MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 183 SDP body:\n{sdpBody}");
                                         
                                         // Ищем c= строку (connection information) с IP адресом
@@ -1814,11 +2458,8 @@ namespace Softphone
                                                     string rtpIp = parts[2];
                                                     MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 183 SDP RTP IP: {rtpIp}");
                                                     
-                                                    // Для Beeline: если в SDP указан IP SIP сервера, но должен быть другой RTP IP
-                                                    if (_isSecondaryConnection && rtpIp != "62.105.133.230")
-                                                    {
-                                                        MainWindow.Log($"[SipService] [Connection2] WARNING: SDP contains RTP IP {rtpIp}, but Beeline requires 62.105.133.230 for RTP!");
-                                                    }
+                                                    // NOTE: When we call through a B2BUA (Asterisk/SBC), the SDP RTP IP will be the B2BUA.
+                                                    // Do not try to "guess" the downstream carrier RTP IP here.
                                                 }
                                             }
                                             if (trimmedLine.StartsWith("m=audio", StringComparison.OrdinalIgnoreCase))
@@ -1855,23 +2496,62 @@ namespace Softphone
                                 // Для основного подключения тоже не воспроизводим, если есть early media
                                 MainWindow.Log($"[SipService] 183 received - NOT playing ringback tone (early media from provider)");
                             }
-                            // Останавливаем ringback tone, если он уже играл
-                            _toneGenerator?.Stop();
+                            // If we started local ringback fallback because early media was silent,
+                            // do NOT stop it on every repeated 183. We'll stop it once early media audio is detected
+                            // (see RTP handler) or when the call is answered/cancelled.
+                            if (!_localRingbackFallbackActive)
+                            {
+                                _toneGenerator?.Stop();
+                            }
+
+                            // Fallback: if early media RTP never arrives, start local ringback after a short grace period.
+                            ScheduleRingbackFallbackAfter183(timestamp);
                         }
                     else if (statusCode == 200)
                     {
                         // 200 OK может быть как для INVITE, так и для REGISTER
                         // Проверяем, есть ли активный звонок
                         // Не обрабатываем 200 OK, если звонок был отменен пользователем
-                        // Для INVITE: проверяем наличие медиа-сессии, активного звонка, или сохраненного номера
-                        bool hasActiveCall = _userAgent?.IsCallActive == true || _toneGenerator != null || _voipMediaSession != null || !string.IsNullOrEmpty(_lastCalledNumber);
-                        bool isInviteResponse = !isRegisterResponse && hasActiveCall;
-                        MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 200 OK received: isInviteResponse={isInviteResponse}, isRegisterResponse={isRegisterResponse}, _isCallCancelled={_isCallCancelled}, IsCallActive={_userAgent?.IsCallActive}, _toneGenerator={(_toneGenerator != null ? "exists" : "null")}, _voipMediaSession={(_voipMediaSession != null ? "exists" : "null")}, _lastCalledNumber={_lastCalledNumber ?? "null"}");
-                        
-                        if (!_isCallCancelled && isInviteResponse)
+                        // For INVITE: only treat 200 OK as "call answered" if we still have an active call context.
+                        // _lastCalledNumber can persist after hangup; do NOT use it as a signal for an active call.
+                        bool hasActiveCall = _userAgent?.IsCallActive == true || _toneGenerator != null || _voipMediaSession != null;
+                        var cseqMethod = response.Header?.CSeqMethod ?? SIPMethodsEnum.UNKNOWN;
+
+                        if (cseqMethod == SIPMethodsEnum.CANCEL)
                         {
+                            string? cancelCallId = response.Header?.CallId;
+                            bool forCurrentInvite = string.IsNullOrEmpty(cancelCallId)
+                                || string.IsNullOrEmpty(_currentOutgoingCallId)
+                                || string.Equals(cancelCallId, _currentOutgoingCallId, StringComparison.OrdinalIgnoreCase);
+                            if (forCurrentInvite)
+                            {
+                                _isCallCancelled = true;
+                                _outgoingInviteTerminated = true;
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}CANCEL confirmed (200 OK) — blocking late INVITE answer/recording");
+                                StopCallRecording();
+                                StopRtpDiagnostics();
+                            }
+                            else
+                            {
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}Ignoring stale CANCEL 200 OK for Call-ID {cancelCallId} (current={_currentOutgoingCallId ?? "none"})");
+                            }
+                        }
+
+                        // 200 OK to CANCEL/REGISTER/BYE must not be treated as INVITE answer (starts recording / marks answered).
+                        bool isInviteResponse = !isRegisterResponse
+                            && (cseqMethod == SIPMethodsEnum.INVITE
+                                || (cseqMethod == SIPMethodsEnum.UNKNOWN && hasActiveCall))
+                            && hasActiveCall
+                            && !_outgoingInviteTerminated;
+                        MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 200 OK received: isInviteResponse={isInviteResponse}, isRegisterResponse={isRegisterResponse}, _isCallCancelled={_isCallCancelled}, _outgoingInviteTerminated={_outgoingInviteTerminated}, IsCallActive={_userAgent?.IsCallActive}, _toneGenerator={(_toneGenerator != null ? "exists" : "null")}, _voipMediaSession={(_voipMediaSession != null ? "exists" : "null")}, _lastCalledNumber={_lastCalledNumber ?? "null"}");
+                        
+                        if (!_isCallCancelled && !_outgoingInviteTerminated && isInviteResponse)
+                        {
+                            TrySignalOutgoingInviteFinal(response.Header?.CallId, 200);
                             SetStatus($"[{timestamp}] Call progress: 200 OK (call answered, media negotiation starting)");
                             MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 200 OK received, stopping ringback tone");
+                            try { _earlyMediaRingbackFallbackCts?.Cancel(); } catch { }
+                            _localRingbackFallbackActive = false;
                             
                             // Логируем SDP из ответа 200 OK для диагностики RTP endpoint
                             try
@@ -1881,6 +2561,49 @@ namespace Softphone
                                     string? sdpBody = response.Body.ToString();
                                     if (!string.IsNullOrEmpty(sdpBody))
                                     {
+                                        // Same private-IP rewrite for final answer.
+                                        try
+                                        {
+                                            if (_isSecondaryConnection)
+                                            {
+                                                string? contactHostDbg = null;
+                                                try
+                                                {
+                                                    contactHostDbg = response?.Header?.Contact?.FirstOrDefault()?.ContactURI?.Host;
+                                                }
+                                                catch { }
+
+                                                var publicFromContact = TryGetPublicIpFromContactHeader(response!);
+                                                var publicFromRemote = (remoteEndPoint != null && remoteEndPoint.Address != null && !IsPrivateIp(remoteEndPoint.Address))
+                                                    ? remoteEndPoint.Address
+                                                    : null;
+                                                var rewriteTarget = publicFromContact ?? publicFromRemote;
+
+                                                var sdpIpStr = TryGetSdpConnectionIp(sdpBody);
+                                                if (!string.IsNullOrWhiteSpace(sdpIpStr) &&
+                                                    IPAddress.TryParse(sdpIpStr, out var sdpIp) &&
+                                                    IsPrivateIp(sdpIp) &&
+                                                    rewriteTarget != null)
+                                                {
+                                                    var rewritten = ReplaceSdpConnectionIp(sdpBody, rewriteTarget.ToString());
+                                                    if (response?.Body != null) response.Body = rewritten;
+                                                    sdpBody = rewritten;
+                                                    var src = publicFromContact != null ? "Contact" : "SIP remote";
+                                                    MainWindow.Log($"[SipService] [Connection2] Rewrote SDP c= IP from private {sdpIp} to {rewriteTarget} (from {src}).");
+                                                }
+                                                else if (!string.IsNullOrWhiteSpace(sdpIpStr) &&
+                                                         IPAddress.TryParse(sdpIpStr, out var sdpIp2) &&
+                                                         IsPrivateIp(sdpIp2) &&
+                                                         rewriteTarget == null)
+                                                {
+                                                    MainWindow.Log($"[SipService] [Connection2] SDP c= is private ({sdpIp2}) but no public rewrite target found. contactHost='{contactHostDbg ?? "<null>"}', contactIp='{publicFromContact?.ToString() ?? "<null>"}', remoteIp='{(remoteEndPoint?.Address?.ToString() ?? "<null>")}'.");
+                                                }
+                                            }
+                                        }
+                                        catch { }
+
+                                        // SRTP crypto negotiation is handled natively by SIPSorcery.
+
                                         MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 200 OK SDP body:\n{sdpBody}");
                                         
                                         // Ищем c= строку (connection information) с IP адресом
@@ -1898,11 +2621,8 @@ namespace Softphone
                                                     string rtpIp = parts[2];
                                                     MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} 200 OK SDP RTP IP: {rtpIp}");
                                                     
-                                                    // Для Beeline: если в SDP указан IP SIP сервера, но должен быть другой RTP IP
-                                                    if (_isSecondaryConnection && rtpIp != "62.105.133.230")
-                                                    {
-                                                        MainWindow.Log($"[SipService] [Connection2] WARNING: SDP contains RTP IP {rtpIp}, but Beeline requires 62.105.133.230 for RTP!");
-                                                    }
+                                                    // NOTE: When we call through a B2BUA (Asterisk/SBC), the SDP RTP IP will be the B2BUA.
+                                                    // Do not try to "guess" the downstream carrier RTP IP here.
                                                 }
                                             }
                                             if (trimmedLine.StartsWith("m=audio", StringComparison.OrdinalIgnoreCase))
@@ -1945,7 +2665,7 @@ namespace Softphone
                                 MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}200 OK received: IsCallRecordingEnabled={isRecordingEnabled}, _rtpCallRecorder={(_rtpCallRecorder == null ? "null" : "exists")}, _lastCalledNumber={_lastCalledNumber ?? "null"}, _isStoppingRecording={_isStoppingRecording}, _isCallCancelled={_isCallCancelled}, _isCallRejected={_isCallRejected}");
 
                                 if (isRecordingEnabled && _rtpCallRecorder == null
-                                    && !_isCallCancelled && !_isCallRejected
+                                    && !_isCallCancelled && !_isCallRejected && !_outgoingInviteTerminated
                                     && _voipMediaSession != null)
                                 {
                                     try
@@ -1955,6 +2675,7 @@ namespace Softphone
                                         if (!string.IsNullOrEmpty(phoneNumber) && phoneNumber != "unknown")
                                         {
                                             var callStartTime = DateTime.Now;
+                                            _sipRecordingStopHadNoOutputFile = false;
                                             _rtpCallRecorder = new RtpCallRecorder();
                                             _rtpCallRecorder.StartRecording(phoneNumber, callStartTime, GetRecordingsDirectory());
                                             _lastRecordingFilePath = null;
@@ -1982,15 +2703,34 @@ namespace Softphone
                     }
                         else if (statusCode >= 300 && statusCode < 700)
                         {
+                            // For outgoing INVITE tracking: any final (>=300) response is a terminal result.
+                            // (401/407 are auth challenges and are not terminal.)
+                            if (statusCode != 401 && statusCode != 407)
+                            {
+                                TrySignalOutgoingInviteFinal(response.Header?.CallId, statusCode);
+                            }
                             // Ошибки звонка - воспроизводим busy tone только если был активный звонок
                             // Исключаем 401 Unauthorized - это нормальный ответ для запроса авторизации
                             // Исключаем 487 Request Terminated - это ответ на CANCEL (звонок был отменен пользователем)
                             // Не воспроизводим гудки, если звонок был отменен пользователем
                             if (statusCode == 487)
                             {
-                                // 487 Request Terminated - звонок был отменен пользователем (CANCEL был отправлен)
-                                MainWindow.Log($"[SipService] Call terminated (487) - call was cancelled by local user (CANCEL confirmed), stopping tones");
-                                _toneGenerator?.Stop();
+                                string? terminatedCallId = response.Header?.CallId;
+                                bool forCurrentInvite = string.IsNullOrEmpty(terminatedCallId)
+                                    || string.IsNullOrEmpty(_currentOutgoingCallId)
+                                    || string.Equals(terminatedCallId, _currentOutgoingCallId, StringComparison.OrdinalIgnoreCase);
+                                if (forCurrentInvite)
+                                {
+                                    _outgoingInviteTerminated = true;
+                                    MainWindow.Log($"[SipService] Call terminated (487) - call was cancelled by local user (CANCEL confirmed), stopping tones");
+                                    _toneGenerator?.Stop();
+                                    StopCallRecording();
+                                    StopRtpDiagnostics();
+                                }
+                                else
+                                {
+                                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}Ignoring stale 487 for Call-ID {terminatedCallId} (current={_currentOutgoingCallId ?? "none"})");
+                                }
                             }
                             else if (statusCode != 401 && !_isCallCancelled)
                             {
@@ -2004,6 +2744,11 @@ namespace Softphone
 
                                 if (hasActiveCall)
                                 {
+                                    // Capture last INVITE failure code for recovery logic in CallAsync.
+                                    _lastInviteFailureStatusCode = statusCode;
+                                    // Also signal the specific Call-ID waiter (if any).
+                                    TrySignalOutgoingInviteFinal(response.Header?.CallId, statusCode);
+
                                     SetStatus($"[{timestamp}] Call failed: {statusCode} {statusReason}");
                                     MainWindow.Log($"[SipService] Call failed with {statusCode}, stopping ringback tone and playing busy tone");
                                     _toneGenerator?.Stop();
@@ -2027,6 +2772,8 @@ namespace Softphone
                     System.Diagnostics.Debug.WriteLine($"Error logging SIP response: {ex.Message}");
                 }
             };
+
+            // SRTP SDP offer/answer is handled natively by SIPSorcery.
             
             // Добавляем обработчик входящих SIP запросов на уровне транспорта для диагностики и обработки
             // Важно: обрабатываем OPTIONS запросы, чтобы сервер знал, что мы доступны
@@ -2050,6 +2797,37 @@ namespace Softphone
                 }
                 
                 // Логируем все входящие запросы для диагностики
+                try
+                {
+                    var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+                    var connLabel = _isSecondaryConnection ? "[Connection2]" : "";
+                    var callId = request.Header?.CallId ?? "unknown";
+                    string cseqNo = "?";
+                    try
+                    {
+                        var cseqObj = request.Header?.CSeq;
+                        if (cseqObj != null)
+                        {
+                            var cseqType = cseqObj.GetType();
+                            if (cseqType == typeof(int))
+                            {
+                                cseqNo = cseqObj.ToString() ?? "?";
+                            }
+                            else
+                            {
+                                var noProp = cseqType.GetProperty("CSeqNumber");
+                                var noVal = noProp?.GetValue(cseqObj);
+                                if (noVal != null) cseqNo = noVal.ToString() ?? "?";
+                            }
+                        }
+                    }
+                    catch { }
+                    var from = request.Header?.From?.ToString();
+                    var to = request.Header?.To?.ToString();
+                    MainWindow.Log($"[SipService] {connLabel}[{timestamp}] SIP IN {request.Method}: Call-ID={callId}, CSeq={cseqNo}, from={remoteEndPoint}, From={from}, To={to}");
+                }
+                catch { }
+
                 SetStatus($"Trace: Received {request.Method} from {remoteEndPoint}");
 
                 // Handle CANCEL: caller cancelled the INVITE before we answered.
@@ -2079,8 +2857,7 @@ namespace Softphone
                         }
 
                         // Stop any local tones and notify UI to close the call window.
-                        _toneGenerator?.Stop();
-                        System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
+                        EndCallAndNotifyUi();
 
                         // Clear incoming call state so retransmits won't keep UI alive.
                         lock (this)
@@ -2131,8 +2908,8 @@ namespace Softphone
                     {
                         SetStatus($"Error handling BYE: {ex.Message}");
                         MainWindow.Log($"[SipService] Error handling BYE: {ex.Message}");
+                        StopCallRecording();
                         StopRtpDiagnostics();
-                        // Все равно вызываем OnCallEnded через Dispatcher
                         System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
                     }
                     return;
@@ -2225,7 +3002,46 @@ namespace Softphone
             // 2. UserAgent для звонков.
             // В SIPSorcery SIPUserAgent автоматически обрабатывает входящие INVITE запросы
             // через событие OnIncomingCall, если транспорт правильно настроен
-            _userAgent = new SIPUserAgent(_sipTransport, outboundProxy: null);
+            SIPEndPoint? outboundProxy = null;
+            try
+            {
+                // For the Secondary connection we typically talk to an SBC/proxy (Kamailio).
+                // Setting outboundProxy helps SIPSorcery handle 407 Proxy Authentication challenges correctly.
+                if (_isSecondaryConnection)
+                {
+                    // Build SIPEndPoint from server/port (UDP by default).
+                    // Example: udp:192.168.31.49:5060
+                    var host = _server;
+                    var port = _port;
+                    if (!string.IsNullOrWhiteSpace(_server) && _server.Contains(":", StringComparison.Ordinal))
+                    {
+                        var parts = _server.Split(':', 2);
+                        host = parts[0];
+                        if (parts.Length == 2 && int.TryParse(parts[1], out var parsedPort) && parsedPort >= 1 && parsedPort <= 65535)
+                            port = parsedPort;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(host))
+                    {
+                        if (IPAddress.TryParse(host, out var ip))
+                        {
+                       outboundProxy = new SIPEndPoint(_useTls ? SIPProtocolsEnum.tls : SIPProtocolsEnum.udp, new IPEndPoint(ip, port));
+                        }
+                        else
+                        {
+                            // Best-effort DNS resolution for hostnames.
+                            var addrs = Dns.GetHostAddresses(host);
+                            var first = addrs?.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork)
+                                        ?? addrs?.FirstOrDefault();
+                            if (first != null)
+                           outboundProxy = new SIPEndPoint(_useTls ? SIPProtocolsEnum.tls : SIPProtocolsEnum.udp, new IPEndPoint(first, port));
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            _userAgent = new SIPUserAgent(_sipTransport, outboundProxy: outboundProxy);
 
             // Обработка входящих звонков
             _userAgent.OnIncomingCall += async (ua, req) =>
@@ -2249,9 +3065,9 @@ namespace Softphone
                         callerNumber = req.Header.From.FromURI.User ?? req.Header.From.FromURI.ToString();
                     }
 
-                    // ГЕЙТ: Основная проверка - если WebRTC режим включен, отклоняем все SIP звонки
-                    // ВАЖНО: Вторичное подключение всегда работает через SIP, не проверяет WebRTC
-                    bool useWebRtc = _isSecondaryConnection ? false : ShouldUseWebRtc();
+                    // ГЕЙТ: Если для этого подключения выбран транспорт WebRTC — отклоняем все SIP звонки.
+                    // Per-connection: Main и Secondary читают свой собственный транспорт из настроек.
+                    bool useWebRtc = ShouldUseWebRtcFor(_isSecondaryConnection);
                     if (useWebRtc)
                     {
                         SetStatus($"SIP incoming call from {callerNumber} rejected: WebRTC mode is enabled");
@@ -2289,23 +3105,22 @@ namespace Softphone
                             }
                         }
                         
-                        // Проверка 2: Активный WebRTC звонок
+                        // Проверка 2: Активный WebRTC звонок в любом слоте (main или secondary)
                         if (!shouldIgnoreSip)
                         {
-                            // Безопасная проверка WebRtcService.Instance
-                            var webRtcService = WebRtcService.Instance;
-                            if (webRtcService != null)
+                            foreach (var webRtcService in WebRtcService.AllSlots)
                             {
+                                if (webRtcService == null) continue;
                                 var webRtcState = webRtcService.CurrentCallState;
-                                
-                                // Проверяем, что WebRTC готов и есть активный звонок
-                                if (webRtcService.IsReadyForCalls && 
-                                    (webRtcState == WebRtcCallState.Ringing || 
-                                     webRtcState == WebRtcCallState.Connected || 
+
+                                if (webRtcService.IsReadyForCalls &&
+                                    (webRtcState == WebRtcCallState.Ringing ||
+                                     webRtcState == WebRtcCallState.Connected ||
                                      webRtcState == WebRtcCallState.Calling))
                                 {
                                     shouldIgnoreSip = true;
-                                    ignoreReason = $"WebRTC call active (state: {webRtcState})";
+                                    ignoreReason = $"WebRTC call active in slot '{webRtcService.Slot}' (state: {webRtcState})";
+                                    break;
                                 }
                             }
                         }
@@ -2332,6 +3147,8 @@ namespace Softphone
                         string? sdpBody = req.Body; // В SIPSorcery Body это string
                         if (!string.IsNullOrEmpty(sdpBody))
                         {
+                            // SRTP offer/answer is handled natively by SIPSorcery.
+
                             int previewLength = Math.Min(500, sdpBody.Length);
                             MainWindow.Log($"[SipService] INVITE SDP body (first {previewLength} chars):\n{sdpBody.Substring(0, previewLength)}");
                             
@@ -2488,13 +3305,25 @@ namespace Softphone
             // We defer it to the moment a SIP call is actually made/answered to speed up registration,
             // especially when switching from WebRTC -> SIP.
 
-            // 4. Регистрация на SIP-сервере (MikoPBX).
-            // ПРОВЕРКА: Если включен WebRTC для звонков, не регистрируемся на SIP сервере
-            // ВАЖНО: Вторичное подключение всегда работает через SIP, не проверяет WebRTC
-            bool useWebRtc = _isSecondaryConnection ? false : ShouldUseWebRtc();
+            // 4. Registration is required before most carriers will accept INVITE.
+            // Start it here, but note we do not block UI waiting for success.
+            await StartRegistrationAsync();
+        }
+
+        // NOTE: SRTP SDP offer/answer is handled natively by SIPSorcery via SDP crypto negotiation.
+
+        private async Task StartRegistrationAsync()
+        {
+            if (_sipTransport == null)
+            {
+                SetStatus("Cannot register: SIP transport not initialized.");
+                return;
+            }
+
+            bool useWebRtc = ShouldUseWebRtcFor(_isSecondaryConnection);
             if (useWebRtc)
             {
-                // ВАЖНО: Если была активная регистрация, отменяем её перед переключением на WebRTC
+                // If switching to WebRTC mode, stop any existing SIP registration.
                 if (_regUserAgent != null)
                 {
                     try
@@ -2508,27 +3337,35 @@ namespace Softphone
                         MainWindow.Log($"[SipService] Error stopping SIP registration: {ex.Message}");
                     }
                 }
-                
+
                 SetStatus("SIP registration skipped: WebRTC mode is enabled");
                 MainWindow.Log("[SipService] SIP registration skipped: WebRTC mode is enabled");
                 IsRegistered = false;
-                // Не регистрируемся и не обрабатываем входящие SIP звонки
-                await Task.Delay(500);
+                await Task.Delay(150);
                 return;
             }
-            
-            // Формируем правильный адрес сервера с портом
-            var serverAddress = _server.Contains(":") 
-                ? _server 
+
+            lock (_registrationLock)
+            {
+                _registrationTcs?.TrySetCanceled();
+                _registrationTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            // Best-effort: restart registration UA to recover from stale state.
+            if (_regUserAgent != null)
+            {
+                try { _regUserAgent.Stop(); } catch { }
+                _regUserAgent = null;
+            }
+
+            IsRegistered = false;
+
+            var serverAddress = _server.Contains(":")
+                ? _server
                 : $"{_server}:{_port}";
-            
-            // Используем упрощенный конструктор SIPRegistrationUserAgent
-            // который принимает: transport, username, password, server, expiry
-            // Важно: для правильной регистрации нужно указать полный SIP URI пользователя
-            // Формируем SIP URI для регистрации: sip:username@server:port
-            var sipUri = $"sip:{_username}@{serverAddress}";
-            
-            // Логируем информацию о регистрации для диагностики
+
+            var sipUri = $"{(_useTls ? "sips" : "sip")}:{_username}@{serverAddress}";
+
             if (_isSecondaryConnection)
             {
                 MainWindow.Log($"[SipService] [Connection2] Registering with username='{_username}', server='{serverAddress}', sipUri='{sipUri}'");
@@ -2537,16 +3374,17 @@ namespace Softphone
             {
                 MainWindow.Log($"[SipService] Registering with username='{_username}', server='{serverAddress}', sipUri='{sipUri}'");
             }
-            
-            _regUserAgent = new SIPRegistrationUserAgent(
+
+            // Some SIPSorcery versions support passing protocol explicitly for registration.
+            // We use reflection so the project stays compatible across package updates.
+            _regUserAgent = CreateRegistrationUserAgent(
                 _sipTransport,
                 _username,
                 _password,
                 serverAddress,
-                expiry: 300);
-            
-            // Устанавливаем Contact URI для регистрации, чтобы сервер знал, куда отправлять входящие звонки
-            // Это важно для приема входящих звонков
+                aorUri: sipUri,
+                expiry: 300,
+                useTls: _useTls);
 
             _regUserAgent.RegistrationFailed += (uri, response, errorMessage) =>
             {
@@ -2556,11 +3394,9 @@ namespace Softphone
                 if (response != null)
                 {
                     MainWindow.Log($"[SipService] {connectionLabel}Response status: {response.StatusCode} {response.ReasonPhrase}");
-                    
-                    // Логируем детали ответа для диагностики
+
                     if (response.Header != null)
                     {
-                        // Логируем Warning заголовок (особенно важен для IMS сетей)
                         try
                         {
                             if (response.Header.Warning != null)
@@ -2569,14 +3405,12 @@ namespace Softphone
                             }
                         }
                         catch { }
-                        
-                        // Логируем тело ответа, если есть
+
                         if (!string.IsNullOrEmpty(response.Body))
                         {
                             MainWindow.Log($"[SipService] {connectionLabel}Response body: {response.Body}");
                         }
-                        
-                        // Логируем полный ответ для диагностики (первые 1000 символов для IMS)
+
                         try
                         {
                             string responseStr = response.ToString();
@@ -2588,9 +3422,7 @@ namespace Softphone
                         }
                         catch { }
                     }
-                    
-                    // Специальная обработка для 403 Forbidden
-                    // StatusCode это int, сравниваем с числовым значением
+
                     if (response.StatusCode == (int)SIPResponseStatusCodesEnum.Forbidden)
                     {
                         string detailedMessage = $"403 Forbidden - Registration denied by server.\n\n" +
@@ -2613,6 +3445,11 @@ namespace Softphone
                 {
                     SetStatus($"Registration failed: {errorMessage}");
                 }
+
+                lock (_registrationLock)
+                {
+                    _registrationTcs?.TrySetResult(false);
+                }
             };
 
             _regUserAgent.RegistrationTemporaryFailure += (uri, response, errorMessage) =>
@@ -2625,18 +3462,27 @@ namespace Softphone
                     MainWindow.Log($"[SipService] {connectionLabel}Temporary failure response status: {response.StatusCode} {response.ReasonPhrase}");
                 }
                 SetStatus($"Registration temporary failure: {errorMessage}");
+
+                lock (_registrationLock)
+                {
+                    _registrationTcs?.TrySetResult(false);
+                }
             };
 
             _regUserAgent.RegistrationRemoved += (uri, response) =>
             {
                 IsRegistered = false;
                 SetStatus("Registration removed.");
+
+                lock (_registrationLock)
+                {
+                    _registrationTcs?.TrySetResult(false);
+                }
             };
 
             _regUserAgent.RegistrationSuccessful += (uri, response) =>
             {
                 IsRegistered = true;
-                // Логируем информацию о регистрации для диагностики
                 if (response != null && response.Header != null)
                 {
                     var contactHeader = response.Header.Contact;
@@ -2654,13 +3500,138 @@ namespace Softphone
                 {
                     SetStatus("Registration successful!");
                 }
+
+                lock (_registrationLock)
+                {
+                    _registrationTcs?.TrySetResult(true);
+                }
             };
 
             SetStatus("Registering on SIP server...");
             _regUserAgent.Start();
 
-            // Small delay to allow registration to begin; keep it short to improve UX.
             await Task.Delay(150);
+        }
+
+        private async Task<bool> EnsureRegisteredForOutgoingCallAsync(TimeSpan timeout)
+        {
+            // If already registered, nothing to do.
+            if (IsRegistered) return true;
+
+            // If registration UA is missing (or we just restarted transport), start it now.
+            if (_regUserAgent == null)
+            {
+                await StartRegistrationAsync();
+            }
+            else
+            {
+                // Best-effort: ensure it is running.
+                try { _regUserAgent.Start(); } catch { }
+            }
+
+            var start = DateTime.UtcNow;
+            while (!IsRegistered && (DateTime.UtcNow - start) < timeout)
+            {
+                await Task.Delay(75);
+            }
+
+            if (IsRegistered) return true;
+
+            // One more attempt: restart registration and wait briefly again.
+            MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}EnsureRegisteredForOutgoingCallAsync: registration still not ready, restarting registration...");
+            await StartRegistrationAsync();
+
+            start = DateTime.UtcNow;
+            while (!IsRegistered && (DateTime.UtcNow - start) < TimeSpan.FromMilliseconds(Math.Min(1200, (int)timeout.TotalMilliseconds)))
+            {
+                await Task.Delay(75);
+            }
+
+            return IsRegistered;
+        }
+
+        private static void RemoveUdpChannelsFromTransport(SIPTransport transport)
+        {
+            try
+            {
+                // Prefer public API if present.
+                var removeMethod = transport.GetType().GetMethod("RemoveSIPChannel", BindingFlags.Instance | BindingFlags.Public);
+                var getChannelsMethod = transport.GetType().GetMethod("GetSIPChannels", BindingFlags.Instance | BindingFlags.Public);
+
+                if (getChannelsMethod != null)
+                {
+                    var channelsObj = getChannelsMethod.Invoke(transport, Array.Empty<object>());
+                    if (channelsObj is System.Collections.IEnumerable enumerable)
+                    {
+                        var toRemove = new List<object>();
+                        foreach (var ch in enumerable)
+                        {
+                            try
+                            {
+                                var lepProp = ch?.GetType().GetProperty("ListeningEndPoint", BindingFlags.Instance | BindingFlags.Public);
+                                var lep = lepProp?.GetValue(ch);
+                                var protoProp = lep?.GetType().GetProperty("Protocol", BindingFlags.Instance | BindingFlags.Public);
+                                var protoVal = protoProp?.GetValue(lep);
+                                if (protoVal is SIPProtocolsEnum proto && proto == SIPProtocolsEnum.udp)
+                                {
+                                    toRemove.Add(ch!);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        if (removeMethod != null)
+                        {
+                            foreach (var ch in toRemove)
+                            {
+                                try { removeMethod.Invoke(transport, new[] { ch }); } catch { }
+                            }
+                        }
+                        else
+                        {
+                            // No public remove API; fall back to direct list manipulation below.
+                        }
+                    }
+                }
+
+                // Reflection fallback: find a field that holds channels list.
+                foreach (var field in transport.GetType().GetFields(BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public))
+                {
+                    object? val = null;
+                    try { val = field.GetValue(transport); } catch { }
+                    if (val is System.Collections.IList list && list.Count > 0)
+                    {
+                        // Heuristic: list items look like SIPChannel and have ListeningEndPoint.Protocol
+                        bool looksLikeChannels = false;
+                        try
+                        {
+                            var first = list[0];
+                            looksLikeChannels = first != null && first.GetType().GetProperty("ListeningEndPoint", BindingFlags.Instance | BindingFlags.Public) != null;
+                        }
+                        catch { }
+
+                        if (!looksLikeChannels) continue;
+
+                        for (int i = list.Count - 1; i >= 0; i--)
+                        {
+                            try
+                            {
+                                var ch = list[i];
+                                var lepProp = ch?.GetType().GetProperty("ListeningEndPoint", BindingFlags.Instance | BindingFlags.Public);
+                                var lep = lepProp?.GetValue(ch);
+                                var protoProp = lep?.GetType().GetProperty("Protocol", BindingFlags.Instance | BindingFlags.Public);
+                                var protoVal = protoProp?.GetValue(lep);
+                                if (protoVal is SIPProtocolsEnum proto && proto == SIPProtocolsEnum.udp)
+                                {
+                                    list.RemoveAt(i);
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                }
+            }
+            catch { }
         }
 
         /// <summary>
@@ -2668,11 +3639,48 @@ namespace Softphone
         /// </summary>
         public async Task CallAsync(string number)
         {
-            // IMPORTANT: When WebRTC mode is enabled, SIP outgoing calls must be blocked.
-            // ВАЖНО: Вторичное подключение всегда работает через SIP, не проверяет WebRTC
-            if (!_isSecondaryConnection && ShouldUseWebRtc())
+            await CallInternalAsync(number, allowRecoveryRetry: true);
+        }
+
+        /// <summary>
+        /// Исходящий SIP сорван: RTP/тон/рекордер + <see cref="OnCallEnded"/> (закрыть CallWindow).
+        /// Идемпотентно если диагностика RTP не была запущена.
+        /// </summary>
+        private void ApplyOutboundFailureUiTeardown(bool playBusyTone, string? statusMessage = null)
+        {
+            try
             {
-                MainWindow.Log($"[SipService] SIP outgoing call to {number} blocked: WebRTC mode is enabled");
+                _toneGenerator?.Stop();
+                StopRtpDiagnostics();
+
+                if (playBusyTone && !(_isSecondaryConnection && _lastInviteFailureStatusCode == 404))
+                {
+                    EnsureToneGenerator();
+                    if (_toneGenerator != null)
+                    {
+                        _toneGenerator.PlayBusyTone();
+                        _ = Task.Delay(2000).ContinueWith(_ => _toneGenerator?.Stop());
+                    }
+                }
+
+                SetStatus(string.IsNullOrWhiteSpace(statusMessage) ? "Call failed (timeout/rejected)." : statusMessage!);
+                _wasCallActive = false;
+                StopCallRecording();
+                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}ApplyOutboundFailureUiTeardown (playBusyTone={playBusyTone}) — invoking OnCallEnded");
+                System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SipService] ApplyOutboundFailureUiTeardown: {ex.Message}");
+            }
+        }
+
+        private async Task CallInternalAsync(string number, bool allowRecoveryRetry)
+        {
+            // IMPORTANT: When this connection is configured for WebRTC, SIP outgoing calls must be blocked.
+            if (ShouldUseWebRtcFor(_isSecondaryConnection))
+            {
+                MainWindow.Log($"[SipService] SIP outgoing call to {number} blocked: WebRTC mode is enabled for this connection ({(_isSecondaryConnection ? "secondary" : "main")})");
                 SetStatus("SIP calls are disabled (WebRTC mode enabled)");
                 return;
             }
@@ -2682,6 +3690,34 @@ namespace Softphone
                 SetStatus("SIP not initialized. Click Connect.");
                 return;
             }
+
+            // Carrier trunks typically require REGISTER before accepting INVITE.
+            // This is critical for the secondary connection ("Connection2") where users expect one-click dialing.
+            if (_isSecondaryConnection)
+            {
+                if (!await EnsureRegisteredForOutgoingCallAsync(TimeSpan.FromSeconds(2.5)))
+                {
+                    MainWindow.Log("[SipService] [Connection2] Outgoing call blocked: not registered after wait/retry.");
+                    // Иначе CallWindow висит «в звонке» (после 403→refetch регистрации второй Invite не вышел).
+                    ApplyOutboundFailureUiTeardown(playBusyTone: false,
+                        statusMessage: "SIP not registered yet — retrying connection. Please wait a moment and try again.");
+                    return;
+                }
+            }
+
+            // Track this outgoing attempt so we can correlate multiple INVITEs / responses to a single UI action.
+            try
+            {
+                var attemptId = Guid.NewGuid().ToString("N")[..8];
+                lock (_outgoingInviteLock)
+                {
+                    _currentOutgoingAttemptId = attemptId;
+                    _currentOutgoingDialNumber = number;
+                    _currentOutgoingCallId = null;
+                }
+                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}Outgoing call attempt started: attempt={attemptId}, number='{number}', allowRecoveryRetry={allowRecoveryRetry}");
+            }
+            catch { }
             
             // Инициализируем аудио, если оно не было инициализировано
             // Но только если не включен WebRTC режим (для WebRTC аудио не используется)
@@ -2783,11 +3819,26 @@ namespace Softphone
             
             // Очищаем номер от лишних символов (пробелы, дефисы, скобки и т.д.)
             string cleanNumber = number.Trim().Replace(" ", "").Replace("-", "").Replace("(", "").Replace(")", "");
+            bool isLikelyPhone = cleanNumber.Length >= 3 &&
+                                 cleanNumber.All(ch => char.IsDigit(ch) || ch == '+');
             
             if (cleanNumber.Contains("@"))
             {
                 // Если номер уже содержит @, используем как есть (полный SIP URI)
-                destination = cleanNumber.StartsWith("sip:") ? cleanNumber : $"sip:{cleanNumber}";
+                if (_useTls && cleanNumber.StartsWith("sip:", StringComparison.OrdinalIgnoreCase))
+                {
+                    destination = "sips:" + cleanNumber.Substring(4);
+                }
+                else if (!_useTls && cleanNumber.StartsWith("sips:", StringComparison.OrdinalIgnoreCase))
+                {
+                    destination = "sip:" + cleanNumber.Substring(5);
+                }
+                else
+                {
+                    destination = cleanNumber.StartsWith("sip:", StringComparison.OrdinalIgnoreCase) || cleanNumber.StartsWith("sips:", StringComparison.OrdinalIgnoreCase)
+                        ? cleanNumber
+                        : $"{(_useTls ? "sips" : "sip")}:{cleanNumber}";
+                }
             }
             else
             {
@@ -2805,16 +3856,27 @@ namespace Softphone
                     serverPart = $"{_server}:{_port}";
                 }
                 
-                destination = $"sip:{cleanNumber}@{serverPart}";
+                destination = $"{(_useTls ? "sips" : "sip")}:{cleanNumber}@{serverPart}";
+
+                // Some trunks require explicit phone user parameter for E.164/number routing.
+                // Example: sip:+123456789@trunk.example.com;user=phone
+                if (isLikelyPhone && !destination.Contains(";user=phone", StringComparison.OrdinalIgnoreCase))
+                {
+                    destination += ";user=phone";
+                }
             }
 
             var callStartTime = DateTime.Now;
             SetStatus($"Calling {destination}...");
             SetStatus($"[{callStartTime:HH:mm:ss.fff}] Call initiated, sending INVITE...");
 
-            // Новый исходящий звонок: сбрасываем предыдущий путь записи,
-            // чтобы CallDetails/AmoCRM не подхватывали файл от прошлого звонка,
-            // если текущий так и не будет записан (no answer/ошибка).
+            // Новый исходящий звонок: останавливаем осиротевший рекордер (если есть).
+            // Это важно для сценария recovery-retry: когда первый INVITE получает 403,
+            // callResult=false, _wasCallActive остаётся false — ветка с StopCallRecording
+            // не вызывается. Тем не менее аутентифицированный re-INVITE (CSeq=2) может
+            // успеть получить 200 OK и создать рекордер до того, как retry-запрос стартует.
+            // Без явной остановки этот рекордер будет висеть до конца следующего звонка.
+            StopCallRecording();
             _lastRecordingFilePath = null;
             OutboundCallerId = null;
 
@@ -2878,19 +3940,81 @@ namespace Softphone
                 
                 // Сбрасываем флаги отмены и отклонения перед новым звонком
                 _isCallCancelled = false;
+                _outgoingInviteTerminated = false;
                 _isCallRejected = false;
+
+                // Track final SIP response for this outgoing INVITE (by Call-ID).
+                var finalRespTcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var callIdTcs = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (_outgoingInviteLock)
+                {
+                    _pendingOutgoingInviteFinalResponseTcs = finalRespTcs;
+                    _pendingOutgoingInviteCallIdTcs = callIdTcs;
+                }
                 
                 // Создаем CancellationTokenSource для возможности отмены звонка
                 _callCancellationTokenSource = new System.Threading.CancellationTokenSource();
                 
                 // Сохраняем задачу звонка для возможности отмены
-                _activeCallTask = _userAgent.Call(
+                var callTask = _userAgent.Call(
                     destination,
                     _username,
                     _password,
                     _voipMediaSession);
 
-                bool callResult = await _activeCallTask;
+                if (callTask == null)
+                {
+                    throw new InvalidOperationException("SIPUserAgent.Call returned null Task — cannot place call.");
+                }
+
+                _activeCallTask = callTask;
+
+                // Avoid hangs: enforce a maximum wait for final SIP response.
+                // IMPORTANT: SIPUserAgent.Call() may complete early (false) even while SIP signalling continues
+                // (e.g. after provisional responses). We therefore wait for the final SIP response via trace events.
+                var maxWait = TimeSpan.FromSeconds(90);
+                bool callResult = false;
+                try
+                {
+                    // Wait until we observe the Call-ID for this INVITE attempt (should be near-immediate).
+                    // Then wait for a final response for that Call-ID.
+                    var gotCallId = await Task.WhenAny(callIdTcs.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+                    if (gotCallId != callIdTcs.Task)
+                    {
+                        MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}INVITE Call-ID was not observed in time — proceeding with best-effort wait.");
+                    }
+
+                    var completed = await Task.WhenAny(finalRespTcs.Task, Task.Delay(maxWait));
+                    if (completed != finalRespTcs.Task)
+                    {
+                        MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}INVITE timed out after {maxWait.TotalSeconds:F0}s without final response — hanging up.");
+                        try { _userAgent?.Hangup(); } catch { }
+                        callResult = false;
+                    }
+                    else
+                    {
+                        int finalCode = 0;
+                        try { finalCode = await finalRespTcs.Task; } catch { }
+                        callResult = finalCode >= 200 && finalCode < 300;
+                    }
+                }
+                catch (Exception callEx)
+                {
+                    // Capture fault details (SIPSorcery can throw inside Call task).
+                    try
+                    {
+                        var baseEx = callEx.GetBaseException();
+                        MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}Call() faulted: {baseEx.GetType().Name}: {baseEx.Message}");
+                        if (callTask.Exception != null)
+                        {
+                            MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}Call() task exception: {callTask.Exception}");
+                        }
+                    }
+                    catch { }
+
+                    try { _userAgent?.Hangup(); } catch { }
+                    throw;
+                }
 
                 var callEndTime = DateTime.Now;
                 var callDuration = (callEndTime - callStartTime).TotalSeconds;
@@ -2899,6 +4023,11 @@ namespace Softphone
                 _callCancellationTokenSource?.Dispose();
                 _callCancellationTokenSource = null;
                 _activeCallTask = null;
+                lock (_outgoingInviteLock)
+                {
+                    _pendingOutgoingInviteFinalResponseTcs = null;
+                    _pendingOutgoingInviteCallIdTcs = null;
+                }
 
                 if (callResult)
                 {
@@ -2971,7 +4100,7 @@ namespace Softphone
                                 var audioSinkType = mediaEndPoints.AudioSink.GetType().Name;
                                 SetStatus($"AudioSink type: {audioSinkType}");
                                 
-                                var startSinkMethod = mediaEndPoints.AudioSink.GetType().GetMethod("StartAudio", BindingFlags.Public | BindingFlags.Instance);
+                                var startSinkMethod = mediaEndPoints.AudioSink.GetType().GetMethod("StartAudioSink", BindingFlags.Public | BindingFlags.Instance);
                                 if (startSinkMethod != null)
                                 {
                                     var startTask = startSinkMethod.Invoke(mediaEndPoints.AudioSink, null);
@@ -3009,21 +4138,61 @@ namespace Softphone
                 }
                 else
                 {
-                    // Останавливаем ringback tone и RTP-диагностику при неудаче
-                    _toneGenerator?.Stop();
-                    StopRtpDiagnostics();
-                    // Воспроизводим busy tone (только если еще не играет)
-                    EnsureToneGenerator();
-                    if (_toneGenerator != null)
+                    // If the carrier rejects INVITE with 403, it is often because registration isn't valid yet
+                    // (race on startup) or the trunk needs a fresh REGISTER. Auto-recover once.
+                    if (_isSecondaryConnection && allowRecoveryRetry && _lastInviteFailureStatusCode == 403)
                     {
-                        _toneGenerator.PlayBusyTone();
-                        _ = Task.Delay(2000).ContinueWith(_ => _toneGenerator?.Stop());
+                        var nowUtc = DateTime.UtcNow;
+                        if ((nowUtc - _lastInvite403AtUtc) > TimeSpan.FromSeconds(10))
+                        {
+                            _lastInvite403AtUtc = nowUtc;
+                            MainWindow.Log("[SipService] [Connection2] INVITE rejected with 403 — restarting registration and retrying call once.");
+                            // Останавливаем RTP/тон первой попытки — иначе таймер логирует после Stop из «внутреннего» ретрая.
+                            _toneGenerator?.Stop();
+                            StopCallRecording();
+                            StopRtpDiagnostics();
+                            _isCallCancelled = false;
+                            _outgoingInviteTerminated = false;
+                            try
+                            {
+                                await StartRegistrationAsync();
+                                await Task.Delay(250);
+                            }
+                            catch (Exception ex)
+                            {
+                                MainWindow.Log($"[SipService] [Connection2] Failed to restart registration after 403: {ex.Message}");
+                            }
+
+                            await CallInternalAsync(number, allowRecoveryRetry: false);
+                            return;
+                        }
                     }
-                    
-                    SetStatus("Call failed (timeout/rejected).");
-                    _wasCallActive = false; // Сбрасываем флаг при неудаче
-                    MainWindow.Log("[SipService] Call failed (rejected/timeout), invoking OnCallEnded to close call window");
-                    System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
+
+                    // Secondary carrier sometimes returns 404 when number format isn't acceptable.
+                    // Auto-retry once by stripping leading '+' (keep E.164 digits) as some trunks expect digits-only.
+                    if (_isSecondaryConnection && allowRecoveryRetry && _lastInviteFailureStatusCode == 404)
+                    {
+                        var retryNumber = number?.Trim();
+                        if (!string.IsNullOrWhiteSpace(retryNumber) && retryNumber.StartsWith("+", StringComparison.Ordinal))
+                        {
+                            var noPlus = retryNumber.TrimStart('+');
+                            if (!string.IsNullOrWhiteSpace(noPlus))
+                            {
+                                MainWindow.Log($"[SipService] [Connection2] INVITE rejected with 404 — retrying once without '+': {noPlus}");
+                                _toneGenerator?.Stop();
+                                StopCallRecording();
+                                StopRtpDiagnostics();
+                                _isCallCancelled = false;
+                                _outgoingInviteTerminated = false;
+                                await CallInternalAsync(noPlus, allowRecoveryRetry: false);
+                                return;
+                            }
+                        }
+                    }
+
+                    // Финальный отказ: гудки/закрытие окна (Busy tone см. условие внутри Apply).
+                    ApplyOutboundFailureUiTeardown(playBusyTone: true);
+                    MainWindow.Log("[SipService] Call failed (rejected/timeout), OnCallEnded via ApplyOutboundFailureUiTeardown");
                 }
             }
             catch (System.Threading.Tasks.TaskCanceledException)
@@ -3036,6 +4205,7 @@ namespace Softphone
                 _activeCallTask = null;
                 SetStatus("Call cancelled by user");
                 _wasCallActive = false;
+                StopCallRecording();
                 System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
             }
             catch (Exception ex)
@@ -3048,6 +4218,7 @@ namespace Softphone
                 _activeCallTask = null;
                 SetStatus($"Call error: {ex.Message}");
                 _wasCallActive = false;
+                StopCallRecording();
                 System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
             }
         }
@@ -3179,7 +4350,7 @@ namespace Softphone
                         _isStoppingRecording = false;
                     }
 
-                    if (IsCallRecordingEnabled() && _rtpCallRecorder == null && !_isCallCancelled && !_isCallRejected && !string.IsNullOrEmpty(_lastCalledNumber))
+                    if (IsCallRecordingEnabled() && _rtpCallRecorder == null && !_isCallCancelled && !_isCallRejected && !_outgoingInviteTerminated && !string.IsNullOrEmpty(_lastCalledNumber))
                     {
                         try
                         {
@@ -3242,6 +4413,10 @@ namespace Softphone
                 
                 // 2) Отвечаем с медиа-сессией (SIPSorcery сам сделает SDP, 200 OK, диалог и т.д.)
                 bool ok = await savedUserAgent.Answer(uas, _voipMediaSession);
+                if (ok)
+                {
+                    // SRTP offer/answer is handled natively by SIPSorcery.
+                }
 
                 if (!ok)
                 {
@@ -3332,7 +4507,7 @@ namespace Softphone
                             var audioSinkType = mediaEndPoints.AudioSink.GetType().Name;
                             SetStatus($"AudioSink type: {audioSinkType}");
                             
-                            var startSinkMethod = mediaEndPoints.AudioSink.GetType().GetMethod("StartAudio", BindingFlags.Public | BindingFlags.Instance);
+                            var startSinkMethod = mediaEndPoints.AudioSink.GetType().GetMethod("StartAudioSink", BindingFlags.Public | BindingFlags.Instance);
                             if (startSinkMethod != null)
                             {
                                 var startTask = startSinkMethod.Invoke(mediaEndPoints.AudioSink, null);
@@ -3484,7 +4659,23 @@ namespace Softphone
         {
             // Всегда останавливаем гудки при Hangup, даже если звонок не активен
             _toneGenerator?.Stop();
+            try { _earlyMediaRingbackFallbackCts?.Cancel(); } catch { }
+            _localRingbackFallbackActive = false;
             MainWindow.Log("[SipService] Stopping tones on hangup");
+            try
+            {
+                string? attempt, dial, cid;
+                lock (_outgoingInviteLock)
+                {
+                    attempt = _currentOutgoingAttemptId;
+                    dial = _currentOutgoingDialNumber;
+                    cid = _currentOutgoingCallId;
+                }
+                MainWindow.Log($"[SipService] Hangup() debug: attempt={attempt ?? "<none>"}, dial='{dial ?? "<unknown>"}', lastCallId={cid ?? "<none>"}, IsCallActive={_userAgent?.IsCallActive}");
+            }
+            catch { }
+            // Clear last dialed number so late SIP responses won't be mistaken as call progress.
+            _lastCalledNumber = null;
             
             // Отменяем задачу звонка, если она еще выполняется (звонок еще не принят)
             if (_callCancellationTokenSource != null && !_callCancellationTokenSource.IsCancellationRequested)
@@ -3499,6 +4690,17 @@ namespace Softphone
                     MainWindow.Log($"[SipService] Error cancelling call task: {ex.Message}");
                 }
             }
+
+            // Cancel awaiting final INVITE response (if any).
+            try
+            {
+                lock (_outgoingInviteLock)
+                {
+                    _pendingOutgoingInviteFinalResponseTcs?.TrySetCanceled();
+                    _pendingOutgoingInviteCallIdTcs?.TrySetCanceled();
+                }
+            }
+            catch { }
             
             if (_userAgent == null)
             {
@@ -3557,7 +4759,8 @@ namespace Softphone
                 catch (Exception ex)
                 {
                     SetStatus($"Hangup error: {ex.Message}");
-                    // Все равно вызываем OnCallEnded через Dispatcher, чтобы уведомить UI
+                    StopCallRecording();
+                    StopRtpDiagnostics();
                     System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
                     throw;
                 }
@@ -3571,6 +4774,8 @@ namespace Softphone
                 
                 // Устанавливаем флаг отмены, чтобы не воспроизводить гудки для последующих SIP ответов
                 _isCallCancelled = true;
+                _outgoingInviteTerminated = true;
+                try { _earlyMediaRingbackFallbackCts?.Cancel(); } catch { }
                 
                 try
                 {
@@ -3617,8 +4822,10 @@ namespace Softphone
                 _activeCallTask = null;
                 _callCancellationTokenSource?.Dispose();
                 _callCancellationTokenSource = null;
-                
-                // SIP recording disabled (WebRTC-only).
+
+                // Recording may have started on a late 200 OK while IsCallActive is still false — finalize WAV.
+                StopCallRecording();
+                StopRtpDiagnostics();
                 
                 SetStatus("Call cancelled");
                 System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
@@ -3682,6 +4889,8 @@ namespace Softphone
             _rtpPayloadTypeCounts.Clear();
             _rtpTotalBytesReceived = 0;
             _rtpStatsStartTime = DateTime.UtcNow;
+            _earlyMediaAudioDetected = false;
+            _localRingbackFallbackActive = false;
             
             // Subscribe to RTP packets
             if (_voipMediaSession != null)
@@ -3786,6 +4995,50 @@ namespace Softphone
             {
                 var connLabel = _isSecondaryConnection ? "[Connection2] " : "";
                 MainWindow.Log($"[SipService] {connLabel}✓ FIRST RTP packet: PT={pt}, seq={seq}, len={payloadLen}, from={remoteEndPoint}");
+                // Do NOT stop ringback fallback just because RTP exists — some carriers send silent early media first.
+            }
+
+            // Detect if early media contains real audio (ringback/IVR). Once detected, stop any local ringback fallback.
+            // Keep this lightweight: decode only occasionally until we detect audio.
+            if (!_earlyMediaAudioDetected &&
+                pt == _rtpNegotiatedPayloadType &&
+                _audioEncoder != null &&
+                _rtpPacketsReceived <= 250 && // focus on early call setup
+                (_rtpPacketsReceived % 25 == 1)) // sample roughly twice a second at 50pps
+            {
+                try
+                {
+                    if (rtpPacket.Payload != null && rtpPacket.Payload.Length > 0)
+                    {
+                        var matchingFormats = _audioEncoder.SupportedFormats.Where(f => f.FormatID == pt).ToList();
+                        if (matchingFormats.Count > 0)
+                        {
+                            var pcm = _audioEncoder.DecodeAudio(rtpPacket.Payload, matchingFormats[0]);
+                            if (pcm != null && pcm.Length > 0)
+                            {
+                                int maxAmp = 0;
+                                for (int i = 0; i < pcm.Length; i++)
+                                {
+                                    int a = pcm[i];
+                                    if (a < 0) a = -a;
+                                    if (a > maxAmp) maxAmp = a;
+                                }
+
+                                // Threshold tuned for 16-bit PCM: near-zero is silence/comfort noise.
+                                if (maxAmp >= 250)
+                                {
+                                    _earlyMediaAudioDetected = true;
+                                    try { _earlyMediaRingbackFallbackCts?.Cancel(); } catch { }
+                                    try { _toneGenerator?.Stop(); } catch { }
+                                    _localRingbackFallbackActive = false;
+                                    var connLabel = _isSecondaryConnection ? "[Connection2] " : "";
+                                    MainWindow.Log($"[SipService] {connLabel}Early media audio detected (maxAmp={maxAmp}) — stopping local ringback fallback.");
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
             }
             
             // Write decoded audio to diagnostic WAV file (first 10 seconds only)
@@ -4510,42 +5763,39 @@ namespace Softphone
         /// Использует lock для защиты от race conditions при множественных звонках
         /// Защищен от множественных вызовов через флаг _isStoppingRecording
         /// </summary>
-        private async void StopCallRecording()
+        private void StopCallRecording()
         {
-            RtpCallRecorder? recorderToStop = null;
-            
-            // Извлекаем ссылку на рекордер под lock, чтобы избежать race condition
+            RtpCallRecorder? recorderToStop;
+            string? expectedRecordingPath;
             lock (_recorderLock)
             {
-                // Защита от множественных вызовов
                 if (_isStoppingRecording || _rtpCallRecorder == null)
                     return;
-                    
-                _isStoppingRecording = true; // Устанавливаем флаг перед остановкой
+
+                _isStoppingRecording = true;
                 recorderToStop = _rtpCallRecorder;
-
-                // Уже на этом этапе кешируем путь к файлу, чтобы он был доступен CallWindow/AmoCRM
-                // даже пока асинхронная остановка записи еще выполняется.
+                expectedRecordingPath = recorderToStop?.RecordingFilePath;
                 if (recorderToStop?.RecordingFilePath != null)
-                {
                     _lastRecordingFilePath = recorderToStop.RecordingFilePath;
-                }
-
-                // Очищаем ссылку, чтобы следующий звонок мог создать новый рекордер.
                 _rtpCallRecorder = null;
+                _recordingFinalizeTask = StopCallRecordingCoreAsync(recorderToStop, expectedRecordingPath);
             }
-            
-            // Останавливаем запись вне lock, чтобы не блокировать другие операции
+        }
+
+        private async Task StopCallRecordingCoreAsync(RtpCallRecorder? recorderToStop, string? expectedRecordingPath)
+        {
+            bool finalizeAttempted = false;
+
             try
             {
                 if (recorderToStop != null && recorderToStop.IsRecording)
                 {
+                    finalizeAttempted = true;
                     MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} Stopping call recording...");
-                    await recorderToStop.StopRecordingAsync(DateTime.Now);
-                    
-                    // Сохраняем финальный путь к файлу, чтобы его могли увидеть CallWindow/AmoCRM
-                    _lastRecordingFilePath = recorderToStop.RecordingFilePath;
-                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} Call recording stopped. File: {_lastRecordingFilePath ?? "null"}");
+                    await recorderToStop.StopRecordingAsync(DateTime.Now).ConfigureAwait(false);
+
+                    string finalPath = recorderToStop.RecordingFilePath ?? expectedRecordingPath ?? "null";
+                    MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} Call recording stopped. File: {finalPath}");
                 }
             }
             catch (Exception ex)
@@ -4554,34 +5804,84 @@ namespace Softphone
             }
             finally
             {
-                // Сбрасываем флаг после завершения остановки
+                bool produced = false;
                 lock (_recorderLock)
                 {
                     _isStoppingRecording = false;
+
+                    if (finalizeAttempted && !string.IsNullOrEmpty(expectedRecordingPath))
+                    {
+                        produced = File.Exists(expectedRecordingPath) && new FileInfo(expectedRecordingPath).Length > 0;
+                        if (!produced)
+                        {
+                            produced = RtpCallRecorder.TryRecoverWavFromOrphanPcm(expectedRecordingPath);
+                            if (produced)
+                                MainWindow.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")} Recovered WAV after stop: {expectedRecordingPath}");
+                        }
+
+                        _sipRecordingStopHadNoOutputFile = !produced;
+                        if (!produced && string.Equals(_lastRecordingFilePath, expectedRecordingPath, StringComparison.OrdinalIgnoreCase))
+                            _lastRecordingFilePath = null;
+                    }
+                    else
+                    {
+                        _sipRecordingStopHadNoOutputFile = false;
+                    }
+
+                    _recordingFinalizeTask = null;
                 }
             }
         }
+
+        /// <summary>Stops recording/RTP and notifies UI — use instead of bare OnCallEnded when a call may have been answered.</summary>
+        private void EndCallAndNotifyUi()
+        {
+            StopCallRecording();
+            StopRtpDiagnostics();
+            System.Windows.Application.Current?.Dispatcher.BeginInvoke(new Action(() => OnCallEnded?.Invoke()));
+        }
         
         /// <summary>
-        /// Проверяет, включен ли WebRTC режим для звонков
+        /// Проверяет, включён ли WebRTC режим для указанного подключения.
+        /// secondary=false читает MainConnectionTransport (с fallback на UseWebRtcAudio).
+        /// secondary=true читает SecondaryConnectionTransport.
         /// </summary>
-        private bool ShouldUseWebRtc()
+        private bool ShouldUseWebRtcFor(bool secondary)
         {
             try
             {
                 string settingsFilePath = AppDataHelper.GetSettingsFilePath();
-                if (File.Exists(settingsFilePath))
+                if (!File.Exists(settingsFilePath)) return false;
+                string json = File.ReadAllText(settingsFilePath);
+                var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null) return false;
+
+                if (secondary)
                 {
-                    string json = File.ReadAllText(settingsFilePath);
-                    var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
-                    return settings?.UseWebRtcAudio ?? false;
+                    return AppSettings.SecondaryLineUsesWebRtc(settings);
                 }
+
+                // Legacy fallback: если MainConnectionTransport не выставлен, смотрим UseWebRtcAudio.
+                if (string.IsNullOrWhiteSpace(settings.MainConnectionTransport) ||
+                    string.Equals(settings.MainConnectionTransport, "Sip", StringComparison.OrdinalIgnoreCase))
+                {
+                    return settings.UseWebRtcAudio;
+                }
+                return string.Equals(settings.MainConnectionTransport, "WebRtc", StringComparison.OrdinalIgnoreCase);
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[SipService] Error checking WebRTC setting: {ex.Message}");
             }
             return false;
+        }
+
+        /// <summary>
+        /// Backward-compatible wrapper. For new code prefer ShouldUseWebRtcFor(_isSecondaryConnection).
+        /// </summary>
+        private bool ShouldUseWebRtc()
+        {
+            return ShouldUseWebRtcFor(_isSecondaryConnection);
         }
     }
 }

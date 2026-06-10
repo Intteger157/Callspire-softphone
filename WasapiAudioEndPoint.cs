@@ -57,6 +57,9 @@ namespace Softphone
         private BufferedWaveProvider? _resamplerInput48k;
         private WdlResamplingSampleProvider? _resampler48k;
 
+        // Guard against concurrent StartAudio / StartAudioSink (VoIPMediaSession + SipService both call these).
+        private readonly object _startLock = new();
+
         // Playback (speaker)
         private IWavePlayer? _playback;
         private BufferedWaveProvider? _playbackBuffer;
@@ -95,6 +98,8 @@ namespace Softphone
                     _nativeAec = NativeAec.Create(CODEC_RATE, 1, FRAME_MS);
                     if (_nativeAec != IntPtr.Zero)
                         MainWindow.Log("[WasapiAudio] Native AEC enabled (webrtc_apm.dll)");
+                    else if (!NativeAec.IsNativeAecRuntimeSupported)
+                        MainWindow.Log("[WasapiAudio] Native AEC unavailable: CPU has no AVX2 (webrtc_apm.dll requires it). Echo cancellation off; calls still work.");
                     else
                         MainWindow.Log("[WasapiAudio] ⚠ Native AEC DLL not found — echo cancellation disabled. " +
                                        "Place webrtc_apm.dll next to Callspire.exe to enable AEC.");
@@ -195,75 +200,78 @@ namespace Softphone
 
         public Task StartAudio()
         {
-            if (_isCapturing || _isClosed) return Task.CompletedTask;
-
-            try
+            lock (_startLock)
             {
-                var device = GetCaptureDevice();
-                _capture = new WasapiCapture(device);
+                if (_isCapturing || _isClosed) return Task.CompletedTask;
 
-                var nf = _capture.WaveFormat;
-                _captureNativeRate = nf.SampleRate;
-                _captureNativeChannels = nf.Channels;
-                _captureNativeBitsPerSample = nf.BitsPerSample;
-                _captureIsFloat = nf.Encoding == WaveFormatEncoding.IeeeFloat;
-
-                MainWindow.Log($"[WasapiAudio] Capture device: {device.FriendlyName}");
-                MainWindow.Log($"[WasapiAudio] Capture native format: {nf.SampleRate}Hz, {nf.BitsPerSample}bit, {nf.Channels}ch, {nf.Encoding}");
-
-                // Set up high-quality resampler chain:
-                // BufferedWaveProvider (mono float @ native rate)
-                //   → WaveToSampleProvider (handles IEEE float natively)
-                //     → WdlResamplingSampleProvider (→ 8000 Hz)
-                // WDL Resampler uses windowed sinc interpolation — same quality as Cockos Reaper DAW
-                if (_captureNativeRate != CODEC_RATE)
+                try
                 {
-                    var monoFloatFormat = WaveFormat.CreateIeeeFloatWaveFormat(_captureNativeRate, 1);
-                    _resamplerInput = new BufferedWaveProvider(monoFloatFormat)
+                    var device = GetCaptureDevice();
+                    _capture = new WasapiCapture(device);
+
+                    var nf = _capture.WaveFormat;
+                    _captureNativeRate = nf.SampleRate;
+                    _captureNativeChannels = nf.Channels;
+                    _captureNativeBitsPerSample = nf.BitsPerSample;
+                    _captureIsFloat = nf.Encoding == WaveFormatEncoding.IeeeFloat;
+
+                    MainWindow.Log($"[WasapiAudio] Capture device: {device.FriendlyName}");
+                    MainWindow.Log($"[WasapiAudio] Capture native format: {nf.SampleRate}Hz, {nf.BitsPerSample}bit, {nf.Channels}ch, {nf.Encoding}");
+
+                    // Set up high-quality resampler chain:
+                    // BufferedWaveProvider (mono float @ native rate)
+                    //   → WaveToSampleProvider (handles IEEE float natively)
+                    //     → WdlResamplingSampleProvider (→ 8000 Hz)
+                    // WDL Resampler uses windowed sinc interpolation — same quality as Cockos Reaper DAW
+                    if (_captureNativeRate != CODEC_RATE)
                     {
-                        ReadFully = false,
-                        DiscardOnBufferOverflow = true,
-                        BufferDuration = TimeSpan.FromMilliseconds(200)
-                    };
-                    var sampleProvider = new WaveToSampleProvider(_resamplerInput);
-                    _resampler = new WdlResamplingSampleProvider(sampleProvider, CODEC_RATE);
-                    MainWindow.Log($"[WasapiAudio] ✓ WDL Resampler initialized: {_captureNativeRate} → {CODEC_RATE} Hz (codec path)");
-                }
-                else
-                {
-                    MainWindow.Log($"[WasapiAudio] Capture rate matches codec rate ({CODEC_RATE} Hz), no resampling needed");
-                }
-
-                // Second resampler: native rate → 48 kHz for recording tap (full voice bandwidth)
-                if (_captureNativeRate != RECORDING_RATE)
-                {
-                    var monoFloatFormat48k = WaveFormat.CreateIeeeFloatWaveFormat(_captureNativeRate, 1);
-                    _resamplerInput48k = new BufferedWaveProvider(monoFloatFormat48k)
+                        var monoFloatFormat = WaveFormat.CreateIeeeFloatWaveFormat(_captureNativeRate, 1);
+                        _resamplerInput = new BufferedWaveProvider(monoFloatFormat)
+                        {
+                            ReadFully = false,
+                            DiscardOnBufferOverflow = true,
+                            BufferDuration = TimeSpan.FromMilliseconds(200)
+                        };
+                        var sampleProvider = new WaveToSampleProvider(_resamplerInput);
+                        _resampler = new WdlResamplingSampleProvider(sampleProvider, CODEC_RATE);
+                        MainWindow.Log($"[WasapiAudio] ✓ WDL Resampler initialized: {_captureNativeRate} → {CODEC_RATE} Hz (codec path)");
+                    }
+                    else
                     {
-                        ReadFully = false,
-                        DiscardOnBufferOverflow = true,
-                        BufferDuration = TimeSpan.FromMilliseconds(200)
+                        MainWindow.Log($"[WasapiAudio] Capture rate matches codec rate ({CODEC_RATE} Hz), no resampling needed");
+                    }
+
+                    // Second resampler: native rate → 48 kHz for recording tap (full voice bandwidth)
+                    if (_captureNativeRate != RECORDING_RATE)
+                    {
+                        var monoFloatFormat48k = WaveFormat.CreateIeeeFloatWaveFormat(_captureNativeRate, 1);
+                        _resamplerInput48k = new BufferedWaveProvider(monoFloatFormat48k)
+                        {
+                            ReadFully = false,
+                            DiscardOnBufferOverflow = true,
+                            BufferDuration = TimeSpan.FromMilliseconds(200)
+                        };
+                        var sampleProvider48k = new WaveToSampleProvider(_resamplerInput48k);
+                        _resampler48k = new WdlResamplingSampleProvider(sampleProvider48k, RECORDING_RATE);
+                        MainWindow.Log($"[WasapiAudio] ✓ WDL Resampler initialized: {_captureNativeRate} → {RECORDING_RATE} Hz (recording path)");
+                    }
+
+                    _capture.DataAvailable += OnCaptureData;
+                    _capture.RecordingStopped += (s, e) =>
+                    {
+                        if (e.Exception != null)
+                            MainWindow.Log($"[WasapiAudio] Capture stopped with error: {e.Exception.Message}");
                     };
-                    var sampleProvider48k = new WaveToSampleProvider(_resamplerInput48k);
-                    _resampler48k = new WdlResamplingSampleProvider(sampleProvider48k, RECORDING_RATE);
-                    MainWindow.Log($"[WasapiAudio] ✓ WDL Resampler initialized: {_captureNativeRate} → {RECORDING_RATE} Hz (recording path)");
+
+                    _capture.StartRecording();
+                    _isCapturing = true;
+                    MainWindow.Log("[WasapiAudio] ✓ Capture started (WASAPI Communications mode)");
                 }
-
-                _capture.DataAvailable += OnCaptureData;
-                _capture.RecordingStopped += (s, e) =>
+                catch (Exception ex)
                 {
-                    if (e.Exception != null)
-                        MainWindow.Log($"[WasapiAudio] Capture stopped with error: {e.Exception.Message}");
-                };
-
-                _capture.StartRecording();
-                _isCapturing = true;
-                MainWindow.Log("[WasapiAudio] ✓ Capture started (WASAPI Communications mode)");
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[WasapiAudio] Error starting capture: {ex.Message}");
-                OnAudioSourceError?.Invoke(ex.Message);
+                    MainWindow.Log($"[WasapiAudio] Error starting capture: {ex.Message}");
+                    OnAudioSourceError?.Invoke(ex.Message);
+                }
             }
 
             return Task.CompletedTask;
@@ -551,58 +559,61 @@ namespace Softphone
 
         public Task StartAudioSink()
         {
-            if (_isPlaying || _isClosed) return Task.CompletedTask;
-
-            try
+            lock (_startLock)
             {
-                // Create playback buffer at codec rate (8000 Hz, 16-bit, mono).
-                // Keep buffer short to minimise echo delay (large buffers push
-                // the acoustic round-trip beyond what AEC can handle).
-                // Keep playback buffer small enough to avoid overflow discards,
-                // but still large enough to prevent starvation.
-                // If discards happen, AEC reference becomes discontinuous and
-                // users hear "themselves".
-                _playbackBuffer = new BufferedWaveProvider(new WaveFormat(CODEC_RATE, 16, 1))
-                {
-                    // Slightly lower buffer duration reduces overrun risk and keeps AEC reference aligned.
-                    BufferDuration = TimeSpan.FromMilliseconds(160),
-                    DiscardOnBufferOverflow = true,
-                    ReadFully = true
-                };
+                if (_isPlaying || _isClosed) return Task.CompletedTask;
 
-                _aecTap = new AecTapWaveProvider(_playbackBuffer, _nativeAec, sampleCount =>
-                {
-                    _aecMetrics.OnRenderPlayed(sampleCount, _playbackBuffer?.BufferedBytes ?? 0);
-                });
-
-                // Try WASAPI playback first
                 try
                 {
-                    var device = GetRenderDevice();
-                    // Lower latency reduces acoustic round-trip delay and helps AEC stay stable under jitter.
-                    _playback = new WasapiOut(device, AudioClientShareMode.Shared, true, 10);
-                    _playback.Init(_aecTap);
-                    MainWindow.Log($"[WasapiAudio] Playback device (WASAPI): {device.FriendlyName}");
-                }
-                catch (Exception wasapiEx)
-                {
-                    // Fall back to WaveOut (WinMM) for playback - always works
-                    MainWindow.Log($"[WasapiAudio] WASAPI playback failed ({wasapiEx.Message}), using WaveOut");
-                    int deviceNum = _audioOutDeviceIndex >= 0 ? _audioOutDeviceIndex : -1;
-                    var waveOut = new WaveOutEvent { DeviceNumber = deviceNum };
-                    waveOut.Init(_aecTap);
-                    _playback = waveOut;
-                    MainWindow.Log($"[WasapiAudio] Playback device (WaveOut): device #{deviceNum}");
-                }
+                    // Create playback buffer at codec rate (8000 Hz, 16-bit, mono).
+                    // Keep buffer short to minimise echo delay (large buffers push
+                    // the acoustic round-trip beyond what AEC can handle).
+                    // Keep playback buffer small enough to avoid overflow discards,
+                    // but still large enough to prevent starvation.
+                    // If discards happen, AEC reference becomes discontinuous and
+                    // users hear "themselves".
+                    _playbackBuffer = new BufferedWaveProvider(new WaveFormat(CODEC_RATE, 16, 1))
+                    {
+                        // Slightly lower buffer duration reduces overrun risk and keeps AEC reference aligned.
+                        BufferDuration = TimeSpan.FromMilliseconds(160),
+                        DiscardOnBufferOverflow = true,
+                        ReadFully = true
+                    };
 
-                _playback.Play();
-                _isPlaying = true;
-                MainWindow.Log("[WasapiAudio] ✓ Playback started");
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[WasapiAudio] Error starting playback: {ex.Message}");
-                OnAudioSinkError?.Invoke(ex.Message);
+                    _aecTap = new AecTapWaveProvider(_playbackBuffer, _nativeAec, sampleCount =>
+                    {
+                        _aecMetrics.OnRenderPlayed(sampleCount, _playbackBuffer?.BufferedBytes ?? 0);
+                    });
+
+                    // Try WASAPI playback first
+                    try
+                    {
+                        var device = GetRenderDevice();
+                        // Lower latency reduces acoustic round-trip delay and helps AEC stay stable under jitter.
+                        _playback = new WasapiOut(device, AudioClientShareMode.Shared, true, 10);
+                        _playback.Init(_aecTap);
+                        MainWindow.Log($"[WasapiAudio] Playback device (WASAPI): {device.FriendlyName}");
+                    }
+                    catch (Exception wasapiEx)
+                    {
+                        // Fall back to WaveOut (WinMM) for playback - always works
+                        MainWindow.Log($"[WasapiAudio] WASAPI playback failed ({wasapiEx.Message}), using WaveOut");
+                        int deviceNum = _audioOutDeviceIndex >= 0 ? _audioOutDeviceIndex : -1;
+                        var waveOut = new WaveOutEvent { DeviceNumber = deviceNum };
+                        waveOut.Init(_aecTap);
+                        _playback = waveOut;
+                        MainWindow.Log($"[WasapiAudio] Playback device (WaveOut): device #{deviceNum}");
+                    }
+
+                    _playback.Play();
+                    _isPlaying = true;
+                    MainWindow.Log("[WasapiAudio] ✓ Playback started");
+                }
+                catch (Exception ex)
+                {
+                    MainWindow.Log($"[WasapiAudio] Error starting playback: {ex.Message}");
+                    OnAudioSinkError?.Invoke(ex.Message);
+                }
             }
 
             return Task.CompletedTask;

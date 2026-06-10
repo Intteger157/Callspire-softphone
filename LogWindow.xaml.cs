@@ -18,13 +18,17 @@ namespace Softphone
         private readonly List<string> _amoLogs = new List<string>();
         private readonly List<string> _sipLogs = new List<string>();
         private readonly List<string> _callLogs = new List<string>();
+
+        // Путь к сегодняшнему файлу лога для полного экспорта
+        private string? _logFilePath;
         
-        private const int MaxLogsPerCategory = 2000; // Ограничение для каждой категории
+        private const int MaxLogsPerCategory = 2000; // Ограничение для категорий в UI
 
         public LogWindow()
         {
             InitializeComponent();
             NativeWindowAppearanceManager.Attach(this);
+            _logFilePath = FileLogService.Instance.GetCurrentLogFilePath();
             
             // Подписываемся на изменение активной вкладки для обновления отображения
             if (LogTabControl != null)
@@ -273,13 +277,6 @@ namespace Softphone
 
         private void ExportButton_Click(object sender, RoutedEventArgs e)
         {
-            string? textToExport = GetActiveTabText();
-            if (string.IsNullOrEmpty(textToExport))
-            {
-                CustomMessageBox.Show("No logs to export.", "Export", MessageBoxButton.OK, MessageBoxImage.Information, this);
-                return;
-            }
-
             try
             {
                 var saveDialog = new SaveFileDialog
@@ -289,11 +286,46 @@ namespace Softphone
                     DefaultExt = "txt"
                 };
 
-                if (saveDialog.ShowDialog() == true)
+                if (saveDialog.ShowDialog() != true)
+                    return;
+
+                // Экспортируем из файла лога — там полный лог за день без ограничений.
+                // Если файл лога доступен, копируем его целиком. Иначе fallback на буфер UI.
+                bool exportedFromFile = false;
+                if (!string.IsNullOrEmpty(_logFilePath) && File.Exists(_logFilePath))
                 {
-                    File.WriteAllText(saveDialog.FileName, textToExport);
-                    CustomMessageBox.Show($"Logs exported successfully to:\n{saveDialog.FileName}", "Export Success", MessageBoxButton.OK, MessageBoxImage.Information, this);
+                    try
+                    {
+                        using var src = new FileStream(_logFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                        using var dst = new FileStream(saveDialog.FileName, FileMode.Create, FileAccess.Write, FileShare.None);
+                        src.CopyTo(dst);
+                        exportedFromFile = true;
+                    }
+                    catch
+                    {
+                        // File locked or error — fall through to UI buffer
+                    }
                 }
+
+                if (!exportedFromFile)
+                {
+                    // Fallback: экспортируем видимый буфер (может быть неполным)
+                    string? textToExport = GetActiveTabText();
+                    if (string.IsNullOrEmpty(textToExport))
+                    {
+                        CustomMessageBox.Show("No logs to export.", "Export", MessageBoxButton.OK, MessageBoxImage.Information, this);
+                        return;
+                    }
+                    File.WriteAllText(saveDialog.FileName, textToExport);
+                }
+
+                CustomMessageBox.Show(
+                    $"Logs exported successfully to:\n{saveDialog.FileName}" +
+                    (exportedFromFile ? "\n\n(Full log file — complete history)" : "\n\n(UI buffer only — may be incomplete)"),
+                    "Export Success",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information,
+                    this);
             }
             catch (Exception ex)
             {
