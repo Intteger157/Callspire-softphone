@@ -11,6 +11,8 @@
 		<TargetFramework>net8.0-android34.0</TargetFramework>
 		<!-- Align with TFM — Avalonia.Android 11.3.x requires android34, not default android21 -->
 		<SupportedOSPlatformVersion>34</SupportedOSPlatformVersion>
+		<CheckEolTargetFramework>false</CheckEolTargetFramework>
+		<AssetTargetFallback>$(AssetTargetFallback);net8.0-android34.0</AssetTargetFallback>
 		<OutputType>Exe</OutputType>
 		<Nullable>enable</Nullable>
 		<RootNamespace>Softphone.Android</RootNamespace>
