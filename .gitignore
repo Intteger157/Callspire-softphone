@@ -138,6 +138,3 @@ build/
 
 # ── Separate tools (not part of Callspire softphone) ─────────────────────────
 asterisk-webcfg/
-
-# ── GitHub Actions (enable locally if needed) ────────────────────────────────
-.github/

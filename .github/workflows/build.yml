@@ -1,0 +1,197 @@
+name: Build
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ main, master ]
+
+# Cancel in-progress runs for the same ref (saves minutes on rapid pushes).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 8.1  Windows Desktop — net8.0-windows10.0.17763  (WPF + Avalonia)
+  # ═══════════════════════════════════════════════════════════════════════════
+  build-windows:
+    name: Windows Desktop
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763
+
+      - name: Build
+        run: >
+          dotnet build Callspire.Desktop/Callspire.Desktop.csproj
+          -f net8.0-windows10.0.17763
+          -c Release
+          --no-restore
+
+      - name: Publish
+        run: >
+          dotnet publish Callspire.Desktop/Callspire.Desktop.csproj
+          -f net8.0-windows10.0.17763
+          -c Release
+          -r win-x64
+          --no-self-contained
+          -o publish/windows
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: callspire-windows-x64
+          path: publish/windows
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 8.2  macOS Desktop — net8.0  (Avalonia + PortAudio)
+  # ═══════════════════════════════════════════════════════════════════════════
+  build-macos:
+    name: macOS Desktop
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -f net8.0
+
+      - name: Build
+        run: >
+          dotnet build Callspire.Desktop/Callspire.Desktop.csproj
+          -f net8.0
+          -c Release
+          --no-restore
+
+      - name: Publish
+        run: >
+          dotnet publish Callspire.Desktop/Callspire.Desktop.csproj
+          -f net8.0
+          -c Release
+          -r osx-x64
+          --no-self-contained
+          -o publish/macos
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: callspire-macos-x64
+          path: publish/macos
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 8.3  Linux Desktop — net8.0  (Avalonia + PortAudio)
+  # ═══════════════════════════════════════════════════════════════════════════
+  build-linux:
+    name: Linux Desktop
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # libportaudio2 is required at build time (PortAudioNet P/Invoke)
+      - name: Install PortAudio
+        run: sudo apt-get install -y --no-install-recommends libportaudio2
+
+      - name: Restore
+        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -f net8.0
+
+      - name: Build
+        run: >
+          dotnet build Callspire.Desktop/Callspire.Desktop.csproj
+          -f net8.0
+          -c Release
+          --no-restore
+
+      - name: Publish
+        run: >
+          dotnet publish Callspire.Desktop/Callspire.Desktop.csproj
+          -f net8.0
+          -c Release
+          -r linux-x64
+          --no-self-contained
+          -o publish/linux
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: callspire-linux-x64
+          path: publish/linux
+          retention-days: 30
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # 8.4  Android APK — net8.0-android34.0  (Avalonia 11.3.x)
+  # ═══════════════════════════════════════════════════════════════════════════
+  build-android:
+    name: Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Install Android workload
+        run: dotnet workload install android --source https://api.nuget.org/v3/index.json
+
+      # The GitHub-hosted ubuntu-latest runner already has Android SDK tools at
+      # $ANDROID_HOME.  Set ANDROID_SDK_ROOT so the .NET Android tooling finds it.
+      - name: Set Android SDK root
+        run: echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+
+      - name: Restore
+        run: dotnet restore Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0
+
+      - name: Build APK
+        run: >
+          dotnet build Callspire.Android/Callspire.Android.csproj
+          -f net8.0-android34.0
+          -c Release
+          --no-restore
+          -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }}
+
+      - name: Publish APK
+        run: >
+          dotnet publish Callspire.Android/Callspire.Android.csproj
+          -f net8.0-android34.0
+          -c Release
+          --no-restore
+          -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }}
+          -o publish/android
+
+      - name: Upload Android artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: callspire-android-apk
+          path: publish/android/*.apk
+          retention-days: 30
