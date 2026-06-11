@@ -22,7 +22,6 @@
 
 	<ItemGroup>
 		<ProjectReference Include="..\Callspire.Core\Callspire.Core.csproj" />
-		<ProjectReference Include="..\Callspire.Desktop\Callspire.Desktop.csproj" />
 	</ItemGroup>
 
 	<ItemGroup>

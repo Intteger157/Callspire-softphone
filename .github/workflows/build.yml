@@ -34,24 +34,15 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      # dotnet restore does not accept -f/--framework; build/publish do.
       - name: Restore
-        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763
+        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj
 
       - name: Build
-        run: >
-          dotnet build Callspire.Desktop/Callspire.Desktop.csproj
-          -f net8.0-windows10.0.17763
-          -c Release
-          --no-restore
+        run: dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release --no-restore
 
       - name: Publish
-        run: >
-          dotnet publish Callspire.Desktop/Callspire.Desktop.csproj
-          -f net8.0-windows10.0.17763
-          -c Release
-          -r win-x64
-          --no-self-contained
-          -o publish/windows
+        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release -r win-x64 --no-self-contained --no-build -o publish/windows
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
@@ -76,23 +67,13 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Restore
-        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -f net8.0
+        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj
 
       - name: Build
-        run: >
-          dotnet build Callspire.Desktop/Callspire.Desktop.csproj
-          -f net8.0
-          -c Release
-          --no-restore
+        run: dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release --no-restore
 
       - name: Publish
-        run: >
-          dotnet publish Callspire.Desktop/Callspire.Desktop.csproj
-          -f net8.0
-          -c Release
-          -r osx-x64
-          --no-self-contained
-          -o publish/macos
+        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release -r osx-x64 --no-self-contained --no-build -o publish/macos
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
@@ -121,23 +102,13 @@ jobs:
         run: sudo apt-get install -y --no-install-recommends libportaudio2
 
       - name: Restore
-        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -f net8.0
+        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj
 
       - name: Build
-        run: >
-          dotnet build Callspire.Desktop/Callspire.Desktop.csproj
-          -f net8.0
-          -c Release
-          --no-restore
+        run: dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release --no-restore
 
       - name: Publish
-        run: >
-          dotnet publish Callspire.Desktop/Callspire.Desktop.csproj
-          -f net8.0
-          -c Release
-          -r linux-x64
-          --no-self-contained
-          -o publish/linux
+        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release -r linux-x64 --no-self-contained --no-build -o publish/linux
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -147,7 +118,7 @@ jobs:
           retention-days: 30
 
   # ═══════════════════════════════════════════════════════════════════════════
-  # 8.4  Android APK — net8.0-android34.0  (Avalonia 11.3.x)
+  # 8.4  Android APK — net8.0-android34.0  (Avalonia 12.x)
   # ═══════════════════════════════════════════════════════════════════════════
   build-android:
     name: Android APK
@@ -170,24 +141,13 @@ jobs:
         run: echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
       - name: Restore
-        run: dotnet restore Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0
+        run: dotnet restore Callspire.Android/Callspire.Android.csproj
 
       - name: Build APK
-        run: >
-          dotnet build Callspire.Android/Callspire.Android.csproj
-          -f net8.0-android34.0
-          -c Release
-          --no-restore
-          -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }}
+        run: dotnet build Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0 -c Release --no-restore -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }}
 
       - name: Publish APK
-        run: >
-          dotnet publish Callspire.Android/Callspire.Android.csproj
-          -f net8.0-android34.0
-          -c Release
-          --no-restore
-          -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }}
-          -o publish/android
+        run: dotnet publish Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0 -c Release --no-build -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }} -o publish/android
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
