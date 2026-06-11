@@ -9,8 +9,9 @@
 		  provides the .NET 10 mobile workload (see tasks.md 7.1 note).
 		-->
 		<TargetFramework>net8.0-android34.0</TargetFramework>
-		<!-- Align with TFM — Avalonia.Android 11.3.x requires android34, not default android21 -->
-		<SupportedOSPlatformVersion>34</SupportedOSPlatformVersion>
+		<!-- Compile against API 34 (TFM); min installable API 26 -->
+		<TargetPlatformVersion>34.0</TargetPlatformVersion>
+		<SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
 		<CheckEolTargetFramework>false</CheckEolTargetFramework>
 		<CheckEolWorkloads>false</CheckEolWorkloads>
 		<AssetTargetFallback>$(AssetTargetFallback);net8.0-android34.0</AssetTargetFallback>
