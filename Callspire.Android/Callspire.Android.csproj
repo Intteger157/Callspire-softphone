@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<!--
+		  Avalonia 12 Android requires net10.0-android36.0 (.NET 10 SDK).
+		  This head targets net8.0-android34.0 + Avalonia 11.3.x for compile
+		  verification on .NET 8/9 SDKs with the android workload installed.
+		  Upgrade to Avalonia 12 + net10.0-android when the build environment
+		  provides the .NET 10 mobile workload (see tasks.md 7.1 note).
+		-->
+		<TargetFramework>net8.0-android34.0</TargetFramework>
+		<SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
+		<OutputType>Exe</OutputType>
+		<Nullable>enable</Nullable>
+		<RootNamespace>Softphone.Android</RootNamespace>
+		<ApplicationId>com.callspire.softphone</ApplicationId>
+		<ApplicationVersion>1</ApplicationVersion>
+		<ApplicationDisplayVersion>$(AppVersion)</ApplicationDisplayVersion>
+		<AndroidManifest>AndroidManifest.xml</AndroidManifest>
+		<RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Callspire.Core\Callspire.Core.csproj" />
+		<ProjectReference Include="..\Callspire.Desktop\Callspire.Desktop.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="Avalonia" Version="11.3.11" />
+		<PackageReference Include="Avalonia.Android" Version="11.3.11" />
+		<PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.11" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<AndroidPermission Include="android.permission.INTERNET" />
+		<AndroidPermission Include="android.permission.RECORD_AUDIO" />
+		<AndroidPermission Include="android.permission.MODIFY_AUDIO_SETTINGS" />
+		<AndroidPermission Include="android.permission.WAKE_LOCK" />
+		<AndroidPermission Include="android.permission.FOREGROUND_SERVICE" />
+		<AndroidPermission Include="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+		<AndroidPermission Include="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+		<AndroidPermission Include="android.permission.POST_NOTIFICATIONS" />
+	</ItemGroup>
+
+</Project>

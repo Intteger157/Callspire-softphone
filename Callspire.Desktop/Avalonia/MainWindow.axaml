@@ -1,0 +1,870 @@
+<Window x:Class="Softphone.Avalonia.MainWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ic="using:FluentIcons.Avalonia"
+        x:CompileBindings="False"
+        Title="Softphone"
+        Height="780" Width="1250"
+        MinHeight="560" MinWidth="780"
+        WindowDecorations="None"
+        CanResize="True"
+        WindowStartupLocation="CenterScreen"
+        Background="{DynamicResource BackgroundDarkBrush}"
+        ExtendClientAreaToDecorationsHint="True"
+
+        TransparencyLevelHint="None">
+
+    <Border Name="WindowSurface"
+            Background="{DynamicResource BackgroundDarkBrush}"
+            CornerRadius="8"
+            ClipToBounds="True">
+
+        <Grid Name="RootGrid">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- ══════════════════════ Title Bar ══════════════════════ -->
+            <Border Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}"
+                    CornerRadius="8,8,0,0">
+                <Grid PointerPressed="TitleBar_PointerPressed"
+                      PointerReleased="TitleBar_PointerReleased"
+                      PointerMoved="TitleBar_PointerMoved">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Logo + title -->
+                    <StackPanel Grid.Column="0" Orientation="Horizontal"
+                                Margin="16,10,0,10" VerticalAlignment="Center">
+                        <Image Width="18" Height="18" Margin="0,0,8,0"
+                               Source="/Assets/icon.ico"
+                               RenderOptions.BitmapInterpolationMode="HighQuality"/>
+                        <TextBlock Text="Softphone"
+                                   FontSize="14" FontWeight="SemiBold"
+                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                   VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- Connection status in title bar -->
+                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                VerticalAlignment="Center" Margin="0,0,12,0">
+                        <Border Name="OnlineStatusIndicator" IsVisible="False" Margin="0,0,6,0" VerticalAlignment="Center">
+                            <ic:SymbolIcon Symbol="CheckmarkCircle" Width="14" Height="14"
+                                           Foreground="{DynamicResource AccentGreenBrush}"/>
+                        </Border>
+                        <TextBlock Name="UserAccountTextBlock"
+                                   Text="Not connected"
+                                   FontSize="12"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   VerticalAlignment="Center">
+                            <ToolTip.Tip>
+                                <TextBlock Name="UserAccountToolTipTextBlock" Text="Not connected" FontSize="12"/>
+                            </ToolTip.Tip>
+                        </TextBlock>
+                    </StackPanel>
+
+                    <!-- Window buttons -->
+                    <StackPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button Content="─" Width="46" Height="32"
+                                Background="Transparent"
+                                Foreground="{DynamicResource TextSecondaryBrush}"
+                                BorderThickness="0" FontSize="16"
+                                VerticalAlignment="Stretch"
+                                Click="MinimizeButton_Click"
+                                Cursor="Hand"/>
+                        <Button Content="✕"
+                                Click="CloseButton_Click"
+                                Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- ══════════════════════ Main Content ══════════════════════ -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="72"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- ── Sidebar ───────────────────────────────────────────── -->
+                <Border Grid.Column="0"
+                        Background="{DynamicResource BackgroundMediumBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="0,0,1,0"
+                        CornerRadius="0,0,0,8"
+                        ClipToBounds="True">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Logo avatar -->
+                        <Border Grid.Row="0" Margin="4,16,4,16" Height="48">
+                            <Border Background="{DynamicResource AccentBlueBrush}"
+                                    CornerRadius="24" Width="48" Height="48">
+                                <TextBlock Text="S" FontSize="20" FontWeight="Bold"
+                                           Foreground="White"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"/>
+                            </Border>
+                        </Border>
+
+                        <!-- Navigation buttons -->
+                        <StackPanel Grid.Row="1">
+                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                                    Click="DialerButton_Click" Name="DialerButton"
+                                    ToolTip.Tip="Dialer">
+                                <ic:SymbolIcon Symbol="Dialpad" Width="24" Height="24" IconVariant="Regular"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                                    Click="HistoryButton_Click" Name="HistoryButton"
+                                    ToolTip.Tip="History">
+                                <ic:SymbolIcon Symbol="History" Width="24" Height="24" IconVariant="Regular"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                                    Click="StatisticsButton_Click" Name="StatisticsButton"
+                                    ToolTip.Tip="Statistics">
+                                <ic:SymbolIcon Symbol="ChartMultiple" Width="24" Height="24" IconVariant="Regular"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                        </StackPanel>
+
+                        <!-- Bottom nav -->
+                        <StackPanel Grid.Row="2">
+                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                                    Click="SettingsButton_Click"
+                                    ToolTip.Tip="Settings">
+                                <ic:SymbolIcon Symbol="Settings" Width="24" Height="24" IconVariant="Regular"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                                    Click="ShowLogsButton_Click"
+                                    Margin="0,0,0,16"
+                                    ToolTip.Tip="Logs">
+                                <ic:SymbolIcon Symbol="DocumentText" Width="24" Height="24" IconVariant="Regular"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <!-- ── Content Area ──────────────────────────────────────── -->
+                <Grid Grid.Column="1" Background="{DynamicResource BackgroundDarkBrush}">
+
+                    <!-- ── Dialer View ──────────────────────────────────── -->
+                    <Grid Name="DialerView" IsVisible="True"
+                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                          MaxWidth="400" MinWidth="280">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Connection status block -->
+                        <StackPanel Grid.Row="0" Margin="0,0,0,16">
+                            <Border HorizontalAlignment="Center">
+                                <StackPanel HorizontalAlignment="Left">
+                                    <StackPanel Name="StatusPanel" HorizontalAlignment="Left">
+
+                                        <!-- Main PBX status row -->
+                                        <Grid Margin="0,0,0,4" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="80" MinWidth="60"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Name="MainConnectionStatusLabelTextBlock"
+                                                       Text="PBX:" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <Border Grid.Column="1" Name="MainStatusIndicator"
+                                                    Width="8" Height="8" CornerRadius="4"
+                                                    Background="{DynamicResource TextSecondaryBrush}"
+                                                    VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                            <TextBlock Grid.Column="2" Name="MainStatusTextBlock"
+                                                       Text="Not connected" FontSize="12"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <Button Grid.Column="3" Name="MainRefreshButton"
+                                                    Width="20" Height="20" Margin="4,0,0,0"
+                                                    VerticalAlignment="Center"
+                                                    ToolTip.Tip="Reconnect main connection"
+                                                    Click="MainRefreshButton_Click"
+                                                    Theme="{DynamicResource StatusRefreshButtonStyle}">
+                                                <PathIcon Width="12" Height="12"
+                                                          Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                            </Button>
+                                        </Grid>
+
+                                        <!-- Secondary SIP status row -->
+                                        <Grid Name="SecondaryStatusPanel" Margin="0,0,0,4"
+                                              IsVisible="False" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="80" MinWidth="60"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Name="SecondaryConnectionStatusLabelTextBlock"
+                                                       Text="SIP:" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <Border Grid.Column="1" Name="SecondaryStatusIndicator"
+                                                    Width="8" Height="8" CornerRadius="4"
+                                                    Background="{DynamicResource TextSecondaryBrush}"
+                                                    VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                            <TextBlock Grid.Column="2" Name="SecondaryStatusTextBlock"
+                                                       Text="Not connected" FontSize="12"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                            <Button Grid.Column="3" Name="SecondaryRefreshButton"
+                                                    Width="20" Height="20" Margin="4,0,0,0"
+                                                    VerticalAlignment="Center"
+                                                    ToolTip.Tip="Reconnect secondary connection"
+                                                    Click="SecondaryRefreshButton_Click"
+                                                    Theme="{DynamicResource StatusRefreshButtonStyle}">
+                                                <PathIcon Width="12" Height="12"
+                                                          Data="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                                            </Button>
+                                        </Grid>
+
+                                        <!-- AmoCRM status row -->
+                                        <Grid Name="AmoCrmStatusPanel" IsVisible="False" VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="80" MinWidth="60"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Grid.Column="0" Text="AmoCRM:" FontSize="12" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"/>
+                                            <Border Grid.Column="1" Name="AmoCrmStatusIndicator"
+                                                    Width="8" Height="8" CornerRadius="4"
+                                                    Background="{DynamicResource TextSecondaryBrush}"
+                                                    VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                            <TextBlock Grid.Column="2" Name="AmoCrmStatusTextBlock"
+                                                       Text="Not connected" FontSize="12"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       VerticalAlignment="Center"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Grid>
+
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- SIP auth-failure warning banner -->
+                            <Border Name="SipAuthFailureBanner"
+                                    Background="#3c1f12"
+                                    BorderBrush="#b0532f"
+                                    BorderThickness="1"
+                                    CornerRadius="6"
+                                    Padding="10,6"
+                                    Margin="0,8,0,0"
+                                    IsVisible="False">
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <TextBlock Text="⚠" Foreground="#ffc16b" FontSize="14"
+                                               Margin="0,0,8,0" VerticalAlignment="Center"/>
+                                    <TextBlock Name="SipAuthFailureBannerText"
+                                               Text="" Foreground="#ffd9b0" FontSize="12"
+                                               TextWrapping="Wrap" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- Phone number input + backspace -->
+                        <Grid Grid.Row="1" Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0" Grid.ColumnSpan="2"
+                                     Name="PhoneNumberTextBox"
+                                     PlaceholderText="Enter the number"
+                                     FontSize="28" FontWeight="Light"
+                                     Foreground="{DynamicResource TextPrimaryBrush}"
+                                     BorderThickness="0"
+                                     HorizontalAlignment="Stretch"
+                                     HorizontalContentAlignment="Center"
+                                     VerticalContentAlignment="Center"
+                                     TextAlignment="Center"
+                                     CaretBrush="{DynamicResource AccentBlueBrush}"
+                                     GotFocus="PhoneNumberTextBox_GotFocus"
+                                     LostFocus="PhoneNumberTextBox_LostFocus"
+                                     KeyDown="PhoneNumberTextBox_KeyDown"
+                                     TextChanged="PhoneNumberTextBox_TextChanged"/>
+                            <Button Grid.Column="1" Name="BackspaceButton"
+                                    Theme="{DynamicResource BackspaceButtonStyle}"
+                                    Click="BackspaceButton_Click"
+                                    Margin="8,0,0,0" VerticalAlignment="Center">
+                                <ic:SymbolIcon Symbol="Backspace" Width="20" Height="20" IconVariant="Regular"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </Button>
+                            <!-- Blue underline -->
+                            <Border Grid.Column="0" Grid.ColumnSpan="2"
+                                    BorderThickness="0,0,0,2"
+                                    BorderBrush="{DynamicResource AccentBlueBrush}"
+                                    VerticalAlignment="Bottom"/>
+                        </Grid>
+
+                        <!-- Numpad + Call buttons -->
+                        <StackPanel Grid.Row="2" HorizontalAlignment="Center" VerticalAlignment="Top">
+
+                            <!-- CallerID selector -->
+                            <StackPanel Name="CallerIdPanel" IsVisible="False"
+                                        HorizontalAlignment="Center" Margin="0,0,0,10">
+                                <TextBlock Text="Caller ID" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           FontSize="11" HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                                <ComboBox Name="CallerIdComboBox"
+                                          HorizontalAlignment="Center" Width="260" Height="34" FontSize="14"
+                                          ToolTip.Tip="Select outbound Caller ID"/>
+                            </StackPanel>
+
+                            <!-- Numpad grid -->
+                            <Grid HorizontalAlignment="Center" VerticalAlignment="Top">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <Button Grid.Row="0" Grid.Column="0" Content="1" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="0" Grid.Column="1" Content="2" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="0" Grid.Column="2" Content="3" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="1" Grid.Column="0" Content="4" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="1" Grid.Column="1" Content="5" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="1" Grid.Column="2" Content="6" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="2" Grid.Column="0" Content="7" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="2" Grid.Column="1" Content="8" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="2" Grid.Column="2" Content="9" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="3" Grid.Column="0" Content="*" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="3" Grid.Column="1" Content="0" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="3" Grid.Column="2" Content="#" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                            </Grid>
+
+                            <!-- Call buttons row -->
+                            <Grid HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,4,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+
+                                <!-- Single call button -->
+                                <Button Grid.Column="1" Name="CallButton"
+                                        Theme="{DynamicResource NumpadCallButtonStyle}"
+                                        Click="CallButton_Click"
+                                        HorizontalAlignment="Center"
+                                        Margin="8,0"
+                                        IsEnabled="False">
+                                    <ic:SymbolIcon Symbol="Call" Width="24" Height="24" IconVariant="Regular" Foreground="White"/>
+                                </Button>
+
+                                <!-- Split call button (two connections) -->
+                                <Grid Grid.Column="1" Name="SplitCallButtonPanel"
+                                      IsVisible="False" HorizontalAlignment="Center"
+                                      Margin="8,0" Height="56" Width="130">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Button Grid.Column="0" Name="SplitCallPrimaryButton"
+                                            Background="{DynamicResource AccentGreenBrush}"
+                                            Click="SplitCallPrimary_Click"
+                                            ToolTip.Tip="Call via primary connection"
+                                            Cursor="Hand" BorderThickness="0" CornerRadius="28,0,0,28">
+                                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <ic:SymbolIcon Symbol="Call" Width="20" Height="20" IconVariant="Regular" Foreground="White" HorizontalAlignment="Center"/>
+                                            <TextBlock Name="SplitCallPrimaryLabel" Text="PBX" FontSize="9" FontWeight="SemiBold"
+                                                       Foreground="#CCFFFFFF" Margin="0,2,0,0" HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+
+                                    <Border Grid.Column="1" Width="1.5" Background="#33FFFFFF" VerticalAlignment="Stretch"/>
+
+                                    <Button Grid.Column="2" Name="SplitCallSecondaryButton"
+                                            Background="{DynamicResource AccentGreenBrush}"
+                                            Click="SplitCallSecondary_Click"
+                                            ToolTip.Tip="Call via additional connection (SIP)"
+                                            Cursor="Hand" BorderThickness="0" CornerRadius="0,28,28,0">
+                                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                            <ic:SymbolIcon Symbol="Call" Width="20" Height="20" IconVariant="Regular" Foreground="White" HorizontalAlignment="Center"/>
+                                            <TextBlock Name="SplitCallSecondaryLabel" Text="SIP" FontSize="9" FontWeight="SemiBold"
+                                                       Foreground="#CCFFFFFF" Margin="0,2,0,0" HorizontalAlignment="Center"/>
+                                        </StackPanel>
+                                    </Button>
+                                </Grid>
+                            </Grid>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- ── History View ──────────────────────────────────── -->
+                    <Grid Name="HistoryView" IsVisible="False" Margin="24">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Header -->
+                        <Grid Grid.Row="0" Margin="0,0,0,20">
+                            <StackPanel>
+                                <TextBlock Text="Call History" FontSize="24" FontWeight="Light"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Name="HistoryFilterHintTextBlock" FontSize="12"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,4,0,0" IsVisible="False"/>
+                            </StackPanel>
+                            <Button Name="ClearHistoryButton"
+                                    Content="Clear History"
+                                    HorizontalAlignment="Right"
+                                    Foreground="{DynamicResource AccentRedBrush}"
+                                    Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderThickness="0"
+                                    Padding="12,6" FontSize="14" Cursor="Hand"
+                                    Click="ClearHistoryButton_Click"/>
+                        </Grid>
+
+                        <!-- History list -->
+                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,8,0">
+                            <ItemsControl Name="HistoryItemsControl">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                                CornerRadius="8" Padding="16,12" Margin="0,0,0,8"
+                                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                PointerPressed="HistoryItem_PointerPressed"
+                                                Tag="{Binding}">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <ic:SymbolIcon Grid.Column="0"
+                                                               Symbol="{Binding CallDirectionIcon}"
+                                                               Width="20" Height="20"
+                                                               Foreground="{Binding CallDirectionColor}"
+                                                               VerticalAlignment="Center"
+                                                               Margin="0,0,16,0"
+                                                               IconVariant="Regular"/>
+                                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding PhoneNumberDisplay}"
+                                                                   FontSize="16" FontWeight="SemiBold"
+                                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                        <Border Background="{Binding TransportBrush}"
+                                                                CornerRadius="4" Padding="6,2"
+                                                                Margin="8,0,0,0" VerticalAlignment="Center">
+                                                            <TextBlock Text="{Binding TransportLabel}"
+                                                                       FontSize="10" Foreground="White" FontWeight="SemiBold"/>
+                                                        </Border>
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding CallTimeText}"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                                               Margin="0,2,0,0"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2" Orientation="Vertical"
+                                                            VerticalAlignment="Center" Margin="16,0">
+                                                    <TextBlock Text="{Binding DurationText}"
+                                                               FontSize="12"
+                                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                                               HorizontalAlignment="Right"/>
+                                                    <TextBlock Text="{Binding Status}"
+                                                               FontSize="12"
+                                                               Foreground="{Binding StatusColor}"
+                                                               HorizontalAlignment="Right"/>
+                                                </StackPanel>
+                                                <Button Grid.Column="3"
+                                                        Width="36" Height="36"
+                                                        Theme="{DynamicResource NumpadCallButtonStyle}"
+                                                        Background="{DynamicResource AccentGreenBrush}"
+                                                        Margin="8,0,0,0" Padding="10"
+                                                        Tag="{Binding PhoneNumber}"
+                                                        Click="CallFromHistoryButton_Click">
+                                                    <ic:SymbolIcon Symbol="Call" IconVariant="Regular" Foreground="White"
+                                                                   Width="16" Height="16"/>
+                                                </Button>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+
+                        <!-- Empty state -->
+                        <TextBlock Grid.Row="1" Name="EmptyHistoryTextBlock"
+                                   Text="No call history" FontSize="16"
+                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   IsVisible="False"/>
+                    </Grid>
+
+                    <!-- ── Statistics View ──────────────────────────────── -->
+                    <Grid Name="StatisticsView" IsVisible="False" Margin="24">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- Header -->
+                        <Grid Grid.Row="0" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="Call Statistics" FontSize="24" FontWeight="Light"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <TextBlock Text="Operational analytics from the last 7 days of call history"
+                                           FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           Margin="0,4,0,0"/>
+                            </StackPanel>
+                            <Button Name="StatisticsExportCsvButton" Content="Export CSV"
+                                    HorizontalAlignment="Right" VerticalAlignment="Top"
+                                    Padding="14,8" FontSize="13" Cursor="Hand"
+                                    Background="{DynamicResource BackgroundMediumBrush}"
+                                    Foreground="{DynamicResource TextPrimaryBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="4"
+                                    Click="StatisticsExportCsvButton_Click"/>
+                        </Grid>
+
+                        <!-- Filters -->
+                        <Grid Grid.Row="1" Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="24"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="200"/>
+                                <ColumnDefinition Width="24"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="200"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Period" VerticalAlignment="Center" Margin="0,0,10,0"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <ComboBox Grid.Column="1" Name="StatisticsPeriodComboBox"
+                                      SelectionChanged="StatisticsFilter_Changed" Height="34" FontSize="14"/>
+                            <TextBlock Grid.Column="3" Text="Connection" VerticalAlignment="Center" Margin="0,0,10,0"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <ComboBox Grid.Column="4" Name="StatisticsConnectionComboBox"
+                                      SelectionChanged="StatisticsFilter_Changed" Height="34" FontSize="14"/>
+                            <TextBlock Grid.Column="6" Text="Direction" VerticalAlignment="Center" Margin="0,0,10,0"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <ComboBox Grid.Column="7" Name="StatisticsDirectionComboBox"
+                                      SelectionChanged="StatisticsFilter_Changed" Height="34" FontSize="14"/>
+                        </Grid>
+
+                        <!-- Custom date range -->
+                        <StackPanel Grid.Row="2" Name="StatisticsCustomRangePanel"
+                                    Orientation="Horizontal" Margin="0,0,0,12" IsVisible="False">
+                            <TextBlock Text="From" VerticalAlignment="Center" Margin="0,0,8,0"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <CalendarDatePicker Name="StatisticsCustomFromDatePicker"
+                                                SelectedDateChanged="StatisticsCustomDatePicker_SelectedDateChanged"
+                                                Margin="0,0,16,0"/>
+                            <TextBlock Text="To" VerticalAlignment="Center" Margin="0,0,8,0"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            <CalendarDatePicker Name="StatisticsCustomToDatePicker"
+                                                SelectedDateChanged="StatisticsCustomDatePicker_SelectedDateChanged"/>
+                        </StackPanel>
+
+                        <!-- Statistics dashboard -->
+                        <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto" Margin="0,0,8,0">
+                            <StackPanel Name="StatisticsDashboardsPanel">
+                                <TextBlock Name="StatisticsPeriodHintTextBlock" FontSize="13"
+                                           Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,16"/>
+
+                                <!-- KPI row -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14" MinHeight="96" Margin="0,0,8,0"
+                                            Cursor="Hand" PointerReleased="StatisticsKpi_PointerReleased" Tag="All">
+                                        <StackPanel>
+                                            <TextBlock Text="Total" Classes="statsCardLabel"/>
+                                            <TextBlock Name="StatsKpiTotal" Classes="statsCardValue"/>
+                                            <TextBlock Name="StatsKpiDirectionHint" Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="1" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14" MinHeight="96" Margin="0,0,8,0"
+                                            Cursor="Hand" PointerReleased="StatisticsKpi_PointerReleased" Tag="Answered">
+                                        <StackPanel>
+                                            <TextBlock Text="Answered" Classes="statsCardLabel"/>
+                                            <TextBlock Name="StatsKpiAnswered" Classes="statsCardValue" Foreground="{DynamicResource AccentGreenBrush}"/>
+                                            <TextBlock Name="StatsKpiSuccessRate" Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14" MinHeight="96" Margin="0,0,8,0"
+                                            Cursor="Hand" PointerReleased="StatisticsKpi_PointerReleased" Tag="Unanswered">
+                                        <StackPanel>
+                                            <TextBlock Text="Unanswered" Classes="statsCardLabel"/>
+                                            <TextBlock Name="StatsKpiUnanswered" Classes="statsCardValue" Foreground="{DynamicResource AccentRedBrush}"/>
+                                            <TextBlock Name="StatsKpiUnansweredHint" Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="3" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14" MinHeight="96" Margin="0,0,8,0">
+                                        <StackPanel>
+                                            <TextBlock Text="Talk time" Classes="statsCardLabel"/>
+                                            <TextBlock Name="StatsKpiTalkTime" Classes="statsCardValue"/>
+                                            <TextBlock Name="StatsKpiAvgTalk" Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="4" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14" MinHeight="96" Margin="0,0,8,0">
+                                        <StackPanel>
+                                            <TextBlock Text="Contact rate" Classes="statsCardLabel"/>
+                                            <TextBlock Name="StatsKpiContactRate" Classes="statsCardValue"/>
+                                            <TextBlock Name="StatsKpiRingTime" Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="5" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14" MinHeight="96"
+                                            Cursor="Hand" PointerReleased="StatisticsKpi_PointerReleased" Tag="Missed">
+                                        <StackPanel>
+                                            <TextBlock Text="Missed incoming" Classes="statsCardLabel"/>
+                                            <TextBlock Name="StatsKpiMissed" Classes="statsCardValue" Foreground="{DynamicResource AccentRedBrush}"/>
+                                            <TextBlock Name="StatsKpiFailedCancelled" Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Charts row -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14">
+                                        <StackPanel>
+                                            <TextBlock Text="Calls by day" FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsDailyChartItems">
+                                                <ItemsControl.ItemsPanel>
+                                                    <ItemsPanelTemplate>
+                                                        <UniformGrid Rows="1"/>
+                                                    </ItemsPanelTemplate>
+                                                </ItemsControl.ItemsPanel>
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <StackPanel VerticalAlignment="Bottom" Margin="2,0">
+                                                            <Border Height="{Binding BarHeight}" MinHeight="4"
+                                                                    VerticalAlignment="Bottom"
+                                                                    Background="{DynamicResource AccentBlueBrush}"
+                                                                    CornerRadius="3,3,0,0"
+                                                                    ToolTip.Tip="{Binding ToolTipText}"/>
+                                                            <TextBlock Text="{Binding Label}" FontSize="10"
+                                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                       HorizontalAlignment="Center"
+                                                                       TextAlignment="Center" Margin="0,6,0,0"/>
+                                                        </StackPanel>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14">
+                                        <StackPanel>
+                                            <TextBlock Text="Activity by hour" FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,4"/>
+                                            <TextBlock Name="StatsPeakHourText" FontSize="12"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                            <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                                          VerticalScrollBarVisibility="Disabled">
+                                                <ItemsControl Name="StatsHourlyChartItems">
+                                                    <ItemsControl.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <StackPanel Orientation="Horizontal"/>
+                                                        </ItemsPanelTemplate>
+                                                    </ItemsControl.ItemsPanel>
+                                                    <ItemsControl.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <StackPanel Width="28" VerticalAlignment="Bottom" Margin="1,0">
+                                                                <Border Height="{Binding BarHeight}" MinHeight="2"
+                                                                        VerticalAlignment="Bottom"
+                                                                        Background="{DynamicResource AccentGreenBrush}"
+                                                                        CornerRadius="2,2,0,0"
+                                                                        ToolTip.Tip="{Binding Total, StringFormat={}{0} calls}"/>
+                                                                <TextBlock Text="{Binding Label}" FontSize="9"
+                                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                           HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                                                            </StackPanel>
+                                                        </DataTemplate>
+                                                    </ItemsControl.ItemTemplate>
+                                                </ItemsControl>
+                                            </ScrollViewer>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Outcome + Connection compare -->
+                                <Grid Margin="0,0,0,20">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14">
+                                        <StackPanel>
+                                            <TextBlock Text="Outcome breakdown" FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <TextBlock Name="StatsOutcomeAnswered"   Classes="statsCardHint" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeCancelled"  Classes="statsCardHint" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeAgentCancel" Classes="statsCardHint" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeFailed"     Classes="statsCardHint" Margin="0,0,0,6"/>
+                                            <TextBlock Name="StatsOutcomeMissed"     Classes="statsCardHint"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14"
+                                            Name="StatsConnectionComparePanel">
+                                        <StackPanel>
+                                            <TextBlock Text="By connection" FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsConnectionCompareItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border BorderBrush="{DynamicResource BorderBrush}"
+                                                                BorderThickness="0,0,0,1"
+                                                                Padding="0,0,0,10" Margin="0,0,0,10">
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"
+                                                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                                <TextBlock Text="{Binding Detail}" FontSize="12"
+                                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                           Margin="0,4,0,0"/>
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <!-- Top numbers -->
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="16"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Border Grid.Column="0" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14"
+                                            Name="StatsCallerIdPanel">
+                                        <StackPanel>
+                                            <TextBlock Text="Outbound Caller ID" FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <ItemsControl Name="StatsCallerIdItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <TextBlock Text="{Binding Detail}" FontSize="12"
+                                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                   Margin="0,0,0,6"/>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Name="StatsCallerIdEmptyText" FontSize="12"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       IsVisible="False"
+                                                       Text="No Caller ID data in this period"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                            CornerRadius="8" Padding="16,14">
+                                        <StackPanel>
+                                            <TextBlock Text="Top numbers" FontSize="15" FontWeight="SemiBold"
+                                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                            <TextBlock Text="Click a row to view in history" FontSize="11"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,8"/>
+                                            <ItemsControl Name="StatsTopNumbersItems">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Padding="8,6" Margin="0,0,0,4" CornerRadius="4"
+                                                                Background="{DynamicResource BackgroundDarkBrush}"
+                                                                Cursor="Hand"
+                                                                PointerReleased="StatisticsTopNumber_PointerReleased"
+                                                                Tag="{Binding PhoneNumber}">
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*"/>
+                                                                    <ColumnDefinition Width="Auto"/>
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Grid.Column="0" Text="{Binding PhoneNumber}"
+                                                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                                                <TextBlock Grid.Column="1" Text="{Binding Detail}"
+                                                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                                                           FontSize="12"/>
+                                                            </Grid>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                            <TextBlock Name="StatsTopNumbersEmptyText" FontSize="12"
+                                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                                       IsVisible="False"
+                                                       Text="No calls in this period"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <TextBlock Name="StatisticsLegacyHintTextBlock"
+                                           Text="Calls before dual-line tracking may appear under the main connection in exports."
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap" Margin="0,8,0,0" IsVisible="False"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Grid>
+
+                </Grid>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

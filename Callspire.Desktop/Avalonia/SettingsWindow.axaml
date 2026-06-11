@@ -1,0 +1,408 @@
+<Window x:Class="Softphone.Avalonia.SettingsWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ic="using:FluentIcons.Avalonia"
+        Title="Settings"
+        Height="680" Width="980"
+        MinHeight="620" MinWidth="900"
+        WindowDecorations="None"
+        CanResize="True"
+        WindowStartupLocation="CenterScreen"
+        Background="Transparent"
+        ExtendClientAreaToDecorationsHint="True"
+
+        TransparencyLevelHint="None">
+
+    <Border Name="WindowSurface"
+            Background="{DynamicResource BackgroundDarkBrush}"
+            CornerRadius="8"
+            ClipToBounds="True">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title Bar -->
+            <Border Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}"
+                    CornerRadius="8,8,0,0">
+                <Grid PointerPressed="TitleBar_PointerPressed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Softphone Settings"
+                               FontSize="16" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextSecondaryBrush}"
+                               Margin="16,12,0,12" VerticalAlignment="Center"/>
+                    <Button Grid.Column="1" Content="✕"
+                            Click="CloseButton_Click"
+                            Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                </Grid>
+            </Border>
+
+            <!-- Main Content -->
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="180"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Sidebar -->
+                <Border Grid.Column="0"
+                        Background="{DynamicResource BackgroundMediumBrush}"
+                        BorderBrush="{DynamicResource BorderBrush}"
+                        BorderThickness="0,0,1,0"
+                        CornerRadius="0,0,0,8"
+                        ClipToBounds="True">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Grid.Row="0" Margin="10,16,10,0">
+                            <Button Name="ConnectionButton"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Background="Transparent" BorderThickness="0"
+                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
+                                    Click="ConnectionButton_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="PlugConnected" Width="16" Height="16"
+                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="Connection" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </StackPanel>
+                            </Button>
+
+                            <Button Name="AudioButton"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Background="Transparent" BorderThickness="0"
+                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
+                                    Click="AudioButton_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="Speaker2" Width="16" Height="16"
+                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="Audio" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </StackPanel>
+                            </Button>
+
+                            <Button Name="NotificationsButton"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Background="Transparent" BorderThickness="0"
+                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
+                                    Click="NotificationsButton_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="Alert" Width="16" Height="16"
+                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="Notifications" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </StackPanel>
+                            </Button>
+
+                            <Button Name="AppearanceButton"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Background="Transparent" BorderThickness="0"
+                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
+                                    Click="AppearanceButton_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="PaintBrush" Width="16" Height="16"
+                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="Appearance" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </StackPanel>
+                            </Button>
+
+                            <Button Name="AdvancedButton"
+                                    HorizontalAlignment="Stretch"
+                                    HorizontalContentAlignment="Left"
+                                    Background="Transparent" BorderThickness="0"
+                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
+                                    Click="AdvancedButton_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="Settings" Width="16" Height="16"
+                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Text="Advanced" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+
+                        <!-- About / version at the bottom -->
+                        <Button Grid.Row="1" Name="AboutButton"
+                                HorizontalAlignment="Stretch"
+                                HorizontalContentAlignment="Left"
+                                Background="Transparent" BorderThickness="0"
+                                Padding="10,8" Margin="10,0,10,16" CornerRadius="6" Cursor="Hand"
+                                Click="AboutButton_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <ic:SymbolIcon Symbol="Info" Width="16" Height="16"
+                                               IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <TextBlock Text="About" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Border>
+
+                <!-- ── Settings Panels ───────────────────────────────────── -->
+                <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                    <Grid Margin="32,24,32,24">
+
+                        <!-- ─── Connection Panel ─────────────────────────── -->
+                        <StackPanel Name="ConnectionPanel">
+                            <TextBlock Text="Connection" FontSize="22" FontWeight="Light"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+
+                            <!-- Main connection card -->
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Main Connection" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,16"/>
+
+                                    <TextBlock Text="Server host" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
+                                    <TextBox Name="MainServerTextBox"
+                                             Background="{DynamicResource BackgroundDarkBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                             Padding="10,7" FontSize="13" MinHeight="36"
+                                             CornerRadius="8" Margin="0,0,0,12"/>
+
+                                    <TextBlock Text="Username / Extension" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
+                                    <TextBox Name="MainUsernameTextBox"
+                                             Background="{DynamicResource BackgroundDarkBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                             Padding="10,7" FontSize="13" MinHeight="36"
+                                             CornerRadius="8" Margin="0,0,0,12"/>
+
+                                    <TextBlock Text="Password" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
+                                    <TextBox Name="MainPasswordTextBox"
+                                             PasswordChar="●"
+                                             Background="{DynamicResource BackgroundDarkBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                             Padding="10,7" FontSize="13" MinHeight="36"
+                                             CornerRadius="8" Margin="0,0,0,12"/>
+
+                                    <TextBlock Text="Port" FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
+                                    <TextBox Name="MainPortTextBox"
+                                             Background="{DynamicResource BackgroundDarkBrush}"
+                                             Foreground="{DynamicResource TextPrimaryBrush}"
+                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                             Padding="10,7" FontSize="13" MinHeight="36"
+                                             CornerRadius="8" Margin="0,0,0,16"
+                                             Width="120" HorizontalAlignment="Left"/>
+
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Button Name="MainConnectionTestButton"
+                                                Content="Test Connection"
+                                                Background="Transparent"
+                                                Foreground="{DynamicResource AccentBlueBrush}"
+                                                BorderBrush="{DynamicResource AccentBlueBrush}" BorderThickness="1"
+                                                Padding="14,8" CornerRadius="8" Cursor="Hand"
+                                                Click="MainConnectionTestButton_Click" Margin="0,0,8,0"/>
+                                        <Button Name="MainConnectionSaveButton"
+                                                Content="Save"
+                                                Background="{DynamicResource AccentBlueBrush}"
+                                                Foreground="White"
+                                                BorderThickness="0"
+                                                Padding="14,8" CornerRadius="8" Cursor="Hand"
+                                                Click="SaveConnectionButton_Click"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Connection status info -->
+                            <Border Name="MainConnectionStatusCard"
+                                    Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16">
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Name="MainConnectionStatusDot"
+                                            Width="8" Height="8" CornerRadius="4"
+                                            Background="{DynamicResource TextSecondaryBrush}"
+                                            VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                    <TextBlock Name="MainConnectionStatusText"
+                                               Text="Not connected"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ─── Audio Panel ──────────────────────────────── -->
+                        <StackPanel Name="AudioPanel" IsVisible="False">
+                            <TextBlock Text="Audio" FontSize="22" FontWeight="Light"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Microphone" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <ComboBox Name="MicrophoneComboBox"
+                                              HorizontalAlignment="Stretch" Height="34" FontSize="13"
+                                              SelectionChanged="AudioDevice_SelectionChanged"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Speaker / Playback Device" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <ComboBox Name="SpeakerComboBox"
+                                              HorizontalAlignment="Stretch" Height="34" FontSize="13"
+                                              SelectionChanged="AudioDevice_SelectionChanged"/>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16">
+                                <StackPanel>
+                                    <TextBlock Text="Echo Cancellation" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <CheckBox Name="AecEnabledCheckBox" Content="Enable acoustic echo cancellation"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              IsCheckedChanged="AecEnabled_CheckedChanged"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ─── Notifications Panel ──────────────────────── -->
+                        <StackPanel Name="NotificationsPanel" IsVisible="False">
+                            <TextBlock Text="Notifications" FontSize="22" FontWeight="Light"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16">
+                                <StackPanel>
+                                    <CheckBox Name="ToastNotificationsCheckBox"
+                                              Content="Show toast notification for incoming calls"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              Margin="0,0,0,12"/>
+                                    <CheckBox Name="RingtoneCheckBox"
+                                              Content="Play ringtone for incoming calls"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"
+                                              Margin="0,0,0,12"/>
+                                    <CheckBox Name="FlashTaskbarCheckBox"
+                                              Content="Flash taskbar on incoming call"
+                                              Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ─── Appearance Panel ─────────────────────────── -->
+                        <StackPanel Name="AppearancePanel" IsVisible="False">
+                            <TextBlock Text="Appearance" FontSize="22" FontWeight="Light"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16">
+                                <StackPanel>
+                                    <TextBlock Text="Theme" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <ComboBox Name="ThemeComboBox"
+                                              HorizontalAlignment="Left" Width="200" Height="34" FontSize="13"
+                                              SelectionChanged="ThemeComboBox_SelectionChanged"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ─── Advanced Panel ───────────────────────────── -->
+                        <StackPanel Name="AdvancedPanel" IsVisible="False">
+                            <TextBlock Text="Advanced" FontSize="22" FontWeight="Light"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                                <StackPanel>
+                                    <TextBlock Text="Call Recording" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <CheckBox Name="RecordCallsCheckBox"
+                                              Content="Record calls automatically"
+                                              Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="Recording folder" FontSize="12"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"
+                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                        <TextBox Name="RecordingFolderTextBox"
+                                                 Width="260" Height="34" FontSize="13"
+                                                 Background="{DynamicResource BackgroundDarkBrush}"
+                                                 Foreground="{DynamicResource TextPrimaryBrush}"
+                                                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                                 Padding="8,6" CornerRadius="6" Margin="0,0,8,0"/>
+                                        <Button Content="Browse…" Padding="12,6" CornerRadius="6" Cursor="Hand"
+                                                Background="{DynamicResource BackgroundLightBrush}"
+                                                Foreground="{DynamicResource TextPrimaryBrush}"
+                                                BorderThickness="0"
+                                                Click="BrowseRecordingFolder_Click"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16">
+                                <StackPanel>
+                                    <TextBlock Text="Diagnostic" FontSize="15" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                                    <CheckBox Name="VerboseLoggingCheckBox"
+                                              Content="Enable verbose logging"
+                                              Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                                    <Button Content="Open Logs Folder"
+                                            Background="Transparent"
+                                            Foreground="{DynamicResource AccentBlueBrush}"
+                                            BorderBrush="{DynamicResource AccentBlueBrush}" BorderThickness="1"
+                                            Padding="12,6" CornerRadius="6" Cursor="Hand"
+                                            HorizontalAlignment="Left"
+                                            Click="OpenLogsFolderButton_Click"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ─── About Panel ──────────────────────────────── -->
+                        <StackPanel Name="AboutPanel" IsVisible="False">
+                            <TextBlock Text="About" FontSize="22" FontWeight="Light"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+                            <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                    CornerRadius="8" Padding="20,16">
+                                <StackPanel>
+                                    <TextBlock Text="Callspire Softphone" FontSize="20" FontWeight="SemiBold"
+                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
+                                    <TextBlock Name="VersionTextBlock" Text="Version —"
+                                               FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,0,16"/>
+                                    <Button Name="CheckUpdateButton"
+                                            Content="Check for Updates"
+                                            Background="{DynamicResource AccentBlueBrush}"
+                                            Foreground="White" BorderThickness="0"
+                                            Padding="14,8" CornerRadius="8" Cursor="Hand"
+                                            HorizontalAlignment="Left"
+                                            Click="CheckUpdateButton_Click"/>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                    </Grid>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Border>
+</Window>

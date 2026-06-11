@@ -1,0 +1,38 @@
+<ResourceDictionary xmlns="https://github.com/avaloniaui"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Colors — mirror WPF LightTheme.xaml -->
+    <Color x:Key="BackgroundDark">#F5F5F5</Color>
+    <Color x:Key="BackgroundMedium">#EBEBEB</Color>
+    <Color x:Key="BackgroundLight">#DEDEDE</Color>
+    <Color x:Key="AccentBlue">#5865F2</Color>
+    <Color x:Key="AccentGreen">#23A55A</Color>
+    <Color x:Key="AccentRed">#F23F42</Color>
+    <Color x:Key="TextPrimary">#1A1A1A</Color>
+    <Color x:Key="TextSecondary">#6B7280</Color>
+    <Color x:Key="HoverBackground">#D4D4D4</Color>
+    <Color x:Key="BorderColor">#CACACA</Color>
+
+    <!-- Brushes -->
+    <SolidColorBrush x:Key="BackgroundDarkBrush"   Color="{StaticResource BackgroundDark}"/>
+    <SolidColorBrush x:Key="BackgroundMediumBrush" Color="{StaticResource BackgroundMedium}"/>
+    <SolidColorBrush x:Key="BackgroundLightBrush"  Color="{StaticResource BackgroundLight}"/>
+    <SolidColorBrush x:Key="AccentBlueBrush"       Color="{StaticResource AccentBlue}"/>
+    <SolidColorBrush x:Key="AccentGreenBrush"      Color="{StaticResource AccentGreen}"/>
+    <SolidColorBrush x:Key="AccentRedBrush"        Color="{StaticResource AccentRed}"/>
+    <SolidColorBrush x:Key="TextPrimaryBrush"      Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="TextSecondaryBrush"    Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="HoverBackgroundBrush"  Color="{StaticResource HoverBackground}"/>
+    <SolidColorBrush x:Key="BorderBrush"           Color="{StaticResource BorderColor}"/>
+
+    <!-- Dialog surfaces -->
+    <SolidColorBrush x:Key="DialogBackgroundBrush" Color="{StaticResource BackgroundDark}"/>
+    <SolidColorBrush x:Key="DialogChromeBrush"     Color="{StaticResource BackgroundMedium}"/>
+    <SolidColorBrush x:Key="PopupBackgroundBrush"  Color="{StaticResource BackgroundMedium}"/>
+
+    <!-- Status-pill brushes (connection tab) -->
+    <SolidColorBrush x:Key="ConnStatusPillOkBrush"   Color="#00000000"/>
+    <SolidColorBrush x:Key="ConnStatusPillIdleBrush" Color="#00000000"/>
+    <SolidColorBrush x:Key="ConnStatusPillErrBrush"  Color="#33F44336"/>
+
+</ResourceDictionary>

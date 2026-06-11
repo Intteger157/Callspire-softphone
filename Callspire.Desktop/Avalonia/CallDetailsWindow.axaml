@@ -1,0 +1,288 @@
+<Window x:Class="Softphone.Avalonia.CallDetailsWindow"
+        xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:ic="using:FluentIcons.Avalonia"
+        Title="Call Details"
+        Height="700" Width="900"
+        MinHeight="400" MinWidth="600"
+        WindowDecorations="None"
+        CanResize="True"
+        WindowStartupLocation="CenterScreen"
+        Background="Transparent"
+        ExtendClientAreaToDecorationsHint="True"
+
+        TransparencyLevelHint="None">
+
+    <Border Name="WindowSurface"
+            Background="{DynamicResource BackgroundDarkBrush}"
+            CornerRadius="8"
+            ClipToBounds="True">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- Title Bar -->
+            <Border Grid.Row="0"
+                    Background="{DynamicResource BackgroundMediumBrush}"
+                    CornerRadius="8,8,0,0">
+                <Grid PointerPressed="TitleBar_PointerPressed">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="Call Details"
+                               FontSize="14" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="16,10,0,10" VerticalAlignment="Center"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Content="─" Width="46" Height="32"
+                                Background="Transparent"
+                                Foreground="{DynamicResource TextSecondaryBrush}"
+                                BorderThickness="0" FontSize="16"
+                                Click="MinimizeButton_Click" Cursor="Hand"/>
+                        <Button Content="✕"
+                                Click="CloseButton_Click"
+                                Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <!-- Content -->
+            <ScrollViewer Grid.Row="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Margin="12">
+                <StackPanel Spacing="12">
+
+                    <!-- Call Information header -->
+                    <TextBlock Text="Call Information"
+                               FontSize="17" FontWeight="SemiBold"
+                               Foreground="{DynamicResource TextPrimaryBrush}"
+                               Margin="0,0,0,4"/>
+
+                    <!-- Top two-column layout -->
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="16"/>
+                            <ColumnDefinition Width="320"/>
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Left: General info -->
+                        <Border Grid.Column="0"
+                                Background="{DynamicResource BackgroundMediumBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="8" Padding="16,14">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="130"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Phone Number"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Name="PhoneNumberTextBlock"
+                                           FontSize="14" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Direction"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Name="DirectionTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Status"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="2" Grid.Column="1" Name="StatusTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Transport"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="3" Grid.Column="1" Name="TransportTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="4" Grid.Column="0" Text="Connection"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="4" Grid.Column="1" Name="ConnectionNameTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="5" Grid.Column="0" Text="Caller ID"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="5" Grid.Column="1" Name="CallerIdTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- Right: Timing info -->
+                        <Border Grid.Column="2"
+                                Background="{DynamicResource BackgroundMediumBrush}"
+                                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                                CornerRadius="8" Padding="16,14">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="120"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="Call Started"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Name="CallStartedTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Ringback Start"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="1" Grid.Column="1" Name="RingbackStartTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Answer Time"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="2" Grid.Column="1" Name="AnswerTimeTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Duration"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+                                <TextBlock Grid.Row="3" Grid.Column="1" Name="DurationTextBlock"
+                                           FontSize="13" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource AccentGreenBrush}"
+                                           VerticalAlignment="Center" Margin="0,0,0,8"/>
+
+                                <TextBlock Grid.Row="4" Grid.Column="0" Text="Ring Time"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock Grid.Row="4" Grid.Column="1" Name="RingTimeTextBlock"
+                                           FontSize="13" Foreground="{DynamicResource TextPrimaryBrush}"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <!-- Recording section -->
+                    <Border Name="RecordingSection" IsVisible="False"
+                            Background="{DynamicResource BackgroundMediumBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="16,14">
+                        <StackPanel>
+                            <TextBlock Text="Recording" FontSize="15" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+
+                            <!-- Playback controls -->
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Spacing="8">
+                                <Button Name="PlayPauseButton"
+                                        Theme="{DynamicResource CallControlButton}"
+                                        Click="PlayPauseButton_Click"
+                                        ToolTip.Tip="Play / Pause">
+                                    <ic:SymbolIcon Name="PlayIcon" Symbol="Play" Width="20" Height="20"
+                                                   IconVariant="Regular" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </Button>
+                                <Button Name="StopButton"
+                                        Theme="{DynamicResource CallControlButton}"
+                                        Click="StopPlaybackButton_Click"
+                                        ToolTip.Tip="Stop">
+                                    <ic:SymbolIcon Symbol="Stop" Width="20" Height="20"
+                                                   IconVariant="Regular" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </Button>
+                            </StackPanel>
+
+                            <!-- Scrubber -->
+                            <Slider Name="PlaybackSlider"
+                                    Minimum="0" Maximum="100" Value="0"
+                                    HorizontalAlignment="Stretch"
+                                    ValueChanged="PlaybackSlider_ValueChanged"
+                                    Margin="0,0,0,4"/>
+
+                            <!-- Time display -->
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Name="PlaybackPositionText" Text="0:00"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <TextBlock Text=" / " FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <TextBlock Name="PlaybackDurationText" Text="0:00"
+                                           FontSize="12" Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </StackPanel>
+
+                            <!-- Recording file path -->
+                            <TextBlock Name="RecordingPathTextBlock" FontSize="11"
+                                       Foreground="{DynamicResource TextSecondaryBrush}"
+                                       TextTrimming="CharacterEllipsis"
+                                       Margin="0,8,0,0"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Technical log section -->
+                    <Border Name="TechnicalSection" IsVisible="False"
+                            Background="{DynamicResource BackgroundMediumBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="16,14">
+                        <StackPanel>
+                            <TextBlock Text="Technical Details" FontSize="15" FontWeight="SemiBold"
+                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
+                            <ScrollViewer MaxHeight="200" VerticalScrollBarVisibility="Auto">
+                                <TextBlock Name="TechnicalDetailsTextBlock"
+                                           FontSize="11" FontFamily="Cascadia Code, Consolas, monospace"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Bottom Action Bar -->
+            <Border Grid.Row="2"
+                    Background="{DynamicResource BackgroundMediumBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                    Padding="16,10">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                    <Button Name="CallBackButton"
+                            Content="Call Back"
+                            Background="{DynamicResource AccentGreenBrush}"
+                            Foreground="White" BorderThickness="0"
+                            Padding="14,8" CornerRadius="8" Cursor="Hand"
+                            Click="CallBackButton_Click"/>
+                    <Button Name="CloseActionButton"
+                            Content="Close"
+                            Background="{DynamicResource BackgroundLightBrush}"
+                            Foreground="{DynamicResource TextPrimaryBrush}"
+                            BorderThickness="0" Padding="14,8" CornerRadius="8" Cursor="Hand"
+                            Click="CloseButton_Click"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Border>
+</Window>

@@ -1,0 +1,148 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<!--
+		  Dual-target build:
+		    net8.0-windows10.0.17763  →  Windows: WPF + WinExe + WebView2 + NAudio WASAPI
+		    net8.0                    →  macOS / Linux: Avalonia-only, PortAudio, SoftwareAec
+		-->
+		<TargetFrameworks>net8.0-windows10.0.17763;net8.0</TargetFrameworks>
+
+		<!-- WPF only on the Windows TFM (generates entry point via App.xaml ApplicationDefinition) -->
+		<UseWPF Condition="$(TargetFramework.StartsWith('net8.0-windows'))">true</UseWPF>
+
+		<!-- WinExe on Windows suppresses the console window; Exe is fine on macOS/Linux -->
+		<OutputType Condition="$(TargetFramework.StartsWith('net8.0-windows'))">WinExe</OutputType>
+		<OutputType Condition="!$(TargetFramework.StartsWith('net8.0-windows'))">Exe</OutputType>
+
+		<!-- Nullable and runtime identifier -->
+		<Nullable>enable</Nullable>
+		<UseCurrentRuntimeIdentifier>true</UseCurrentRuntimeIdentifier>
+
+		<ApplicationIcon Condition="$(TargetFramework.StartsWith('net8.0-windows'))">icon.ico</ApplicationIcon>
+
+		<!-- Assembly / namespace identity -->
+		<AssemblyName>Callspire</AssemblyName>
+		<RootNamespace>Softphone</RootNamespace>
+
+		<Configurations>Debug;Release;Callspire Softphone</Configurations>
+
+		<!-- Application version: Directory.Build.props (AppVersion) -->
+
+	</PropertyGroup>
+
+	<!-- Convenience property for conditions below -->
+	<PropertyGroup>
+		<IsWindowsBuild Condition="$(TargetFramework.StartsWith('net8.0-windows'))">true</IsWindowsBuild>
+		<IsWindowsBuild Condition="!$(TargetFramework.StartsWith('net8.0-windows'))">false</IsWindowsBuild>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Callspire.Core\Callspire.Core.csproj" />
+	</ItemGroup>
+
+	<!-- ── Windows-only packages ───────────────────────────────────────── -->
+	<ItemGroup Condition="'$(IsWindowsBuild)' == 'true'">
+		<PackageReference Include="SIPSorceryMedia.Windows" Version="8.0.7" />
+		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
+		<!-- WPF icon library — needed only while WPF windows coexist (Phase 5 bridge) -->
+		<PackageReference Include="FluentIcons.Wpf" Version="2.1.328" />
+	</ItemGroup>
+
+	<!-- ── Cross-platform packages (all TFMs) ─────────────────────────── -->
+	<ItemGroup>
+		<!-- NAudio: cross-platform WAV/PCM utilities; WASAPI classes guarded by #if WINDOWS -->
+		<PackageReference Include="NAudio" Version="2.2.1" />
+		<!-- PortAudio: macOS/Linux audio backend; also available on Windows as fallback -->
+		<PackageReference Include="PortAudioNet" Version="0.1.0" />
+		<!-- Avalonia UI cross-platform shell -->
+		<PackageReference Include="Avalonia" Version="12.0.4" />
+		<PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
+		<PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+		<!-- FluentIcons for Avalonia windows (all platforms) -->
+		<PackageReference Include="FluentIcons.Avalonia" Version="2.1.328" />
+	</ItemGroup>
+	
+	<!--
+		App.axaml is a plain ResourceDictionary (no x:Class) used only at runtime.
+		Marked as None so it is never passed to the WPF or Avalonia XAML compilers,
+		but is still copied to output and loadable via AvaloniaXamlLoader.Load().
+	-->
+	<ItemGroup>
+		<None Include="App.axaml">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+		</None>
+	</ItemGroup>
+
+	<!--
+		Avalonia Phase 5 window ports.
+		Theme/style files are embedded as avares:// resources.
+		Window AXAML files are compiled by the Avalonia XAML compiler (x:Class present).
+		Using explicit build actions to avoid conflicts with UseWPF=true auto-globbing.
+	-->
+	<ItemGroup>
+		<AvaloniaResource Include="Avalonia\Themes\DarkTheme.axaml"/>
+		<AvaloniaResource Include="Avalonia\Themes\LightTheme.axaml"/>
+		<AvaloniaResource Include="Avalonia\Styles\CommonStyles.axaml"/>
+	</ItemGroup>
+
+	<!--
+		Avalonia XAML window files (Phase 5).  The Avalonia SDK auto-detects *.axaml
+		files — no explicit <AvaloniaXaml Include> needed.
+		
+		UseWPF=true creates a _wpftmp.csproj (WPF XAML pre-compilation) that inherits
+		ALL items.  Running the Avalonia XAML compiler inside the temp project causes
+		AVLN2002; compiling Avalonia code-behind there causes CS0234 type errors.
+		Both are blocked by removing the items inside the _wpftmp build:
+	-->
+	<ItemGroup Condition="$(MSBuildProjectFile.EndsWith('_wpftmp.csproj'))">
+		<AvaloniaXaml Remove="Avalonia\**\*.axaml"/>
+		<Compile    Remove="Avalonia\**\*.cs"/>
+	</ItemGroup>
+
+	<ItemGroup>
+		<Resource Include="Fonts\**\*" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Resource Include="icon.ico" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- WebView2 loads these from disk (virtual host). With PublishSingleFile they must stay outside the bundle. -->
+		<Content Include="..\WebRtcClient\**\*" Link="WebRtcClient\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Incoming call ringtone audio files -->
+		<Content Include="..\ringtone\**\*.wav" Link="ringtone\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Optional ffmpeg/tools folder (see tools/README_FFMPEG.txt) -->
+		<Content Include="..\tools\**\*" Link="tools\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- Native AEC: must sit next to Callspire.exe (P/Invoke). PublishSingleFile does not bundle it. -->
+		<Content Include="..\native-aec\build\Release\webrtc_apm.dll" Condition="Exists('..\native-aec\build\Release\webrtc_apm.dll')">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+			<Link>webrtc_apm.dll</Link>
+		</Content>
+	</ItemGroup>
+
+</Project>
