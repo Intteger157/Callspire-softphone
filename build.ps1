@@ -168,7 +168,7 @@ function Build-Android {
         Invoke-DotNet -DotNetArguments @('workload', 'install', 'android')
     }
 
-    $androidArgs = @('-f', 'net8.0-android34.0') + $toolchain
+    $androidArgs = @('-f', 'net8.0-android') + $toolchain
     Invoke-ProjectCommand -Command build -ProjectRelativePath "Callspire.Android\Callspire.Android.csproj" `
         -ExtraArguments $androidArgs
     if ($Publish) {
