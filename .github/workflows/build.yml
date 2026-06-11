@@ -103,7 +103,6 @@ jobs:
   build-android:
     name: Android APK
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -121,10 +120,10 @@ jobs:
         run: echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
       - name: Restore
-        run: dotnet restore Callspire.Android/Callspire.Android.csproj -p:TargetFramework=net8.0-android34.0
+        run: dotnet restore Callspire.Android/Callspire.Android.csproj -p:TargetFramework=net8.0-android34.0 -p:CheckEolWorkloads=false
 
       - name: Publish APK
-        run: dotnet publish Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0 -c Release --no-restore -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }} -o publish/android
+        run: dotnet publish Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0 -c Release --no-restore -p:CheckEolWorkloads=false -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }} -o publish/android
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4
