@@ -15,8 +15,8 @@
 # VS Code — local workspace settings (remove this block to share settings.json)
 .vscode/
 
-# Cursor — local session state (commands/skills in .cursor/ can be committed if needed)
-.cursor/projects/
+# Cursor IDE (local AI workflow — never commit)
+.cursor/
 
 # ── .NET / MSBuild build results ─────────────────────────────────────────────
 [Dd]ebug/
@@ -87,7 +87,10 @@ native-aec/build/
 native-aec/**/webrtc_apm.dll
 
 # ── Android ──────────────────────────────────────────────────────────────────
-# Scoped Gradle paths only — do NOT use **/build/ (ignores repo-root build/ too)
+# Legacy Gradle project (superseded by Callspire.Android)
+android-softphone/
+
+# Scoped Gradle paths — do NOT use **/build/ (ignores repo-root build/ too)
 android-softphone/.gradle/
 android-softphone/**/build/
 **/.gradle/
@@ -95,7 +98,8 @@ android-softphone/**/build/
 *.apk
 *.aab
 
-# ── ffmpeg binaries (large; see tools/README_FFMPEG.txt) ─────────────────────
+# ── ffmpeg (large; install locally — see tools/README_FFMPEG.txt) ─────────────
+tools/Windows/ffmpeg-*/
 tools/Windows/**/bin/*.exe
 tools/Windows/**/bin/*.dll
 tools/MacOS/ffmpeg
@@ -128,3 +132,12 @@ callspire-pbx-gateway/
 softphone-web/
 callspire-web-softphone/
 update-server/
+
+# ── Build / distribution artifacts (not source) ─────────────────────────────
+build/
+
+# ── Separate tools (not part of Callspire softphone) ─────────────────────────
+asterisk-webcfg/
+
+# ── GitHub Actions (enable locally if needed) ────────────────────────────────
+.github/
