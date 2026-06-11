@@ -125,7 +125,7 @@ jobs:
         run: echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
 
       - name: Publish APK
-        run: dotnet publish Callspire.Android/Callspire.Android.csproj -f net8.0-android -c Release -p:CheckEolWorkloads=false -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }} -o publish/android
+        run: dotnet publish Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0 -c Release -p:CheckEolWorkloads=false -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }} -o publish/android
 
       - name: Upload Android artifact
         uses: actions/upload-artifact@v4

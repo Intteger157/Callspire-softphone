@@ -2,11 +2,10 @@
 
 	<PropertyGroup>
 		<!--
-		  Avalonia 12 Android requires net10.0-android36.0 (.NET 10 SDK).
-		  This head targets net8.0-android + Avalonia 11.3.x for compile verification
-		  on .NET 8 SDK with the android workload (SDK picks API 34 compile target).
+		  Avalonia.Android 11.3.x requires net8.0-android34.0 (not android21).
+		  Must use .NET 8 SDK in CI (SDK 10 infers TPV 21 and breaks publish).
 		-->
-		<TargetFramework>net8.0-android</TargetFramework>
+		<TargetFramework>net8.0-android34.0</TargetFramework>
 		<SupportedOSPlatformVersion>26</SupportedOSPlatformVersion>
 		<CheckEolTargetFramework>false</CheckEolTargetFramework>
 		<CheckEolWorkloads>false</CheckEolWorkloads>

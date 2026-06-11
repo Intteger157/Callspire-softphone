@@ -74,10 +74,10 @@ build_android() {
     dotnet workload install android
   fi
   run build "$ROOT/Callspire.Android/Callspire.Android.csproj" \
-      -f net8.0-android -c "$CONFIGURATION"
+      -f net8.0-android34.0 -c "$CONFIGURATION"
   if [[ $PUBLISH -eq 1 ]]; then
     run publish "$ROOT/Callspire.Android/Callspire.Android.csproj" \
-        -f net8.0-android -c "$CONFIGURATION" \
+        -f net8.0-android34.0 -c "$CONFIGURATION" \
         -o "$ROOT/publish/android"
     green "Artifact: $ROOT/publish/android"
   fi
