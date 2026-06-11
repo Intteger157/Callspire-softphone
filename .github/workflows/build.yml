@@ -31,14 +31,9 @@ jobs:
           dotnet-version: '8.0.x'
           global-json-file: global.json
 
-      # Desktop (windows TFM) references Core as net8.0 — restore Core first, then Desktop + RID.
-      - name: Restore
-        run: |
-          dotnet restore Callspire.Core/Callspire.Core.csproj -p:TargetFramework=net8.0
-          dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -p:TargetFramework=net8.0-windows10.0.17763 -r win-x64
-
+      # On Windows runner all Desktop TFMs are supported — full restore + RID (no -p:TargetFramework filter).
       - name: Publish
-        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release -r win-x64 --no-self-contained --no-restore -o publish/windows
+        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release -r win-x64 --no-self-contained -o publish/windows
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

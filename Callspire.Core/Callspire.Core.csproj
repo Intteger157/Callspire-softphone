@@ -2,8 +2,7 @@
 
 	<PropertyGroup>
 		<!-- Platform-agnostic business logic: SIP/WebRTC signalling, CRM, МиКО АТС mapping, settings, recording pipeline -->
-		<!-- net8.0-android34.0 lets Android head reference Core without android21 asset fallback -->
-		<TargetFrameworks>net8.0;net8.0-android34.0</TargetFrameworks>
+		<TargetFramework>net8.0</TargetFramework>
 		<Nullable>enable</Nullable>
 		<LangVersion>latest</LangVersion>
 		<!-- Keep the historical namespace so moved files need no edits -->
