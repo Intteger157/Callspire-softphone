@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
@@ -21,7 +22,7 @@ namespace Softphone
         public event Action<string, DateTime, CallStatus, TimeSpan?>? OnIncomingCallStatusChanged;
         
         // Событие для обновления детальной информации о звонке
-        public event Action<string, DateTime, DateTime?, DateTime?, DateTime?, bool, CallEndedBy, List<string>?, TimeSpan?, string?, CallTransport?, string?, string?>? OnCallDetailsChanged;
+        public event Action<string, DateTime, DateTime?, DateTime?, DateTime?, bool, CallEndedBy, List<string>?, TimeSpan?, string?, CallTransport?, string?, string?, int?>? OnCallDetailsChanged;
         private SipService? _sipService;
         private string _phoneNumber;
         private bool _isMuted = false;
@@ -159,6 +160,7 @@ namespace Softphone
             {
                 _sipService.OnStatusChanged += UpdateCallStatus;
                 _sipService.OnCallEnded += OnCallEnded;
+                _sipService.OnRecordingFinalized += OnSipRecordingFinalized;
                 _sipService.OnOutboundCallerIdReceived += OnOutboundCallerIdReceived;
             }
 
@@ -358,6 +360,10 @@ namespace Softphone
         private bool _isClosing = false;
         private bool _closeScheduled = false;
         private bool _sipCallEndHandled = false;
+        /// <summary>Текст уведомления об ошибке (например «Абонент временно недоступен»), который нужно
+        /// оставить на экране активного звонка и не перетирать зелёным «Call ended».</summary>
+        private string? _failureNoticeText;
+        private bool _isFailureNotice = false;
         /// <summary>WebRTC: coalesce duplicate call_ended / call_failed from JS (e.g. PC closed + JsSIP ended).</summary>
         private bool _webRtcCallTerminationUiHandled;
 
@@ -387,14 +393,81 @@ namespace Softphone
             }
         }
 
+        /// <summary>
+        /// Распознаёт случай «абонент/сеть временно недоступны». Оператор (Asterisk) часто отдаёт
+        /// 480 Temporarily Unavailable, либо мапит его в 603 Decline с RFC3326 Reason-заголовком
+        /// (cause=480 / "restoration" / "timeout"). Для менеджера это понятнее, чем общий «недозвон».
+        /// </summary>
+        private static bool IsServerUnreachableFailure(string status)
+        {
+            if (string.IsNullOrEmpty(status))
+                return false;
+            return status.Contains("Cannot reach SIP server", StringComparison.OrdinalIgnoreCase)
+                || status.Contains("server unreachable", StringComparison.OrdinalIgnoreCase)
+                || status.Contains("VPN/network", StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Matches SIP status codes in structured log lines, not bare digits inside timestamps (e.g. 14:49:47.480).
+        /// </summary>
+        private static bool ContainsSipStatusCode(string status, int code)
+        {
+            if (string.IsNullOrEmpty(status))
+                return false;
+            string codeText = code.ToString(CultureInfo.InvariantCulture);
+            return status.Contains($"SIP Response: {codeText} ", StringComparison.OrdinalIgnoreCase)
+                || status.Contains($"Call failed: {codeText}", StringComparison.OrdinalIgnoreCase)
+                || status.Contains($"Response: {codeText}", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSipDeclineFailure(string status) =>
+            ContainsSipStatusCode(status, 603)
+            || status.Contains("Decline", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsSipBusyFailure(string status) =>
+            ContainsSipStatusCode(status, 486)
+            || status.Contains("Busy Here", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsSubscriberUnavailableFailure(string status)
+        {
+            if (string.IsNullOrEmpty(status))
+                return false;
+            // Не используем голую "480" — её содержит и метка времени (например 13:33:24.480).
+            // Сопоставляем только осмысленные позиции кода/причины.
+            return ContainsSipStatusCode(status, 480)
+                || status.Contains("Temporarily Unavailable", StringComparison.OrdinalIgnoreCase)
+                || status.Contains("cause=480", StringComparison.OrdinalIgnoreCase)
+                || status.Contains("restoration", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string ResolveSipFailureStatusText(string status)
         {
-            if (status.Contains("603", StringComparison.Ordinal) || status.Contains("Decline", StringComparison.OrdinalIgnoreCase))
+            // Canonical messages from SipService — pass through unchanged.
+            if (status.Contains("Line busy", StringComparison.OrdinalIgnoreCase))
+                return "Line busy";
+            if (status.Contains("Call declined", StringComparison.OrdinalIgnoreCase))
                 return "Call declined";
-            if (status.Contains("486", StringComparison.Ordinal) || status.Contains("Busy", StringComparison.OrdinalIgnoreCase))
-                return "Call rejected";
+            if (status.Contains("Subscriber unavailable", StringComparison.OrdinalIgnoreCase))
+                return "Subscriber unavailable";
+            if (status.Contains("Call cancelled", StringComparison.OrdinalIgnoreCase))
+                return "Call cancelled";
+            if (status.Contains("Number not found", StringComparison.OrdinalIgnoreCase))
+                return "Number not found";
+
+            // Сеть/абонент временно недоступны — проверяем до 603, т.к. оператор может прислать
+            // 603 Decline с Reason: cause=480, что фактически означает недоступность абонента.
+            if (IsServerUnreachableFailure(status))
+                return "Cannot reach SIP server (VPN/network)";
+            if (status.Contains("No answer (timeout)", StringComparison.OrdinalIgnoreCase))
+                return "No answer (timeout)";
+            if (IsSubscriberUnavailableFailure(status))
+                return "Subscriber unavailable";
+            if (IsSipDeclineFailure(status))
+                return "Call declined";
+            if (IsSipBusyFailure(status))
+                return "Line busy";
             if (status.Contains("timeout", StringComparison.OrdinalIgnoreCase) || status.Contains("not found", StringComparison.OrdinalIgnoreCase))
-                return "Call failed: No answer";
+                return "No answer (timeout)";
             return "Call failed";
         }
 
@@ -402,15 +475,23 @@ namespace Softphone
         {
             if (_endedBy == CallEndedBy.Unknown)
                 _endedBy = CallEndedBy.RemoteParty;
-            SetCallStatusUi(ResolveSipFailureStatusText(status), "AccentRedBrush");
+            string text = ResolveSipFailureStatusText(status);
+            // Запоминаем, чтобы OnCallEnded не перетёр уведомление зелёным «Call ended»
+            // и окно подержалось дольше — менеджер успеет прочитать причину.
+            _failureNoticeText = text;
+            _isFailureNotice = true;
+            SetCallStatusUi(text, "AccentRedBrush");
         }
 
         private void ScheduleCloseCallWindow(int delayMs = 300)
         {
             if (_closeScheduled) return;
             _closeScheduled = true;
-            _ = Task.Delay(delayMs).ContinueWith(_ =>
+            _ = Task.Delay(delayMs).ContinueWith(t =>
             {
+                if (t.IsCanceled || t.IsFaulted)
+                    return;
+
                 try
                 {
                     Dispatcher.BeginInvoke(() =>
@@ -430,7 +511,7 @@ namespace Softphone
                 {
                     MainWindow.Log($"{GetTransportLogPrefix()} ScheduleCloseCallWindow dispatch: {ex.Message}");
                 }
-            });
+            }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
         }
         
         private void OnCallEnded()
@@ -477,7 +558,13 @@ namespace Softphone
                         duration = DateTime.Now - startTime;
                 }
 
-                SetCallStatusUi("Call ended", "AccentGreenBrush");
+                // При неуспешном звонке оставляем уведомление о причине (красный),
+                // иначе показываем обычное «Call ended».
+                bool showFailureNotice = !_wasAnswered && _isFailureNotice && !string.IsNullOrEmpty(_failureNoticeText);
+                if (showFailureNotice)
+                    SetCallStatusUi(_failureNoticeText!, "AccentRedBrush");
+                else
+                    SetCallStatusUi("Call ended", "AccentGreenBrush");
 
                 if (_wasAnswered)
                     OnIncomingCallStatusChanged?.Invoke(_phoneNumber, _incomingCallStartTime, CallStatus.Ended, duration);
@@ -490,7 +577,8 @@ namespace Softphone
                 SendCallDetails();
 
                 MainWindow.Log($"{GetTransportLogPrefix()} OnCallEnded: scheduling window close");
-                ScheduleCloseCallWindow(300);
+                // Даём менеджеру время прочитать причину отказа, прежде чем окно закроется.
+                ScheduleCloseCallWindow(showFailureNotice ? 3500 : 300);
             }
             catch (Exception ex)
             {
@@ -1017,17 +1105,23 @@ namespace Softphone
                     // Удаленная сторона завершила звонок
                     _endedBy = CallEndedBy.RemoteParty;
                 }
-                else if (status.Contains("486") || status.Contains("Busy Here") || 
-                         (status.Contains("Call failed") && (status.Contains("486") || status.Contains("Busy"))))
+                else if (IsSipBusyFailure(status) || IsSipDeclineFailure(status) || IsSubscriberUnavailableFailure(status))
                 {
-                    // Удаленная сторона отклонила звонок (486 Busy Here)
+                    // Абонент отклонил / сбросил / недоступен
                     _endedBy = CallEndedBy.RemoteParty;
-                    MainWindow.Log($"{GetTransportLogPrefix()} UpdateCallStatus: Remote party rejected call (486 Busy Here), setting EndedBy=RemoteParty");
+                    if (!_wasAnswered)
+                        ApplySipFailureStatusFromMessage(status);
                 }
-                else if (status.Contains("Call failed"))
+                else if (status.Contains("Call failed") || IsServerUnreachableFailure(status)
+                         || status.Contains("No answer (timeout)", StringComparison.OrdinalIgnoreCase)
+                         || status.Contains("Line busy", StringComparison.OrdinalIgnoreCase)
+                         || status.Contains("Call declined", StringComparison.OrdinalIgnoreCase)
+                         || status.Contains("Subscriber unavailable", StringComparison.OrdinalIgnoreCase)
+                         || status.Contains("Call cancelled", StringComparison.OrdinalIgnoreCase))
                 {
                     // SIP: ApplyOutboundFailureUiTeardown always invokes OnCallEnded — only refresh status here.
-                    ApplySipFailureStatusFromMessage(status);
+                    if (!_wasAnswered)
+                        ApplySipFailureStatusFromMessage(status);
                 }
                 else if ((status.Contains("Call ended") || status.Contains("Hanging up")) && !_useWebRtc)
                 {
@@ -1891,6 +1985,7 @@ namespace Softphone
                 
                 _sipService.OnStatusChanged -= UpdateCallStatus;
                 _sipService.OnCallEnded -= OnCallEnded;
+                _sipService.OnRecordingFinalized -= OnSipRecordingFinalized;
                 _sipService.OnOutboundCallerIdReceived -= OnOutboundCallerIdReceived;
                 
                 // Записываем время окончания гудков, если еще не записано
@@ -1912,21 +2007,8 @@ namespace Softphone
                     OnIncomingCallStatusChanged?.Invoke(_phoneNumber, _incomingCallStartTime, CallStatus.Missed, null);
                 }
                 
-                // Запись звонка останавливается автоматически при Hangup() в SipService
-                
-                // Всегда вызываем Hangup при закрытии окна (чтобы остановить гудки)
-                // даже если звонок не активен
-                if (!_isClosing)
-                {
-                    try
-                    {
-                        _sipService.Hangup();
-                    }
-                    catch
-                    {
-                        // Игнорируем ошибки
-                    }
-                }
+                // Всегда завершаем SIP/RTP при закрытии окна (early media продолжает играть иначе).
+                try { _sipService.Hangup(); } catch { }
             }
             
             // WebRTC: если окно закрыли без call_ended (крестик, сбой), история не получала SendCallDetails — досылаем.
@@ -1987,9 +2069,13 @@ namespace Softphone
                 MainWindow.Log($"{logPrefix} SendCallDetails: SIP recording produced no file — clearing history path.");
             }
 
-            // SIP: nudge finalize only after the call ended (WAV may still be encoding). Never during "Connected" —
+            // IsInCall can stay true briefly after BYE while SIPSorcery tears down — treat ended calls as inactive.
+            bool sipCallEnded = _endedBy != CallEndedBy.Unknown || _sipCallEndHandled;
+            bool sipCallStillActive = !_useWebRtc && (_sipService?.IsInCall == true) && !sipCallEnded;
+
+            // SIP: nudge finalize only after the call ended (WAV may still be encoding). Never while IsInCall —
             // recording starts on 200 OK while File.Exists is still false and would stop after ~1 RTP packet.
-            if (!_useWebRtc && _endedBy != CallEndedBy.Unknown
+            if (!_useWebRtc && _endedBy != CallEndedBy.Unknown && !sipCallStillActive
                 && !string.IsNullOrEmpty(recordingFilePath) && !File.Exists(recordingFilePath))
             {
                 try { _sipService?.FinalizeCallRecordingIfActive(); }
@@ -1999,6 +2085,11 @@ namespace Softphone
             if (_isOriginateCall && _endedBy != CallEndedBy.Unknown)
             {
                 TryInferOriginateAnswerFromRecording(logPrefix);
+            }
+
+            if (!_useWebRtc && !_isOriginateCall && _endedBy != CallEndedBy.Unknown)
+            {
+                TryInferSipAnswerFromEarlyMedia(logPrefix);
             }
             
             // Вычисляем длительность звонка
@@ -2054,7 +2145,7 @@ namespace Softphone
             
             // Завершённый звонок: всегда обновляем историю через OnCallDetailsChanged (путь к записи может прийти позже).
             // В очередь AmoCRM — только один раз (дедуп в MainWindow.ProcessCallInAmoCrm).
-            if (_endedBy != CallEndedBy.Unknown)
+            if (_endedBy != CallEndedBy.Unknown && !sipCallStillActive)
             {
                 bool firstAmoDispatch = !_hasBeenSentToAmoCrm;
                 if (firstAmoDispatch)
@@ -2084,13 +2175,57 @@ namespace Softphone
                     recordingFilePath,
                     _callContext.Transport,
                     _callContext.SipCallId,
-                    _callContext.WebRtcSessionId
+                    _callContext.WebRtcSessionId,
+                    _sipService?.LastCallInboundRtpPackets
                 );
+            }
+            else if (_endedBy == CallEndedBy.Unknown)
+            {
+                MainWindow.Log($"{logPrefix} SendCallDetails: Call still in progress (EndedBy=Unknown), skipping AmoCRM/history update");
             }
             else
             {
-                MainWindow.Log($"{logPrefix} SendCallDetails: Call still in progress (EndedBy=Unknown), skipping AmoCRM processing");
+                MainWindow.Log($"{logPrefix} SendCallDetails: Deferring AmoCRM/history update (EndedBy={_endedBy}, sipActive={_sipService?.IsInCall == true})");
             }
+        }
+
+        private void OnSipRecordingFinalized(string? recordingPath)
+        {
+            if (_useWebRtc || string.IsNullOrEmpty(recordingPath))
+                return;
+
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(() => OnSipRecordingFinalized(recordingPath));
+                return;
+            }
+
+            MainWindow.Log($"{GetTransportLogPrefix()} SIP recording finalized: {recordingPath}");
+            SendCallDetails();
+        }
+
+        /// <summary>
+        /// Beeline/Asterisk IVR: 183+RTP without 200 OK — infer answered from inbound RTP count.
+        /// </summary>
+        private void TryInferSipAnswerFromEarlyMedia(string logPrefix)
+        {
+            if (_wasAnswered || _answerTime.HasValue)
+                return;
+            if (_endedBy == CallEndedBy.Unknown)
+                return;
+
+            int? inboundRtp = _sipService?.LastCallInboundRtpPackets;
+            if (inboundRtp is null or < 50)
+                return;
+            if (!_ringbackStartTime.HasValue)
+                return;
+
+            _wasAnswered = true;
+            _answerTime = _ringbackStartTime;
+            if (!_ringbackEndTime.HasValue)
+                _ringbackEndTime = DateTime.Now;
+
+            MainWindow.Log($"{logPrefix} Inferred answered from early media/IVR (inbound RTP={inboundRtp} pkts)");
         }
         
         /// <summary>

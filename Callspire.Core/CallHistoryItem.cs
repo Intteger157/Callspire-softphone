@@ -98,6 +98,9 @@ namespace Softphone
         // Outbound CallerID from P-Asserted-Identity header (the number PBX presents to the remote party)
         public string? OutboundCallerId { get; set; }
 
+        /// <summary>Inbound RTP packets received during the call (-1 = unknown, 0 = dead media).</summary>
+        public int InboundRtpPackets { get; set; } = -1;
+
         // На будущее: можно добавить
         // public string? AudioCodec { get; set; } // opus / pcmu / g722
         // public string? MediaSource { get; set; } // RTP / RTCPeerConnection

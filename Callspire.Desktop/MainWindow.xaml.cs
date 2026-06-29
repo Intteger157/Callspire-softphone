@@ -21,6 +21,7 @@ using System.Text.RegularExpressions;
 using System.Windows.Interop;
 using System.Windows.Media.Animation;
 using System.Windows.Shell;
+using System.Windows.Threading;
 
 namespace Softphone
 {
@@ -29,6 +30,7 @@ namespace Softphone
         private SipService? _sipService;
         private SipService? _sipService2; // Второе SIP подключение (только SIP, независимо от основного)
         private readonly SemaphoreSlim _secondConnectionInitSemaphore = new SemaphoreSlim(1, 1);
+        private string? _secondaryConnectionFingerprint;
         private System.Threading.Timer? _secondarySipMaintenanceTimer;
         private static readonly TimeSpan _secondarySipMaintenanceInterval = TimeSpan.FromMinutes(30);
         private CallHistoryService _callHistoryService;
@@ -66,6 +68,8 @@ namespace Softphone
 
         // Callspire PBX Gateway client (JWT API)
         private MikoPbxCdrService? _mikoPbxCdrService;
+        private string? _mikoPbxExtension;
+        private string? _sipUsername2;
         private KommoGatewayStatus? _cachedKommoGatewayStatus;
 
         // CallerID selection (PBX Originate)
@@ -81,6 +85,8 @@ namespace Softphone
         private int _pendingBrowserCallSeq = 0;
         private DateTime _pendingBrowserCallCreatedUtc = DateTime.MinValue;
         private const int PendingBrowserCallTtlSeconds = 90;
+        /// <summary>When both lines are configured, wait up to this long before auto-picking a single connection (click-to-call).</summary>
+        private const int ConnectionReadyWaitSeconds = 20;
 
         // Protocol click-to-call dedupe (some browsers/extensions may deliver the same protocol URL twice).
         private readonly object _protocolDedupeLock = new object();
@@ -328,7 +334,7 @@ namespace Softphone
             Closing += MainWindow_Closing;
 
             // Fix borderless maximize behavior (do not cover taskbar, allow restore/drag).
-            SourceInitialized += MainWindow_SourceInitialized;
+            // Work-area clamping is handled by WindowWorkAreaHelper via NativeWindowAppearanceManager.
             
             // NOTE: Win11 DWM (mica + corners) is applied by NativeWindowAppearanceManager on SourceInitialized.
 
@@ -1471,10 +1477,10 @@ namespace Softphone
                         RefreshVisibleDashboards();
                     };
                     
-                    callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
+                    callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, inboundRtpPackets) =>
                     {
                         string? outboundCallerId = callWindow.GetOutboundCallerId();
-                        _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
+                        _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId, inboundRtpPackets: inboundRtpPackets);
                         
                         Dispatcher.Invoke(RefreshVisibleDashboards);
 
@@ -1780,62 +1786,7 @@ namespace Softphone
 
         private void CenterNonOwnedWindowOverThis(Window child)
         {
-            try
-            {
-                if (child == null) return;
-
-                child.WindowStartupLocation = WindowStartupLocation.Manual;
-
-                // Center over current window bounds (works without Owner, so MainWindow can overlap it).
-                double width = double.IsNaN(child.Width) || child.Width <= 0 ? 800 : child.Width;
-                double height = double.IsNaN(child.Height) || child.Height <= 0 ? 600 : child.Height;
-
-                // Use RestoreBounds when maximized (Left/Top may be stale).
-                var hostBounds = this.WindowState == WindowState.Maximized ? this.RestoreBounds : new Rect(this.Left, this.Top, this.ActualWidth, this.ActualHeight);
-                if (hostBounds.Width <= 0 || hostBounds.Height <= 0)
-                    hostBounds = this.RestoreBounds;
-
-                double left = hostBounds.Left + (hostBounds.Width - width) / 2;
-                double top = hostBounds.Top + (hostBounds.Height - height) / 2;
-
-                // Clamp to the *current monitor* work area, not primary screen.
-                var work = GetWorkAreaForWindow(this);
-                if (work.Width > 0 && work.Height > 0)
-                {
-                    left = Math.Max(work.Left, Math.Min(left, work.Right - width));
-                    top = Math.Max(work.Top, Math.Min(top, work.Bottom - height));
-                }
-
-                child.Left = left;
-                child.Top = top;
-            }
-            catch { }
-        }
-
-        private static Rect GetWorkAreaForWindow(Window w)
-        {
-            try
-            {
-                var hwnd = new WindowInteropHelper(w).Handle;
-                if (hwnd == IntPtr.Zero) return SystemParameters.WorkArea;
-
-                const int MONITOR_DEFAULTTONEAREST = 0x00000002;
-                IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-                if (monitor == IntPtr.Zero) return SystemParameters.WorkArea;
-
-                var mi = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
-                if (!GetMonitorInfo(monitor, ref mi)) return SystemParameters.WorkArea;
-
-                return new Rect(
-                    mi.rcWork.left,
-                    mi.rcWork.top,
-                    mi.rcWork.right - mi.rcWork.left,
-                    mi.rcWork.bottom - mi.rcWork.top);
-            }
-            catch
-            {
-                return SystemParameters.WorkArea;
-            }
+            WindowWorkAreaHelper.CenterOverHost(child, this);
         }
 
         private async System.Threading.Tasks.Task TryConnectFromSettings()
@@ -3144,6 +3095,16 @@ namespace Softphone
 
                 Log($"[MainWindow] InitializeSecondConnectionAsync: Found second connection settings - Server2='{settings.SipServer2}', Username2='{settings.SipUsername2}', UseTls2={settings.SipUseTls2}, UseSrtp2={settings.SipUseSrtp2}");
 
+                string connectionFingerprint = $"{settings.SipServer2}|{settings.SipUsername2}|{settings.SipUseTls2}|{settings.SipUseSrtp2}";
+                if (_sipService2 != null
+                    && string.Equals(connectionFingerprint, _secondaryConnectionFingerprint, StringComparison.Ordinal)
+                    && _sipService2.IsRegistered)
+                {
+                    Log("[MainWindow] InitializeSecondConnectionAsync: Already registered with same settings — skipping re-init");
+                    return;
+                }
+                _secondaryConnectionFingerprint = connectionFingerprint;
+
                 SipEndpointHelper.ParseStoredSipServer(settings.SipServer2, out string server2, out int port2);
 
                 Log($"[MainWindow] InitializeSecondConnectionAsync: Parsed server2='{server2}', port2={port2}");
@@ -3160,6 +3121,7 @@ namespace Softphone
                 }
 
                 Log($"[MainWindow] InitializeSecondConnectionAsync: Final username2='{username2}'");
+                _sipUsername2 = username2;
 
                 // Расшифровываем пароль
                 string password2 = "";
@@ -3345,6 +3307,80 @@ namespace Softphone
             return _sipService2?.IsRegistered ?? false;
         }
 
+        private static bool IsSecondaryConfiguredInSettings(AppSettings? settings)
+        {
+            if (settings == null)
+                return false;
+            if (AppSettings.SecondaryLineUsesWebRtc(settings))
+                return true;
+            return !string.IsNullOrWhiteSpace(settings.SipServer2)
+                   && !string.IsNullOrWhiteSpace(settings.SipUsername2);
+        }
+
+        private bool IsMainConnectionReady()
+        {
+            if (ShouldUseWebRtcForConnection(secondary: false))
+                return WebRtcService.Main?.IsReadyForCalls == true;
+            return _sipService?.IsRegistered == true;
+        }
+
+        /// <summary>
+        /// When both main and secondary are configured, wait until both register (or timeout).
+        /// Prevents click-to-call from using whichever line connects first.
+        /// </summary>
+        private async Task WaitForConfiguredConnectionsAsync(CancellationToken cancellationToken = default)
+        {
+            AppSettings? settings = null;
+            try
+            {
+                string path = AppDataHelper.GetSettingsFilePath();
+                if (File.Exists(path))
+                    settings = JsonConvert.DeserializeObject<AppSettings>(File.ReadAllText(path));
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] WaitForConfiguredConnections: settings read error: {ex.Message}");
+            }
+
+            if (!IsSecondaryConfiguredInSettings(settings))
+                return;
+
+            if (_sipService2 == null && !ShouldUseWebRtcForConnection(secondary: true))
+            {
+                try
+                {
+                    await InitializeSecondConnectionAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] WaitForConfiguredConnections: secondary init: {ex.Message}");
+                }
+            }
+
+            int maxSteps = ConnectionReadyWaitSeconds * 2;
+            for (int i = 0; i < maxSteps; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                bool mainReady = IsMainConnectionReady();
+                bool secondaryReady = IsSecondConnectionConnected();
+                if (mainReady && secondaryReady)
+                {
+                    Log("[MainWindow] WaitForConfiguredConnections: both connections ready.");
+                    return;
+                }
+
+                if (i > 0 && i % 10 == 0)
+                {
+                    Log($"[MainWindow] WaitForConfiguredConnections: main={mainReady}, secondary={secondaryReady} ({i / 2}s/{ConnectionReadyWaitSeconds}s)");
+                }
+
+                await Task.Delay(500, cancellationToken).ConfigureAwait(false);
+            }
+
+            Log($"[MainWindow] WaitForConfiguredConnections: timeout — main={IsMainConnectionReady()}, secondary={IsSecondConnectionConnected()}");
+        }
+
         /// <summary>
         /// Отключает и удаляет второе SIP подключение
         /// </summary>
@@ -3455,10 +3491,10 @@ namespace Softphone
             };
             
                 // Подписываемся на события обновления детальной информации о звонке
-                callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
+                callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, inboundRtpPackets) =>
                 {
                     string? outboundCallerId = callWindow.GetOutboundCallerId();
-                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
+                    _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId, inboundRtpPackets: inboundRtpPackets);
 
                     if (string.IsNullOrEmpty(outboundCallerId) && endedBy != CallEndedBy.Unknown && wasAnswered)
                         TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
@@ -3931,8 +3967,29 @@ namespace Softphone
             {
                 Log($"[MainWindow] InitiateCallFromBrowser skipped: call already active ({activeCallWindow.CallRemoteNumber})");
                 WindowForegroundHelper.RequestUserAttention(this);
+                WindowForegroundHelper.ShowAboveAll(activeCallWindow, this);
                 return;
             }
+
+            WindowForegroundHelper.BeginElevatedForegroundSession(this);
+            try
+            {
+                await InitiateCallFromBrowserCoreAsync(phoneNumber, leadId);
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] InitiateCallFromBrowser failed: {ex.Message}");
+            }
+            finally
+            {
+                WindowForegroundHelper.ForceReleaseElevatedForeground(this);
+            }
+        }
+
+        private async System.Threading.Tasks.Task InitiateCallFromBrowserCoreAsync(string phoneNumber, long? leadId)
+        {
+            // BeginElevatedForegroundSession already raised MainWindow; avoid RequestUserAttention
+            // here — its delayed Topmost reset would re-pin MainWindow on top after the session ends.
 
             // Cancel any previously queued "call when ready" request.
             int mySeq;
@@ -4029,8 +4086,17 @@ namespace Softphone
                             }
 
                             Log("[MainWindow] WebRTC is now ready, initiating call from browser");
-                            _allowNextProgrammaticCall = true;
-                            await PerformCall(phoneNumber, leadId);
+                            WindowForegroundHelper.BeginElevatedForegroundSession(this);
+                            try
+                            {
+                                await WaitForConfiguredConnectionsAsync(myToken).ConfigureAwait(true);
+                                _allowNextProgrammaticCall = true;
+                                await PerformCall(phoneNumber, leadId);
+                            }
+                            finally
+                            {
+                                WindowForegroundHelper.ForceReleaseElevatedForeground(this);
+                            }
                         });
                     });
                     return;
@@ -4038,13 +4104,25 @@ namespace Softphone
                 
                 Log("[MainWindow] WebRTC is ready, proceeding with call");
             }
-            
+
+            await WaitForConfiguredConnectionsAsync(myToken).ConfigureAwait(false);
+
             _allowNextProgrammaticCall = true;
-            await PerformCall(phoneNumber, leadId);
+            if (Dispatcher.CheckAccess())
+                await PerformCall(phoneNumber, leadId).ConfigureAwait(true);
+            else
+                await Dispatcher.InvokeAsync(() => PerformCall(phoneNumber, leadId)).Task.Unwrap().ConfigureAwait(false);
         }
         
         private async System.Threading.Tasks.Task PerformCall(string number, long? leadId = null, bool forceCallerIdSelection = false)
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                await Dispatcher.InvokeAsync(async () =>
+                    await PerformCall(number, leadId, forceCallerIdSelection)).Task.Unwrap();
+                return;
+            }
+
             if (string.IsNullOrEmpty(number))
             {
                 CustomMessageBox.Show("Please enter a phone number.", "Error", MessageBoxButton.OK, MessageBoxImage.Warning, this);
@@ -4106,6 +4184,11 @@ namespace Softphone
                 : (_sipService2 != null);
 
             Log($"[MainWindow] PerformCall: Connection check - Main configured={hasMainConnectionConfigured} (webrtc={useWebRtc}), Secondary configured={hasSecondaryConnectionConfigured} (webrtc={useSecondaryWebRtc})");
+
+            if (hasMainConnectionConfigured && hasSecondaryConnectionConfigured)
+            {
+                await WaitForConfiguredConnectionsAsync().ConfigureAwait(true);
+            }
 
             string? mainStatus = null;
             string? secondaryStatus = null;
@@ -4209,7 +4292,7 @@ namespace Softphone
                     isSecondaryWebRtc: useSecondaryWebRtc);
                 CenterNonOwnedWindowOverThis(selectionWindow);
 
-                if (selectionWindow.ShowDialog() == true && selectionWindow.SelectedConnection.HasValue)
+                if (WindowForegroundHelper.ShowDialogAboveAll(selectionWindow, this) == true && selectionWindow.SelectedConnection.HasValue)
                 {
                     selectedConnectionType = selectionWindow.SelectedConnection.Value;
                     selectedMainCallerId = selectionWindow.SelectedCallerId;
@@ -4246,7 +4329,7 @@ namespace Softphone
                         forceShowForSingleConnection: true);
                     CenterNonOwnedWindowOverThis(callerIdSelectionWindow);
 
-                    if (callerIdSelectionWindow.ShowDialog() == true && callerIdSelectionWindow.SelectedConnection.HasValue)
+                    if (WindowForegroundHelper.ShowDialogAboveAll(callerIdSelectionWindow, this) == true && callerIdSelectionWindow.SelectedConnection.HasValue)
                     {
                         selectedConnectionType = callerIdSelectionWindow.SelectedConnection.Value;
                         selectedMainCallerId = callerIdSelectionWindow.SelectedCallerId;
@@ -4305,10 +4388,10 @@ namespace Softphone
                 return;
             handlersAttached = true;
 
-            callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId) =>
+            callWindow.OnCallDetailsChanged += (phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, inboundRtpPackets) =>
             {
                 string? outboundCallerId = callWindow.GetOutboundCallerId();
-                _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId);
+                _callHistoryService.UpdateCallDetails(phoneNumber, callTime, ringbackStart, ringbackEnd, answerTime, wasAnswered, endedBy, technicalDetails, duration, recordingFilePath, transport, sipCallId, webRtcSessionId, outboundCallerId, inboundRtpPackets: inboundRtpPackets);
 
                 Dispatcher.Invoke(RefreshVisibleDashboards);
 
@@ -4382,11 +4465,14 @@ namespace Softphone
             }
             else
             {
-                if (_sipService != null && _sipService.IsInCall)
+                SipService? sipBusyCheck = connectionType == ConnectionSelectionWindow.ConnectionType.Secondary
+                    ? _sipService2
+                    : _sipService;
+                if (sipBusyCheck != null && sipBusyCheck.IsOutboundBusy)
                 {
-                    MainWindow.Log($"[MainWindow] PerformCall: SIP call is active, ignoring call to {number}");
+                    MainWindow.Log($"[MainWindow] PerformCall: SIP line busy (active call or teardown), ignoring call to {number}");
                     CustomMessageBox.Show(
-                        "A SIP call is already in progress. Please end the current call before making a new one.",
+                        "A SIP call is still finishing on this connection. Please wait a moment before calling again.",
                         "Call In Progress",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning,
@@ -4496,8 +4582,9 @@ namespace Softphone
                     Owner = this
                         };
                         
-                        // Check if CallerID Originate should be used instead of direct WebRTC call
-                        bool useOriginate = _allowedCallerIds.Count > 0 && _mikoPbxCdrService != null;
+                        // CallerID Originate is only supported on the main MikoPBX gateway connection.
+                        // Secondary slots (plain Asterisk etc.) must use direct WebRTC INVITE via their own UA.
+                        bool useOriginate = !isSecondary && _allowedCallerIds.Count > 0 && _mikoPbxCdrService != null;
                         if (useOriginate)
                         {
                             string selectedCallerId =
@@ -4516,7 +4603,7 @@ namespace Softphone
                             callWindow.MarkAsOriginateCall();
                             callWindow.SetOutboundCallerId(selectedCallerId);
                             CallHandlingHelpers.PrepareCallWindowForDisplay(callWindow, isIncomingCall: false);
-                            callWindow.Show();
+                            WindowForegroundHelper.ShowAboveAll(callWindow, this);
                             callWindowShownEarly = true;
 
                             TryAttachOutgoingCallCoreHandlers(
@@ -4634,8 +4721,23 @@ namespace Softphone
                 // Подписываемся на события статуса для отслеживания состояния звонка (только для SIP звонков)
                 if (sipServiceToUse != null && !useWebRtc)
                 {
-                    sipServiceToUse.OnStatusChanged += (status) =>
+                    // ВАЖНО: SipService общий для всех звонков одного соединения. Обработчики ниже захватывают
+                    // currentCallHistoryItem/callConnected конкретного звонка. Если их не отписывать при завершении,
+                    // они накапливаются и срабатывают на события ПОСЛЕДУЮЩИХ звонков (тот же номер/сервис),
+                    // «перетекая» в чужую запись истории — из-за этого отклонённые (603) звонки задним числом
+                    // помечались как Completed, когда следующий звонок реально соединялся.
+                    var sipForHandlers = sipServiceToUse;
+                    Action<string>? statusHandler = null;
+                    Action? endedHandler = null;
+
+                    statusHandler = (status) =>
                     {
+                        // Ignore stale handlers from previous calls on the shared SipService instance.
+                        string? activeDial = sipForHandlers.ActiveDialNumber;
+                        if (!string.IsNullOrEmpty(activeDial)
+                            && !string.Equals(activeDial, number, StringComparison.OrdinalIgnoreCase))
+                            return;
+
                         // Только INVITE 200 OK / явное «connected» — не CANCEL/REGISTER 200 OK (иначе WasAnswered=true без разговора).
                         if (status.Contains("Call connected") || status.Contains("Call answered") ||
                             status.Contains("Call progress: 200 OK"))
@@ -4657,10 +4759,15 @@ namespace Softphone
                             }
                         }
                     };
-                    
+
                     // Подписываемся на событие завершения звонка для обновления состояния кнопки
-                    sipServiceToUse.OnCallEnded += () =>
+                    endedHandler = () =>
                     {
+                        // Сразу отписываем обработчики этого звонка, чтобы они не реагировали
+                        // на события следующих звонков по общему SipService.
+                        try { sipForHandlers.OnStatusChanged -= statusHandler; } catch { }
+                        try { sipForHandlers.OnCallEnded -= endedHandler; } catch { }
+
                         Dispatcher.Invoke(() =>
                         {
                             SetCallButtonsEnabled(true);
@@ -4683,12 +4790,21 @@ namespace Softphone
                             }
                         });
                     };
+
+                    sipServiceToUse.OnStatusChanged += statusHandler;
+                    sipServiceToUse.OnCallEnded += endedHandler;
                 }
                 
                 if (!callWindowShownEarly)
-                    callWindow.Show();
+                {
+                    CallHandlingHelpers.PrepareCallWindowForDisplay(callWindow, isIncomingCall: false);
+                    if (WindowForegroundHelper.IsElevatedForegroundActive)
+                        WindowForegroundHelper.ShowAboveAll(callWindow, this);
+                    else
+                        callWindow.Show();
+                }
 
-                // Инициируем звонок только для SIPSorcery (не для WebRTC)
+                WindowForegroundHelper.CompleteElevatedForegroundSession(this);
                 if (!useWebRtc && sipServiceToUse != null)
                 {
                     try { WebRtcService.Main?.PauseAutoReconnect("sip_call_active"); } catch { }
@@ -4804,148 +4920,7 @@ namespace Softphone
         }
 
         // Maximize/restore disabled by request.
-
-        // --- Borderless maximize should not cover taskbar: WM_GETMINMAXINFO hook ---
-        private void MainWindow_SourceInitialized(object? sender, EventArgs e)
-        {
-            try
-            {
-                var hwnd = new WindowInteropHelper(this).Handle;
-                var source = HwndSource.FromHwnd(hwnd);
-                source?.AddHook(WndProc);
-            }
-            catch { }
-        }
-
-        private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
-        {
-            const int WM_SYSCOMMAND = 0x0112;
-            const int SC_MAXIMIZE = 0xF030;
-            const int WM_GETMINMAXINFO = 0x0024;
-
-            // Block maximize entirely (Win+Up, system menu, etc.)
-            if (msg == WM_SYSCOMMAND)
-            {
-                try
-                {
-                    int cmd = (int)(wParam.ToInt64() & 0xFFF0);
-                    if (cmd == SC_MAXIMIZE)
-                    {
-                        handled = true;
-                        return IntPtr.Zero;
-                    }
-                }
-                catch { }
-            }
-
-            if (msg == WM_GETMINMAXINFO)
-            {
-                try
-                {
-                    WmGetMinMaxInfo(hwnd, lParam);
-                    handled = true;
-                }
-                catch { }
-            }
-            return IntPtr.Zero;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct POINT
-        {
-            public int X;
-            public int Y;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct MINMAXINFO
-        {
-            public POINT ptReserved;
-            public POINT ptMaxSize;
-            public POINT ptMaxPosition;
-            public POINT ptMinTrackSize;
-            public POINT ptMaxTrackSize;
-        }
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
-        private struct MONITORINFO
-        {
-            public int cbSize;
-            public RECT rcMonitor;
-            public RECT rcWork;
-            public int dwFlags;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct RECT
-        {
-            public int left;
-            public int top;
-            public int right;
-            public int bottom;
-        }
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr MonitorFromWindow(IntPtr handle, int flags);
-
-        [DllImport("user32.dll", CharSet = CharSet.Auto)]
-        private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
-
-        [DllImport("user32.dll")]
-        private static extern uint GetDpiForWindow(IntPtr hwnd);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
-
-        private static void WmGetMinMaxInfo(IntPtr hwnd, IntPtr lParam)
-        {
-            const int MONITOR_DEFAULTTONEAREST = 0x00000002;
-
-            var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
-            IntPtr monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-
-            if (monitor != IntPtr.Zero)
-            {
-                var monitorInfo = new MONITORINFO { cbSize = Marshal.SizeOf<MONITORINFO>() };
-                if (GetMonitorInfo(monitor, ref monitorInfo))
-                {
-                    RECT workArea = monitorInfo.rcWork;
-                    RECT monitorArea = monitorInfo.rcMonitor;
-
-                    mmi.ptMaxPosition.X = workArea.left - monitorArea.left;
-                    mmi.ptMaxPosition.Y = workArea.top - monitorArea.top;
-                    mmi.ptMaxSize.X = workArea.right - workArea.left;
-                    mmi.ptMaxSize.Y = workArea.bottom - workArea.top;
-                }
-            }
-
-            // Enforce minimum window size even with borderless WindowChrome.
-            // Values are in DIPs in XAML; convert to device pixels using window DPI.
-            try
-            {
-                const double minWidthDip = 780;
-                const double minHeightDip = 560;
-
-                uint dpi = 96;
-                try
-                {
-                    var d = GetDpiForWindow(hwnd);
-                    if (d >= 96 && d <= 480) dpi = d;
-                }
-                catch { }
-
-                double scale = dpi / 96.0;
-                int minWpx = (int)Math.Ceiling(minWidthDip * scale);
-                int minHpx = (int)Math.Ceiling(minHeightDip * scale);
-
-                // Do not shrink below these.
-                mmi.ptMinTrackSize.X = Math.Max(mmi.ptMinTrackSize.X, minWpx);
-                mmi.ptMinTrackSize.Y = Math.Max(mmi.ptMinTrackSize.Y, minHpx);
-            }
-            catch { }
-
-            Marshal.StructureToPtr(mmi, lParam, true);
-        }
+        // Work-area clamping + maximize block: WindowWorkAreaHelper via NativeWindowAppearanceManager.
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {
@@ -6859,18 +6834,9 @@ namespace Softphone
 
                 try
                 {
-                    var callHistory = _callHistoryService.GetHistory();
-                    var call = callHistory
-                        .Where(x => x.PhoneNumber == job.PhoneNumber && Math.Abs((x.CallTime - job.CallTime).TotalSeconds) < 1)
-                        .OrderByDescending(x => x.CallTime)
-                        .FirstOrDefault();
+                    CallHistoryItem? call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId);
                     if (call == null)
-                    {
-                        call = callHistory
-                            .Where(x => x.PhoneNumber == job.PhoneNumber)
-                            .OrderByDescending(x => x.CallTime)
-                            .FirstOrDefault();
-                    }
+                        Log($"[MainWindow] AmoCrmWorkerAsync: no history row for {job.PhoneNumber} near {job.CallTime:HH:mm:ss.fff} (sessionId={job.SessionId ?? "none"})");
 
                     bool isIncoming = call?.IsIncoming ?? false;
                     int durationSeconds = call?.Duration?.TotalSeconds != null ? (int)call.Duration.Value.TotalSeconds : 0;
@@ -6886,6 +6852,32 @@ namespace Softphone
                     var endedBy = call?.EndedBy ?? CallEndedBy.Unknown;
                     var ringbackStart = call?.RingbackStartTime;
                     var ringbackEnd = call?.RingbackEndTime;
+
+                    // SIP: history may be updated before hangup (e.g. false 480 in timestamp). Wait until call ends.
+                    if (call?.Transport == CallTransport.Sip)
+                    {
+                        SipService? activeSip = call.ConnectionSlot == CallConnectionSlot.Secondary
+                            ? _sipService2
+                            : _sipService;
+                        for (int wait = 0;
+                             wait < 300
+                             && activeSip?.IsInCall == true
+                             && string.Equals(activeSip.ActiveDialNumber, job.PhoneNumber, StringComparison.OrdinalIgnoreCase);
+                             wait++)
+                        {
+                            if (wait == 0)
+                                Log($"[MainWindow] AmoCRM: SIP call still active for {job.PhoneNumber}, waiting for hangup before upload...");
+                            await Task.Delay(1000).ConfigureAwait(false);
+                            call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId) ?? call;
+                            durationSeconds = call?.Duration?.TotalSeconds != null ? (int)call.Duration.Value.TotalSeconds : durationSeconds;
+                            endedBy = call?.EndedBy ?? endedBy;
+                            ringbackStart = call?.RingbackStartTime ?? ringbackStart;
+                            ringbackEnd = call?.RingbackEndTime ?? ringbackEnd;
+                            if (call?.AnswerTime.HasValue == true)
+                                wasAnswered = true;
+                        }
+                    }
+
                     string? callLog = job.TechnicalDetails != null && job.TechnicalDetails.Count > 0
                         ? string.Join("\n", job.TechnicalDetails)
                         : null;
@@ -6894,16 +6886,8 @@ namespace Softphone
 
                     string? FindMatchingCallFromHistory()
                     {
-                        var h = _callHistoryService.GetHistory();
-                        var c = h
-                            .Where(x => x.PhoneNumber == job.PhoneNumber && Math.Abs((x.CallTime - job.CallTime).TotalSeconds) < 1)
-                            .OrderByDescending(x => x.CallTime)
-                            .FirstOrDefault();
-                        if (c == null)
-                        {
-                            c = h.Where(x => x.PhoneNumber == job.PhoneNumber).OrderByDescending(x => x.CallTime).FirstOrDefault();
-                        }
-                        return c?.RecordingFilePath;
+                        return _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId)
+                            ?.RecordingFilePath;
                     }
 
                     // Защита от "пустых" исходящих звонков:
@@ -6938,7 +6922,37 @@ namespace Softphone
                         }
                     }
                     // SIP only: ensure in-flight RTP finalize / orphan PCM recovery before waiting for WAV.
-                    if (!string.IsNullOrEmpty(job.RecordingFilePath) && call?.Transport == CallTransport.Sip)
+                    bool expectRecording = wasAnswered || !string.IsNullOrEmpty(job.RecordingFilePath);
+                    string? pathToWait = !string.IsNullOrEmpty(job.RecordingFilePath)
+                        ? job.RecordingFilePath
+                        : call?.RecordingFilePath;
+
+                    bool zeroRtpDeadMedia = call?.Transport == CallTransport.Sip
+                        && call.InboundRtpPackets == 0
+                        && (call.WasAnswered || call.AnswerTime.HasValue);
+                    if (zeroRtpDeadMedia)
+                    {
+                        Log($"[MainWindow] AmoCRM: 0 inbound RTP — treating as missed call (SIP answered but no media)");
+                        wasAnswered = false;
+                        durationSeconds = 0;
+                        expectRecording = false;
+                        finalRecordingPath = null;
+                        pathToWait = null;
+                    }
+                    else if (call != null
+                        && expectRecording
+                        && (string.IsNullOrEmpty(finalRecordingPath) || !File.Exists(finalRecordingPath)))
+                    {
+                        var pbxRecording = await TryDownloadPbxRecordingForCallAsync(call).ConfigureAwait(false);
+                        if (!string.IsNullOrEmpty(pbxRecording) && File.Exists(pbxRecording))
+                        {
+                            finalRecordingPath = pbxRecording;
+                            pathToWait = pbxRecording;
+                            Log($"[MainWindow] AmoCRM: using PBX server recording: {pbxRecording}");
+                        }
+                    }
+
+                    if (expectRecording && call?.Transport == CallTransport.Sip)
                     {
                         try
                         {
@@ -6949,55 +6963,72 @@ namespace Softphone
                         {
                             Log($"[MainWindow] AmoCRM queue: SIP recording finalize: {ex.Message}");
                         }
-                        if (!string.IsNullOrEmpty(job.RecordingFilePath) && File.Exists(job.RecordingFilePath))
-                            finalRecordingPath = job.RecordingFilePath;
+
+                        call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId) ?? call;
+                        if (string.IsNullOrEmpty(pathToWait) && !string.IsNullOrEmpty(call?.RecordingFilePath))
+                            pathToWait = call.RecordingFilePath;
+                        if (!string.IsNullOrEmpty(pathToWait) && CallWindowHelpers.IsRecordingWavPlausible(pathToWait, out _))
+                            finalRecordingPath = pathToWait;
                     }
 
                     // Ждём появления файла записи до 5 минут (колл-центр: конвертация идёт по одной, предыдущий успеет)
-                    if (!string.IsNullOrEmpty(job.RecordingFilePath) && !File.Exists(job.RecordingFilePath))
+                    if (expectRecording && !string.IsNullOrEmpty(pathToWait)
+                        && !CallWindowHelpers.IsRecordingWavPlausible(finalRecordingPath, out _))
                     {
                         const int maxWaitSeconds = 300; // 5 минут
                         // Для отвеченных звонков ждем минимум 60 секунд (даже если звонок был коротким),
                         // так как конвертация записи может занять время, особенно для звонков с роботом
                         int minWaitSeconds = wasAnswered ? 60 : 30;
                         int waitSeconds = Math.Max(minWaitSeconds, Math.Min(maxWaitSeconds, Math.Max(durationSeconds, 30)));
-                        Log($"[MainWindow] AmoCRM queue: waiting for recording file (up to {waitSeconds}s, wasAnswered={wasAnswered}, duration={durationSeconds}s): {job.RecordingFilePath}");
+                        Log($"[MainWindow] AmoCRM queue: waiting for recording file (up to {waitSeconds}s, wasAnswered={wasAnswered}, duration={durationSeconds}s): {pathToWait}");
+                        long lastStableSize = -1;
+                        int stableObservations = 0;
                         for (int i = 0; i < waitSeconds; i++)
                         {
                             await Task.Delay(1000).ConfigureAwait(false);
-                            if (!string.IsNullOrEmpty(job.RecordingFilePath) && File.Exists(job.RecordingFilePath))
+
+                            if (CallWindowHelpers.ObserveRecordingWavStability(pathToWait, ref lastStableSize, ref stableObservations))
                             {
-                                finalRecordingPath = job.RecordingFilePath;
-                                Log($"[MainWindow] AmoCRM queue: job path file ready after {i + 1}s");
+                                finalRecordingPath = pathToWait;
+                                Log($"[MainWindow] AmoCRM queue: job path file ready after {i + 1}s ({lastStableSize / 1024} KB, stable)");
                                 break;
                             }
 
                             var histPath = FindMatchingCallFromHistory();
-                            if (!string.IsNullOrEmpty(histPath) && File.Exists(histPath))
+                            if (CallWindowHelpers.ObserveRecordingWavStability(histPath, ref lastStableSize, ref stableObservations))
                             {
                                 finalRecordingPath = histPath;
-                                Log($"[MainWindow] AmoCRM queue: file ready from history after {i + 1}s: {histPath}");
+                                pathToWait = histPath;
+                                Log($"[MainWindow] AmoCRM queue: file ready from history after {i + 1}s: {histPath} ({lastStableSize / 1024} KB, stable)");
                                 break;
                             }
                         }
-                        if (string.IsNullOrEmpty(finalRecordingPath) || !File.Exists(finalRecordingPath))
-                            Log($"[MainWindow] AmoCRM queue: file still not found after {waitSeconds}s, sending without recording");
+                        if (!CallWindowHelpers.IsRecordingWavPlausible(finalRecordingPath, out _))
+                            Log($"[MainWindow] AmoCRM queue: file still not ready after {waitSeconds}s, sending without recording");
+                    }
+                    else if (expectRecording && string.IsNullOrEmpty(pathToWait))
+                    {
+                        const int historyPathWaitSeconds = 90;
+                        Log($"[MainWindow] AmoCRM queue: answered call without recording path yet, polling history (up to {historyPathWaitSeconds}s)");
+                        for (int i = 0; i < historyPathWaitSeconds; i++)
+                        {
+                            await Task.Delay(1000).ConfigureAwait(false);
+                            var histPath = FindMatchingCallFromHistory();
+                            long lastStableSize = -1;
+                            int stableObservations = 0;
+                            if (CallWindowHelpers.ObserveRecordingWavStability(histPath, ref lastStableSize, ref stableObservations))
+                            {
+                                finalRecordingPath = histPath;
+                                pathToWait = histPath;
+                                Log($"[MainWindow] AmoCRM queue: recording path from history after {i + 1}s: {histPath} ({lastStableSize / 1024} KB, stable)");
+                                break;
+                            }
+                        }
                     }
                     
                     // КРИТИЧНО: Перечитываем историю после ожидания файла, чтобы получить актуальные данные
                     // (WasAnswered и AnswerTime могут быть обновлены после первого чтения)
-                    callHistory = _callHistoryService.GetHistory();
-                    call = callHistory
-                        .Where(x => x.PhoneNumber == job.PhoneNumber && Math.Abs((x.CallTime - job.CallTime).TotalSeconds) < 1)
-                        .OrderByDescending(x => x.CallTime)
-                        .FirstOrDefault();
-                    if (call == null)
-                    {
-                        call = callHistory
-                            .Where(x => x.PhoneNumber == job.PhoneNumber)
-                            .OrderByDescending(x => x.CallTime)
-                            .FirstOrDefault();
-                    }
+                    call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId);
                     
                     // Обновляем данные из актуальной истории
                     if (call != null)
@@ -7008,6 +7039,13 @@ namespace Softphone
                         if (call.AnswerTime.HasValue)
                         {
                             wasAnswered = true; // Если есть AnswerTime, значит был connect
+                        }
+                        if (call.Transport == CallTransport.Sip && call.InboundRtpPackets == 0
+                            && (call.WasAnswered || call.AnswerTime.HasValue))
+                        {
+                            wasAnswered = false;
+                            durationSeconds = 0;
+                            Log("[MainWindow] AmoCrmWorkerAsync: re-read — 0 RTP, treating as missed call");
                         }
                         endedBy = call.EndedBy;
                         Log($"[MainWindow] AmoCrmWorkerAsync: After re-reading history - call?.WasAnswered={call.WasAnswered}, call?.AnswerTime.HasValue={call.AnswerTime.HasValue}, final wasAnswered={wasAnswered}, duration={durationSeconds}s");
@@ -7030,6 +7068,10 @@ namespace Softphone
                         endedBy,
                         ringbackSpan,
                         isOriginateCall: isOriginateJob);
+
+                    // Failed / missed calls must not inherit talk time from a mismatched history row.
+                    if (!wasAnswered && (string.IsNullOrEmpty(finalRecordingPath) || !File.Exists(finalRecordingPath)))
+                        durationSeconds = 0;
                     if (wasAnswered && call != null && !call.WasAnswered)
                     {
                         Log($"[MainWindow] AmoCrmWorkerAsync: inferred wasAnswered=true from recording (duration={durationSeconds}s)");
@@ -7107,10 +7149,16 @@ namespace Softphone
                         }
                         catch { /* window may be closing */ }
                         
-                        if (result.Success && result.LeadId.HasValue)
+                        bool uploadSucceeded = result.Success
+                            || result.UploadStatus == AmoCrmUploadStatus.Uploaded;
+
+                        if (uploadSucceeded)
                         {
-                            _callHistoryService.UpdateAmoCrmLeadId(job.PhoneNumber, call.CallTime, result.LeadId.Value);
-                            Log($"[MainWindow] AmoCRM: Successfully processed call for {job.PhoneNumber} (callTime: {job.CallTime:HH:mm:ss.fff}), Status: {result.UploadStatus}");
+                            if (result.LeadId.HasValue)
+                                _callHistoryService.UpdateAmoCrmLeadId(job.PhoneNumber, call.CallTime, result.LeadId.Value);
+
+                            Log($"[MainWindow] AmoCRM: Successfully processed call for {job.PhoneNumber} (callTime: {call.CallTime:HH:mm:ss.fff}), Status: {result.UploadStatus}"
+                                + (string.IsNullOrEmpty(result.Reason) ? "" : $", Reason: {result.Reason}"));
                             
                             // КРИТИЧНО: НЕ удаляем запись из словаря после успешной обработки
                             // Это предотвращает повторную обработку того же звонка при повторных вызовах SendCallDetails
@@ -7419,6 +7467,8 @@ namespace Softphone
                     token,
                     settings.MikoPbxExtension);
 
+                _mikoPbxExtension = settings.MikoPbxExtension;
+
                 Log($"[PBX Gateway] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
 
                 _ = LoadCallerIdsAsync(settings);
@@ -7441,6 +7491,7 @@ namespace Softphone
             StopCallerIdListRetryTimer();
             _mikoPbxCdrService?.Dispose();
             _mikoPbxCdrService = null;
+            _mikoPbxExtension = null;
             StopSipAuthFailurePolling();
             Log("[PBX Gateway] Service disabled");
         }
@@ -7570,6 +7621,74 @@ namespace Softphone
         }
 
         public MikoPbxCdrService? GetMikoPbxCdrService() => _mikoPbxCdrService;
+
+        /// <summary>PBX Gateway CDR extension: line-2 SIP username for Connection2, main MikoPBX ext otherwise.</summary>
+        public string? GetPbxCdrExtensionForCall(CallHistoryItem? call)
+        {
+            if (call != null
+                && CallStatisticsService.GetEffectiveConnectionSlot(call) == CallConnectionSlot.Secondary
+                && !string.IsNullOrWhiteSpace(_sipUsername2))
+                return _sipUsername2;
+            return _mikoPbxExtension;
+        }
+
+        private async Task<string?> TryDownloadPbxRecordingForCallAsync(CallHistoryItem call)
+        {
+            if (_mikoPbxCdrService == null)
+                return null;
+
+            var ext = GetPbxCdrExtensionForCall(call);
+            if (string.IsNullOrWhiteSpace(ext))
+                return null;
+
+            try
+            {
+                var records = await _mikoPbxCdrService.GetCdrAsync(
+                    call.CallTime.AddHours(-2),
+                    call.CallTime.AddHours(2),
+                    dst: call.PhoneNumber,
+                    limit: 50,
+                    extensionOverride: ext).ConfigureAwait(false);
+
+                CdrRecord? best = null;
+                double bestDiff = double.MaxValue;
+                foreach (var r in records)
+                {
+                    if (string.IsNullOrEmpty(r.Recording) || string.IsNullOrEmpty(r.LinkedId))
+                        continue;
+                    if (!DateTime.TryParse(r.Start, out var recTime))
+                        continue;
+                    double diff = Math.Abs((recTime - call.CallTime).TotalSeconds);
+                    if (diff < bestDiff)
+                    {
+                        bestDiff = diff;
+                        best = r;
+                    }
+                }
+
+                if (best == null)
+                {
+                    Log($"[MainWindow] PBX: no CDR row with recording for {call.PhoneNumber} (ext={ext})");
+                    return null;
+                }
+
+                string destFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Callspire", "Recordings", "PBX");
+                string? downloaded = await _mikoPbxCdrService.DownloadRecordingAsync(best.LinkedId, destFolder).ConfigureAwait(false);
+                if (string.IsNullOrEmpty(downloaded) || !File.Exists(downloaded) || new FileInfo(downloaded).Length == 0)
+                    return null;
+
+                Log($"[MainWindow] PBX recording downloaded for {call.PhoneNumber} (ext={ext}): {downloaded}");
+                _callHistoryService.UpdateRecordingFilePath(call.PhoneNumber, call.CallTime, downloaded);
+                return downloaded;
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] PBX recording download failed (ext={ext}): {ex.Message}");
+                return null;
+            }
+        }
 
         /// <summary>
         /// Fetches the CallerID list from the proxy and populates the CallerIdComboBox.
@@ -7760,6 +7879,9 @@ namespace Softphone
         {
             if (_mikoPbxCdrService == null) return;
 
+            var historyCall = _callHistoryService.GetCall(phoneNumber, callTime);
+            string? cdrExt = GetPbxCdrExtensionForCall(historyCall);
+
             _ = Task.Run(async () =>
             {
                 try
@@ -7770,7 +7892,7 @@ namespace Softphone
                         int delayMs = attempt == 1 ? 3000 : attempt == 2 ? 5000 : attempt == 3 ? 10000 : 15000;
                         await Task.Delay(delayMs);
 
-                        callerId = await _mikoPbxCdrService.GetCallCallerIdAsync(phoneNumber, callTime);
+                        callerId = await _mikoPbxCdrService.GetCallCallerIdAsync(phoneNumber, callTime, cdrExt);
                         if (!string.IsNullOrEmpty(callerId))
                         {
                             Log($"[PBX Gateway] Got CallerID from CDR: {callerId} for call to {phoneNumber} (attempt {attempt})");

@@ -1142,6 +1142,130 @@ window.SoftphoneWebRtc = (function () {
         // instead of relying on ICE state which can be "connected" before audio begins.
         const remoteAudioStartedSentForSession = new Set();
 
+        const forceReconnectInboundFromReceivers = (reason) => {
+            const pc = s.connection;
+            const remoteAudio = document.getElementById('remoteAudio');
+            if (!pc || !remoteAudio) return;
+
+            connectedRemoteAudioTrackIds.clear();
+            teardownRemoteWebAudioPlayback(sessionId);
+
+            const audioTracks = [];
+            try {
+                const receivers = pc.getReceivers();
+                for (let ri = 0; ri < receivers.length; ri++) {
+                    const t = receivers[ri].track;
+                    if (t && t.kind === 'audio' && t.readyState !== 'ended') {
+                        audioTracks.push(t);
+                        connectedRemoteAudioTrackIds.add(t.id);
+                    }
+                }
+            } catch { /* ignore */ }
+
+            if (audioTracks.length === 0) return;
+
+            const ms = new MediaStream();
+            for (let i = 0; i < audioTracks.length; i++) {
+                ms.addTrack(audioTracks[i]);
+            }
+
+            remoteAudio.srcObject = ms;
+            remoteAudio.muted = false;
+            if (remotePlaybackMode === 'webaudio') {
+                remoteAudio.volume = 0;
+                attachRemoteWebAudioPlayback(remoteAudio, ms, sessionId);
+            } else {
+                remoteAudio.volume = 1;
+            }
+            resumeRemoteWebAudioPlaybackBestEffort();
+            void remoteAudio.play().catch(() => {});
+
+            sendEvent({
+                type: 'js_log',
+                data: {
+                    level: 'critical',
+                    message: `[WebRTC] forceReconnectInboundFromReceivers(${reason}) tracks=${audioTracks.length}, session=${sessionId}`
+                }
+            });
+        };
+
+        const scheduleInboundMediaRecovery = (reason) => {
+            if (s._softphoneInboundRecoveryScheduled) return;
+            s._softphoneInboundRecoveryScheduled = true;
+
+            const runRecovery = (phase) => {
+                try {
+                    forceReconnectInboundFromReceivers(`${reason}:${phase}`);
+                } catch { /* ignore */ }
+
+                if (!s._softphoneInboundRenegotiateDone && typeof s.renegotiate === 'function') {
+                    s._softphoneInboundRenegotiateDone = true;
+                    try {
+                        s.renegotiate({
+                            useUpdate: false,
+                            rtcOfferConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false }
+                        }, function () {
+                            sendEvent({
+                                type: 'js_log',
+                                data: {
+                                    level: 'critical',
+                                    message: `[WebRTC] inbound media renegotiate OK (${reason}:${phase}) session=${sessionId}`
+                                }
+                            });
+                            setTimeout(() => forceReconnectInboundFromReceivers(`${reason}:post-renegotiate`), 250);
+                        }, function (err) {
+                            sendEvent({
+                                type: 'js_log',
+                                data: {
+                                    level: 'critical',
+                                    message: `[WebRTC] inbound media renegotiate FAILED (${reason}:${phase}) session=${sessionId}: ${err}`
+                                }
+                            });
+                        });
+                    } catch (e) {
+                        sendEvent({
+                            type: 'js_log',
+                            data: {
+                                level: 'critical',
+                                message: `[WebRTC] inbound media renegotiate error (${reason}): ${e}`
+                            }
+                        });
+                    }
+                }
+            };
+
+            setTimeout(() => runRecovery('initial'), 350);
+
+            // If PBX bridged B-leg but still sends no inbound RTP, retry once.
+            setTimeout(() => {
+                try {
+                    if (s.isEnded && s.isEnded()) return;
+                    const pc = s.connection;
+                    if (!pc || typeof pc.getStats !== 'function') return;
+                    pc.getStats().then((stats) => {
+                        let inboundBytes = 0;
+                        stats.forEach((r) => {
+                            if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+                                inboundBytes += r.bytesReceived || 0;
+                            }
+                        });
+                        if (inboundBytes > 0) return;
+                        if (s._softphoneInboundRenegotiateRetry) return;
+                        s._softphoneInboundRenegotiateRetry = true;
+                        s._softphoneInboundRenegotiateDone = false;
+                        sendEvent({
+                            type: 'js_log',
+                            data: {
+                                level: 'critical',
+                                message: `[WebRTC] inbound RTP still zero after ${reason}; retrying media recovery session=${sessionId}`
+                            }
+                        });
+                        runRecovery('rtp-watchdog');
+                    }).catch(() => {});
+                } catch { /* ignore */ }
+            }, 2200);
+        };
+
         const emitRemoteAudioStarted = (payload) => {
             sendEvent({ type: 'remote_audio_started', data: payload });
             if (!originateId || remotePartyAnsweredSent) return;
@@ -1165,6 +1289,8 @@ window.SoftphoneWebRtc = (function () {
                         sdpStableCount: sdpStableCount
                     }
                 });
+                // Miko/Asterisk often bridges trunk without refreshing WS RTP; client re-INVITE + receiver rebuild.
+                scheduleInboundMediaRecovery('remote_party_answered');
             }
         };
 
@@ -3297,17 +3423,8 @@ window.SoftphoneWebRtc = (function () {
                         } catch { /* ignore */ }
 
                         if (sdpStableCount > 1) {
-                            // re-INVITE completed — reconnect inbound audio (track IDs may be unchanged but RTP path changed).
-                            connectedRemoteAudioTrackIds.clear();
-                            try {
-                                const receivers = pc.getReceivers();
-                                for (let ri = 0; ri < receivers.length; ri++) {
-                                    const r = receivers[ri];
-                                    if (r.track && r.track.kind === 'audio' && r.track.readyState !== 'ended') {
-                                        connectAudioTrack(r.track).catch(() => {});
-                                    }
-                                }
-                            } catch { /* ignore */ }
+                            // re-INVITE completed — rebuild inbound path from receivers (RTP path may have changed).
+                            forceReconnectInboundFromReceivers('sdp_renegotiated');
 
                             sendEvent({
                                 type: 'sdp_renegotiated',
@@ -3320,8 +3437,6 @@ window.SoftphoneWebRtc = (function () {
 
                             setTimeout(() => {
                                 try {
-                                    reattachRemoteWebAudioFromElement(sessionId);
-                                    resumeRemoteWebAudioPlaybackBestEffort();
                                     const remoteAudioEl = document.getElementById('remoteAudio');
                                     if (remoteAudioEl && remoteAudioEl.srcObject) {
                                         startRemoteAudioSignalProbe(sessionId, remoteAudioEl.srcObject, null, { afterRenegotiation: true });

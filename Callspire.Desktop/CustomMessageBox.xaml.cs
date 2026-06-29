@@ -165,6 +165,13 @@ namespace Softphone
                 }
                 catch { }
             }
+
+            if (WindowForegroundHelper.IsElevatedForegroundActive)
+            {
+                WindowForegroundHelper.ShowDialogAboveAll(dialog, owner);
+                return dialog.Result;
+            }
+
             dialog.ShowDialog();
             return dialog.Result;
         }

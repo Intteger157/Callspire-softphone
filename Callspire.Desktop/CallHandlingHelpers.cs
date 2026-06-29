@@ -61,9 +61,9 @@ namespace Softphone
             callWindow.ShowInTaskbar = true;
             callWindow.WindowState = WindowState.Normal;
             
-            if (isIncomingCall)
+            if (isIncomingCall || WindowForegroundHelper.IsElevatedForegroundActive)
             {
-                callWindow.Topmost = true; // Делаем окно поверх всех для входящих звонков
+                callWindow.Topmost = true;
             }
             
             callWindow.UpdateLayout();

@@ -94,7 +94,8 @@ namespace Softphone
             CallEndedBy endedBy = CallEndedBy.Unknown,
             List<string>? technicalDetails = null, TimeSpan? duration = null, string? recordingFilePath = null,
             CallTransport? transport = null, string? sipCallId = null, string? webRtcSessionId = null,
-            string? outboundCallerId = null, CallConnectionSlot? connectionSlot = null)
+            string? outboundCallerId = null, CallConnectionSlot? connectionSlot = null,
+            int? inboundRtpPackets = null)
         {
             var call = FindMatchingCall(phoneNumber, callTime, transport, preferInProgress: true);
 
@@ -174,6 +175,8 @@ namespace Softphone
                     call.OutboundCallerId = outboundCallerId;
                 if (connectionSlot.HasValue && connectionSlot.Value != CallConnectionSlot.Unknown)
                     call.ConnectionSlot = connectionSlot.Value;
+                if (inboundRtpPackets.HasValue)
+                    call.InboundRtpPackets = inboundRtpPackets.Value;
                 
                 // Обновляем статус на основе WasAnswered, Duration и EndedBy
                 bool inProgressStatus = call.Status == CallStatus.Calling || call.Status == CallStatus.Connected;
@@ -246,6 +249,32 @@ namespace Softphone
         public CallHistoryItem? GetCall(string phoneNumber, DateTime callTime)
         {
             return FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
+        }
+
+        /// <summary>
+        /// Resolves the history row for an AmoCRM upload job. Prefers session id when available,
+        /// otherwise the closest CallTime within <paramref name="maxDiffSeconds"/>.
+        /// Does not fall back to "latest call to this number" — wrong row = wrong duration/recording.
+        /// </summary>
+        public CallHistoryItem? GetCallForAmoCrmUpload(string phoneNumber, DateTime callTime, string? sessionId = null, double maxDiffSeconds = 3)
+        {
+            var candidates = _history.Where(x => x.PhoneNumber == phoneNumber).ToList();
+            if (candidates.Count == 0)
+                return null;
+
+            if (!string.IsNullOrEmpty(sessionId))
+            {
+                var bySession = candidates.FirstOrDefault(x =>
+                    string.Equals(x.SipCallId, sessionId, StringComparison.Ordinal)
+                    || string.Equals(x.WebRtcSessionId, sessionId, StringComparison.Ordinal));
+                if (bySession != null)
+                    return bySession;
+            }
+
+            return candidates
+                .Where(x => Math.Abs((x.CallTime - callTime).TotalSeconds) <= maxDiffSeconds)
+                .OrderBy(x => Math.Abs((x.CallTime - callTime).TotalSeconds))
+                .FirstOrDefault();
         }
 
         /// <summary>

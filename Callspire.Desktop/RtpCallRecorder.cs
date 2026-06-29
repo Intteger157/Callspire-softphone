@@ -1027,27 +1027,93 @@ namespace Softphone
 
             AppLog.Log($"[RtpCallRecorder] Starting ffmpeg mixing (mono): {Path.GetFileName(inboundPcmPath)} + {Path.GetFileName(outboundPcmPath)} -> {Path.GetFileName(wavPath)}");
 
-            // МОНО режим with audio processing:
-            //  1. afftdn on mic — FFT-based noise reduction (removes hiss/hum from WASAPI AEC residual)
-            //  2. volume=2.5 on mic — compensate for WASAPI Communications mode attenuation
-            //  3. amerge + pan=mono — sum both streams at full level
-            //  4. loudnorm — EBU R128 loudness normalisation (both voices at same perceived level)
+            // Пишем во временный файл — финальный .wav появляется только после успешного ffmpeg (не блокирует плеер/Amo).
+            CleanupTempRecordingFiles(wavPath);
+            string tempWavPath = GetTempRecordingWavPath(wavPath);
+            TryDeleteRecordingFile(wavPath);
+
+            // Простое моно-смешивание без apad/afftdn/loudnorm (apad давал бесконечный поток и файлы на десятки GB).
             string args = $"-y -hide_banner -loglevel error " +
                 $"-f s16le -ar 48000 -ac 1 -i \"{outboundPcmPath}\" " +
                 $"-f s16le -ar 48000 -ac 1 -i \"{inboundPcmPath}\" " +
                 $"-filter_complex \"" +
-                $"[0:a]afftdn=nr=12:nf=-25,volume=2.5[mic];" +
-                $"[mic][1:a]amerge=inputs=2,pan=mono|c0=c0+c1," +
-                $"loudnorm=I=-16:TP=-1.5:LRA=11\" " +
-                $"-ac 1 -acodec pcm_s16le -ar 48000 \"{wavPath}\"";
+                $"[0:a]volume=1.2[mic];" +
+                $"[mic][1:a]amerge=inputs=2,pan=mono|c0=0.5*c0+0.5*c1\" " +
+                $"-ac 1 -acodec pcm_s16le -ar 48000 -f wav \"{tempWavPath}\"";
 
             // Используем размер большего из двух PCM файлов для расчета таймаута
             long inputSize = 0;
             if (File.Exists(outboundPcmPath)) inputSize = Math.Max(inputSize, new FileInfo(outboundPcmPath).Length);
             if (File.Exists(inboundPcmPath)) inputSize = Math.Max(inputSize, new FileInfo(inboundPcmPath).Length);
             string? inputFileForTimeout = inputSize > 0 && File.Exists(outboundPcmPath) ? outboundPcmPath : null;
-            
-            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[RtpCallRecorder]", inputFileForTimeout);
+
+            bool converted = await FfmpegHelper.ConvertAsync(ffmpegPath, args, tempWavPath, "[RtpCallRecorder]", inputFileForTimeout);
+            if (!converted)
+            {
+                TryDeleteRecordingFile(tempWavPath);
+                TryDeleteCorruptRecordingFile(wavPath);
+                return false;
+            }
+
+            return TryCommitTempRecordingFile(tempWavPath, wavPath);
+        }
+
+        /// <summary>Temp path with .wav extension so ffmpeg can detect output format (not .wav.tmp).</summary>
+        private static string GetTempRecordingWavPath(string wavPath) =>
+            Path.Combine(
+                Path.GetDirectoryName(wavPath)!,
+                Path.GetFileNameWithoutExtension(wavPath) + ".tmp" + Path.GetExtension(wavPath));
+
+        private static void CleanupTempRecordingFiles(string wavPath)
+        {
+            TryDeleteRecordingFile(GetTempRecordingWavPath(wavPath));
+            TryDeleteRecordingFile(wavPath + ".tmp"); // legacy broken suffix from earlier build
+        }
+
+        private static void TryDeleteRecordingFile(string? path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                return;
+            try { File.Delete(path); } catch { /* ignore */ }
+        }
+
+        private static void TryDeleteCorruptRecordingFile(string? path)
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path))
+                return;
+            try
+            {
+                long bytes = new FileInfo(path).Length;
+                if (bytes == 0 || bytes > RecordingFileLimits.MaxWavBytes)
+                    File.Delete(path);
+            }
+            catch { /* ignore */ }
+        }
+
+        private static bool TryCommitTempRecordingFile(string tempPath, string finalPath)
+        {
+            if (!File.Exists(tempPath))
+                return false;
+
+            if (!RecordingFileLimits.IsPlausibleWav(tempPath, out _))
+            {
+                AppLog.Log($"[RtpCallRecorder] WARNING: temp WAV failed plausibility check, discarding: {Path.GetFileName(tempPath)}");
+                TryDeleteRecordingFile(tempPath);
+                return false;
+            }
+
+            try
+            {
+                TryDeleteRecordingFile(finalPath);
+                File.Move(tempPath, finalPath);
+                return File.Exists(finalPath);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Log($"[RtpCallRecorder] Error committing temp WAV: {ex.Message}");
+                TryDeleteRecordingFile(tempPath);
+                return false;
+            }
         }
 
         /// <summary>
@@ -1071,12 +1137,24 @@ namespace Softphone
 
             AppLog.Log($"[RtpCallRecorder] Starting ffmpeg conversion: {Path.GetFileName(pcmPath)} -> {Path.GetFileName(wavPath)}");
 
+            CleanupTempRecordingFiles(wavPath);
+            string tempWavPath = GetTempRecordingWavPath(wavPath);
+            TryDeleteRecordingFile(wavPath);
+
             // s16le, 48kHz, mono → WAV (PCM, 16-bit, 48kHz, mono)
             string args = $"-y -hide_banner -loglevel error " +
                 $"-f s16le -ar 48000 -ac 1 -i \"{pcmPath}\" " +
-                $"-acodec pcm_s16le -ar 48000 -ac 1 \"{wavPath}\"";
+                $"-acodec pcm_s16le -ar 48000 -ac 1 -f wav \"{tempWavPath}\"";
 
-            return await FfmpegHelper.ConvertAsync(ffmpegPath, args, wavPath, "[RtpCallRecorder]", pcmPath);
+            bool converted = await FfmpegHelper.ConvertAsync(ffmpegPath, args, tempWavPath, "[RtpCallRecorder]", pcmPath);
+            if (!converted)
+            {
+                TryDeleteRecordingFile(tempWavPath);
+                TryDeleteCorruptRecordingFile(wavPath);
+                return false;
+            }
+
+            return TryCommitTempRecordingFile(tempWavPath, wavPath);
         }
 
         /// <summary>

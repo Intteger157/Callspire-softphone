@@ -46,9 +46,11 @@ namespace Softphone
             DateTime from,
             DateTime to,
             string? dst = null,
-            int limit = 50)
+            int limit = 50,
+            string? extensionOverride = null)
         {
-            string url = $"{_baseUrl}/api/cdr?ext={Uri.EscapeDataString(_extension)}" +
+            var ext = string.IsNullOrWhiteSpace(extensionOverride) ? _extension : extensionOverride.Trim();
+            string url = $"{_baseUrl}/api/cdr?ext={Uri.EscapeDataString(ext)}" +
                          $"&from={Uri.EscapeDataString(from.ToString("yyyy-MM-ddTHH:mm:ss"))}" +
                          $"&to={Uri.EscapeDataString(to.ToString("yyyy-MM-ddTHH:mm:ss"))}" +
                          $"&limit={limit}";
@@ -81,16 +83,17 @@ namespace Softphone
         /// Convenience wrapper: looks up the outbound CallerID for a specific call.
         /// Searches CDR ±2 minutes around the call start time for the matching dst number.
         /// </summary>
-        public async Task<string?> GetCallCallerIdAsync(string calledNumber, DateTime callTime)
+        public async Task<string?> GetCallCallerIdAsync(string calledNumber, DateTime callTime, string? extensionOverride = null)
         {
             try
             {
                 var from = callTime.AddMinutes(-5);
                 var to = callTime.AddMinutes(5);
+                var ext = string.IsNullOrWhiteSpace(extensionOverride) ? _extension : extensionOverride.Trim();
 
-                AppLog.Log($"[PBX Gateway] Querying CDR: url={_baseUrl}, ext={_extension}, dst={calledNumber}, from={from:yyyy-MM-ddTHH:mm:ss}, to={to:yyyy-MM-ddTHH:mm:ss}");
+                AppLog.Log($"[PBX Gateway] Querying CDR: url={_baseUrl}, ext={ext}, dst={calledNumber}, from={from:yyyy-MM-ddTHH:mm:ss}, to={to:yyyy-MM-ddTHH:mm:ss}");
 
-                var records = await GetCdrAsync(from, to, dst: calledNumber, limit: 10);
+                var records = await GetCdrAsync(from, to, dst: calledNumber, limit: 10, extensionOverride: ext);
 
                 AppLog.Log($"[PBX Gateway] Got {records.Count} CDR record(s)");
 

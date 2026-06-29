@@ -318,10 +318,10 @@ namespace Softphone
                     }
                     else if (fileExists)
                     {
-                        RecordingFilePathTextBlock.Text = "Recording file is too short or empty";
+                        RecordingFilePathTextBlock.Text = "Recording is still processing or invalid";
                         PlayRecordingButton.IsEnabled = false;
                         OpenFolderButton.IsEnabled = true;
-                        MainWindow.Log($"[CallDetailsWindow] Recording file exists but too small to play: {_callItem.RecordingFilePath}");
+                        MainWindow.Log($"[CallDetailsWindow] Recording file exists but not ready to play: {_callItem.RecordingFilePath}");
                     }
                     else
                     {
@@ -612,11 +612,13 @@ namespace Softphone
                     return;
                 }
                 
-                if (!File.Exists(_callItem.RecordingFilePath))
+                if (!CallWindowHelpers.IsRecordingWavPlausible(_callItem.RecordingFilePath, out long fileBytes))
                 {
                     CustomMessageBox.Show(
-                        "Recording file not found.\n\nThe file may still be processing.",
-                        "File Not Found",
+                        File.Exists(_callItem.RecordingFilePath)
+                            ? "Recording file is still being processed or is invalid.\n\nPlease wait a few seconds and try again."
+                            : "Recording file not found.\n\nThe file may still be processing.",
+                        "File Not Ready",
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning,
                         this);
@@ -689,24 +691,8 @@ namespace Softphone
             }
         }
 
-        private static bool IsUsableRecordingFile(string? path)
-        {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path))
-                return false;
-            try
-            {
-                var len = new FileInfo(path).Length;
-                // Truncated SIP recordings (e.g. stopped at answer) can be a few KB of near-silence — treat as unusable.
-                const long minWavBytes = 16 * 1024;
-                if (path.EndsWith(".wav", StringComparison.OrdinalIgnoreCase))
-                    return len >= minWavBytes;
-                return len > 0;
-            }
-            catch
-            {
-                return false;
-            }
-        }
+        private static bool IsUsableRecordingFile(string? path) =>
+            CallWindowHelpers.IsRecordingWavPlausible(path, out _);
 
         /// <summary>
         /// Нет аудиофайла: можно добавить заметку недозвона, если абонент не ответил и звонок уже завершён.
@@ -723,7 +709,10 @@ namespace Softphone
             if (!_callItem.AnswerTime.HasValue)
                 return true;
 
-            // Отменённый/неуспешный исходящий — не было разговора, даже если AnswerTime «протёк» из другого звонка.
+            if (_callItem.InboundRtpPackets == 0)
+                return true;
+
+            // Отменённый/неуспешный исходящий — не было разговора
             if (_callItem.Status == CallStatus.Cancelled || _callItem.Status == CallStatus.Failed)
                 return true;
 
@@ -739,6 +728,9 @@ namespace Softphone
         /// </summary>
         private bool LooksLikeFalseAnswerTime()
         {
+            if (_callItem.InboundRtpPackets == 0)
+                return true;
+
             if (!_callItem.AnswerTime.HasValue)
                 return false;
 
@@ -801,11 +793,13 @@ namespace Softphone
                     UploadCallResultButton.Content = "Fetching from PBX...";
                     try
                     {
+                        string? cdrExt = mainWindow?.GetPbxCdrExtensionForCall(_callItem);
                         var records = await cdrService.GetCdrAsync(
                             _callItem.CallTime.AddHours(-2),
                             _callItem.CallTime.AddHours(2),
                             dst: _callItem.PhoneNumber,
-                            limit: 50);
+                            limit: 50,
+                            extensionOverride: cdrExt);
 
                         CdrRecord? best = null;
                         double bestDiff = double.MaxValue;
@@ -1195,7 +1189,7 @@ namespace Softphone
                         OpenAmoCrmContactButton.Visibility = Visibility.Collapsed;
                     }
 
-                    PlayRecordingButton.IsEnabled = File.Exists(recordingFile!);
+                    PlayRecordingButton.IsEnabled = IsUsableRecordingFile(recordingFile);
                     OpenFolderButton.IsEnabled = true;
 
                     _callItem.AmoCrmUploadStatus = AmoCrmUploadStatus.Uploaded;

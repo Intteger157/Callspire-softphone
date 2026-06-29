@@ -88,17 +88,42 @@ namespace Softphone
             }
         }
 
+        /// <summary>Minimum plausible WAV size (16 KB — avoids empty/truncated uploads).</summary>
+        public const long MinRecordingWavBytes = RecordingFileLimits.MinWavBytes;
+
+        /// <summary>Sanity cap — corrupt/incomplete ffmpeg output must not be uploaded or played.</summary>
+        public const long MaxRecordingWavBytes = RecordingFileLimits.MaxWavBytes;
+
+        /// <summary>
+        /// True when the recording file exists and its size is within expected bounds.
+        /// </summary>
+        public static bool IsRecordingWavPlausible(string? recordingFilePath, out long fileBytes) =>
+            RecordingFileLimits.IsPlausibleWav(recordingFilePath, out fileBytes);
+
+        /// <summary>
+        /// Tracks consecutive observations of unchanged plausible file size (ffmpeg finished writing).
+        /// </summary>
+        public static bool ObserveRecordingWavStability(
+            string? recordingFilePath,
+            ref long lastObservedBytes,
+            ref int unchangedObservations,
+            int requiredUnchangedObservations = 2) =>
+            RecordingFileLimits.ObserveStableWav(
+                recordingFilePath,
+                ref lastObservedBytes,
+                ref unchangedObservations,
+                requiredUnchangedObservations);
+
         /// <summary>
         /// Estimates WAV duration from file size (pcm_s16le, 48 kHz, mono — WebRtcCallRecorder output).
         /// </summary>
         public static int EstimateWavDurationSeconds(string? recordingFilePath)
         {
-            if (string.IsNullOrEmpty(recordingFilePath) || !File.Exists(recordingFilePath))
+            if (!IsRecordingWavPlausible(recordingFilePath, out long fileLength))
                 return 0;
 
             try
             {
-                long fileLength = new FileInfo(recordingFilePath).Length;
                 const double bytesPerSecond = 48000.0 * 2.0;
                 int estimated = (int)Math.Round(fileLength / bytesPerSecond);
                 return Math.Max(estimated, 0);

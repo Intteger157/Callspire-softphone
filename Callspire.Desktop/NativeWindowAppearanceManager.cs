@@ -40,6 +40,8 @@ namespace Softphone
             // (The HWND is usually created on first Show, which happens after ctor.)
             PrepareWindowForPlatform(window);
 
+            WindowWorkAreaHelper.Attach(window, blockMaximize: window is MainWindow);
+
             // Apply DWM attributes once HWND exists.
             window.SourceInitialized += (_, __) =>
             {

@@ -1998,19 +1998,26 @@ namespace Softphone
                     result = await ProcessCallForExistingLeadAsync(contactId.Value, phoneNumber, isIncoming, durationSeconds, wasAnswered, callLog, audioFilePath, null, enableLeadSelection, callTimeForProcessing, outboundCallerId);
                 }
 
-                if (result.Success && result.LeadId.HasValue)
+                if (result.Success)
                 {
                     MainWindow.Log($"[AmoCrmService] ✅ Успешно обработан звонок");
                     MainWindow.Log($"[AmoCrmService] Контакт ID: {contactId}");
-                    MainWindow.Log($"[AmoCrmService] Лид ID: {result.LeadId}");
+                    if (result.LeadId.HasValue)
+                    {
+                        MainWindow.Log($"[AmoCrmService] Лид ID: {result.LeadId}");
+                        _lastProcessedLeadId = result.LeadId;
+                    }
+                    else
+                    {
+                        MainWindow.Log($"[AmoCrmService] Лид не использован — запись/звонок прикреплены к контакту");
+                    }
                     MainWindow.Log($"[AmoCrmService] Статус загрузки: {result.UploadStatus}" + (string.IsNullOrEmpty(result.Reason) ? "" : $" ({result.Reason})"));
-
-                    _lastProcessedLeadId = result.LeadId;
                     MainWindow.Log($"[AmoCrmService] ===== Обработка завершена успешно =====");
                 }
                 else
                 {
-                    MainWindow.Log($"[AmoCrmService] ❌ Не удалось обработать звонок: {result.Reason}");
+                    var reason = string.IsNullOrWhiteSpace(result.Reason) ? result.UploadStatus.ToString() : result.Reason;
+                    MainWindow.Log($"[AmoCrmService] ❌ Не удалось обработать звонок: {reason}");
                     MainWindow.Log($"[AmoCrmService] ===== Обработка завершена (статус: {result.UploadStatus}) =====");
                 }
 
@@ -2554,12 +2561,6 @@ namespace Softphone
                 {
                     MainWindow.Log($"[AmoCrmService] ✅ Файл прикреплен, download.href: {downloadLink}");
                 }
-                else if (!string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
-                {
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Файл не был прикреплен или download link не получен");
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Пропускаем создание примечания без ссылки - файл существует, но download link не получен");
-                    return null;
-                }
 
                 if (!string.IsNullOrEmpty(downloadLink))
                 {
@@ -2573,16 +2574,13 @@ namespace Softphone
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} с ранее загруженным файлом...");
                     await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, audioFileLink, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
-                else if (!hasRecording)
-                {
-                    // Отвеченный звонок без записи - создаем примечание только если файла действительно нет
-                    MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} без записи (duration={durationSeconds})...");
-                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime, answeredResult.callResult, answeredResult.callStatus);
-                }
                 else
                 {
-                    // Если файл есть, но downloadLink не получен - не создаем примечание без ссылки
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Файл записи существует, но download link не получен - примечание не создано");
+                    // Запись недоступна (файл не появился на диске, пустой или загрузка не удалась) —
+                    // всё равно фиксируем звонок в лиде, иначе состоявшийся разговор вообще не виден в CRM.
+                    // Запись можно дозагрузить позже вручную из истории звонков.
+                    MainWindow.Log($"[AmoCrmService] ⚠️ Запись недоступна (файл не найден или не загрузился) — добавляем {(isIncoming ? "call_in" : "call_out")} без записи (duration={durationSeconds})...");
+                    await AddCallNoteToLeadAsync(leadId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
 
                 return downloadLink;
@@ -2640,12 +2638,6 @@ namespace Softphone
                 {
                     MainWindow.Log($"[AmoCrmService] ✅ Файл прикреплен к контакту, download.href: {downloadLink}");
                 }
-                else if (!string.IsNullOrEmpty(audioFilePath) && File.Exists(audioFilePath))
-                {
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Файл не был прикреплен к контакту или download link не получен");
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Пропускаем создание примечания без ссылки - файл существует, но download link не получен");
-                    return null;
-                }
 
                 if (!string.IsNullOrEmpty(downloadLink))
                 {
@@ -2657,16 +2649,12 @@ namespace Softphone
                     MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} к контакту с ранее загруженным файлом...");
                     await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, audioFileLink, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
-                else if (!hasRecording)
-                {
-                    // Создаем примечание без записи только если файла действительно нет
-                    MainWindow.Log($"[AmoCrmService] Добавление {(isIncoming ? "call_in" : "call_out")} к контакту без записи (duration={durationSeconds})...");
-                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime, answeredResult.callResult, answeredResult.callStatus);
-                }
                 else
                 {
-                    // Если файл есть, но downloadLink не получен - не создаем примечание без ссылки
-                    MainWindow.Log($"[AmoCrmService] ⚠️ Файл записи существует, но download link не получен - примечание не создано");
+                    // Запись недоступна (файл не появился на диске, пустой или загрузка не удалась) —
+                    // всё равно фиксируем звонок на контакте, иначе разговор вообще не виден в CRM.
+                    MainWindow.Log($"[AmoCrmService] ⚠️ Запись недоступна (файл не найден или не загрузился) — добавляем {(isIncoming ? "call_in" : "call_out")} к контакту без записи (duration={durationSeconds})...");
+                    await AddCallNoteToContactAsync(contactId, phoneNumber, isIncoming, durationSeconds, wasAnswered, null, callTime, answeredResult.callResult, answeredResult.callStatus);
                 }
 
                 return downloadLink;
@@ -3092,10 +3080,21 @@ namespace Softphone
 
             var fileInfo = new FileInfo(audioFilePath);
             
-            // КРИТИЧНО: Проверяем размер файла - пропускаем пустые файлы
+            // КРИТИЧНО: Проверяем размер файла - пропускаем пустые и усечённые WAV (остановка записи на 200 OK).
             if (fileInfo.Length == 0)
             {
                 MainWindow.Log($"[AmoCrmService] ⚠️ Recording file is empty (0 bytes), skipping upload to lead {leadId}");
+                return null;
+            }
+            const long minWavBytes = CallWindowHelpers.MinRecordingWavBytes;
+            if (audioFilePath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) && fileInfo.Length < minWavBytes)
+            {
+                MainWindow.Log($"[AmoCrmService] ⚠️ Recording WAV too small ({fileInfo.Length / 1024} KB), skipping upload to lead {leadId}");
+                return null;
+            }
+            if (fileInfo.Length > CallWindowHelpers.MaxRecordingWavBytes)
+            {
+                MainWindow.Log($"[AmoCrmService] ⚠️ Recording file too large ({fileInfo.Length / 1024 / 1024} MB), skipping upload to lead {leadId}");
                 return null;
             }
             
@@ -3136,10 +3135,21 @@ namespace Softphone
 
             var fileInfo = new FileInfo(audioFilePath);
             
-            // КРИТИЧНО: Проверяем размер файла - пропускаем пустые файлы
+            // КРИТИЧНО: Проверяем размер файла - пропускаем пустые и усечённые WAV (остановка записи на 200 OK).
             if (fileInfo.Length == 0)
             {
                 MainWindow.Log($"[AmoCrmService] ⚠️ Recording file is empty (0 bytes), skipping upload to contact {contactId}");
+                return null;
+            }
+            const long minWavBytes = CallWindowHelpers.MinRecordingWavBytes;
+            if (audioFilePath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) && fileInfo.Length < minWavBytes)
+            {
+                MainWindow.Log($"[AmoCrmService] ⚠️ Recording WAV too small ({fileInfo.Length / 1024} KB), skipping upload to contact {contactId}");
+                return null;
+            }
+            if (fileInfo.Length > CallWindowHelpers.MaxRecordingWavBytes)
+            {
+                MainWindow.Log($"[AmoCrmService] ⚠️ Recording file too large ({fileInfo.Length / 1024 / 1024} MB), skipping upload to contact {contactId}");
                 return null;
             }
             
