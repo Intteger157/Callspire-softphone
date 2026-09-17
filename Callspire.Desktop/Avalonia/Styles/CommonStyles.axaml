@@ -36,12 +36,14 @@
     </ControlTheme>
 
     <!-- =========================================================
-         SidebarButtonStyle — 64×64 icon buttons in the left rail
+         SidebarButtonStyle — 56×56 icon buttons in the left rail.
+         Icons inherit Foreground, so `.active` (set from code-behind) turns them white on accent.
          ========================================================= -->
     <ControlTheme x:Key="SidebarButtonStyle" TargetType="Button">
-        <Setter Property="Width"           Value="64"/>
-        <Setter Property="Height"         Value="64"/>
-        <Setter Property="Margin"          Value="0,4,0,4"/>
+        <Setter Property="Width"           Value="56"/>
+        <Setter Property="Height"          Value="56"/>
+        <Setter Property="Margin"          Value="0,3,0,3"/>
+        <Setter Property="HorizontalAlignment" Value="Center"/>
         <Setter Property="Background"      Value="Transparent"/>
         <Setter Property="Foreground"      Value="{DynamicResource TextSecondaryBrush}"/>
         <Setter Property="BorderThickness" Value="0"/>
@@ -50,7 +52,7 @@
             <ControlTemplate>
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
-                        CornerRadius="8"
+                        CornerRadius="12"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}">
                     <ContentPresenter Name="PART_ContentPresenter"
@@ -71,6 +73,15 @@
         </Style>
         <Style Selector="^:pressed /template/ Border#bg">
             <Setter Property="Background" Value="#4C4C4F"/>
+        </Style>
+        <Style Selector="^.active /template/ Border#bg">
+            <Setter Property="Background" Value="{DynamicResource AccentBlueBrush}"/>
+        </Style>
+        <Style Selector="^.active:pointerover /template/ Border#bg">
+            <Setter Property="Background" Value="#4752C4"/>
+        </Style>
+        <Style Selector="^.active">
+            <Setter Property="Foreground" Value="White"/>
         </Style>
     </ControlTheme>
 
@@ -116,11 +127,11 @@
     </ControlTheme>
 
     <!-- =========================================================
-         NumpadCallButtonStyle — green call button (round, 56×56)
+         NumpadCallButtonStyle — green call button (round, 64×64 like the numpad keys)
          ========================================================= -->
     <ControlTheme x:Key="NumpadCallButtonStyle" TargetType="Button">
-        <Setter Property="Width"           Value="56"/>
-        <Setter Property="Height"          Value="56"/>
+        <Setter Property="Width"           Value="64"/>
+        <Setter Property="Height"          Value="64"/>
         <Setter Property="Background"      Value="{DynamicResource AccentGreenBrush}"/>
         <Setter Property="Foreground"      Value="White"/>
         <Setter Property="BorderThickness" Value="0"/>
@@ -129,7 +140,7 @@
             <ControlTemplate>
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
-                        CornerRadius="28">
+                        CornerRadius="32">
                     <ContentPresenter Name="PART_ContentPresenter"
                                       Content="{TemplateBinding Content}"
                                       ContentTemplate="{TemplateBinding ContentTemplate}"

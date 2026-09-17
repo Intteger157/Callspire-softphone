@@ -214,8 +214,11 @@
                                         Theme="{StaticResource CallControlButton}"
                                         Click="StopPlaybackButton_Click"
                                         ToolTip.Tip="Stop">
-                                    <ic:SymbolIcon Symbol="Stop" Width="20" Height="20"
-                                                   IconVariant="Regular" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <Panel>
+                                        <ic:SymbolIcon Classes="hasFallback" Symbol="Stop" Width="20" Height="20"
+                                                       IconVariant="Filled" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                        <TextBlock Classes="iconFallback" Text="■" FontSize="16" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    </Panel>
                                 </Button>
                             </StackPanel>
 

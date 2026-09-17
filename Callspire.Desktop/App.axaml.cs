@@ -18,9 +18,14 @@ namespace Softphone
     {
         public override void Initialize()
         {
-            // FluentTheme — standard Avalonia 12 Fluent v2 style set.
+            // FluentTheme — standard Avalonia 12 Fluent v2 style set with the brand accent, so
+            // checkbox/slider/selection/focus colours derived from SystemAccentColor match the palette.
             // FluentIcons.Avalonia SymbolIcon controls are self-contained and need no extra theme.
-            Styles.Add(new FluentTheme());
+            var fluent = new FluentTheme();
+            var accent = global::Avalonia.Media.Color.Parse("#5865F2");
+            fluent.Palettes[ThemeVariant.Dark]  = new ColorPaletteResources { Accent = accent, RegionColor = global::Avalonia.Media.Color.Parse("#1E1E1E") };
+            fluent.Palettes[ThemeVariant.Light] = new ColorPaletteResources { Accent = accent, RegionColor = global::Avalonia.Media.Color.Parse("#F5F5F5") };
+            Styles.Add(fluent);
 
             // Brand palette: Dark + Light dictionaries registered as ThemeDictionaries so every
             // {DynamicResource ...Brush} follows Application.RequestedThemeVariant, which is what
@@ -31,6 +36,7 @@ namespace Softphone
                 lightUri: "avares://Callspire/Avalonia/Themes/LightTheme.axaml");
 
             LoadAvaloniaResource("avares://Callspire/Avalonia/Styles/CommonStyles.axaml");
+            LoadAvaloniaStyles("avares://Callspire/Avalonia/Styles/FormControls.axaml");
         }
 
         public override void OnFrameworkInitializationCompleted()
@@ -163,6 +169,21 @@ namespace Softphone
             var msg = $"[AvaloniaApp] FATAL: ControlThemes not loaded from '{uri}'. Buttons will render without content.";
             AppLog.Log(msg);
             System.Diagnostics.Debug.WriteLine(msg);
+        }
+
+        /// <summary>Selector-based styles (forms, nav, icon fallback) must live in Application.Styles.</summary>
+        private void LoadAvaloniaStyles(string uri)
+        {
+            try
+            {
+                Styles.Add((Styles)AvaloniaXamlLoader.Load(new Uri(uri)));
+            }
+            catch (Exception ex)
+            {
+                var msg = $"[AvaloniaApp] FATAL: styles not loaded from '{uri}': {ex.Message}";
+                AppLog.Log(msg);
+                System.Diagnostics.Debug.WriteLine(msg);
+            }
         }
     }
 

@@ -15,119 +15,7 @@
         ExtendClientAreaToDecorationsHint="True"
         TransparencyLevelHint="None">
 
-    <Window.Styles>
-        <!-- Field label -->
-        <Style Selector="TextBlock.label">
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
-            <Setter Property="Margin" Value="0,0,0,5"/>
-        </Style>
-        <!-- Field input -->
-        <Style Selector="TextBox.field">
-            <Setter Property="Background" Value="{DynamicResource BackgroundDarkBrush}"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="10,7"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="MinHeight" Value="36"/>
-            <Setter Property="CornerRadius" Value="8"/>
-            <Setter Property="Margin" Value="0,0,0,12"/>
-        </Style>
-        <Style Selector="ComboBox.field">
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
-            <Setter Property="MinHeight" Value="36"/>
-            <Setter Property="FontSize" Value="13"/>
-            <Setter Property="Margin" Value="0,0,0,12"/>
-        </Style>
-        <Style Selector="CheckBox.field">
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-            <Setter Property="Margin" Value="0,0,0,10"/>
-        </Style>
-        <!-- Card -->
-        <Style Selector="Border.card">
-            <Setter Property="Background" Value="{DynamicResource BackgroundMediumBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="CornerRadius" Value="8"/>
-            <Setter Property="Padding" Value="20,16"/>
-            <Setter Property="Margin" Value="0,0,0,16"/>
-        </Style>
-        <Style Selector="TextBlock.cardTitle">
-            <Setter Property="FontSize" Value="15"/>
-            <Setter Property="FontWeight" Value="SemiBold"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-            <Setter Property="Margin" Value="0,0,0,14"/>
-        </Style>
-        <Style Selector="TextBlock.panelTitle">
-            <Setter Property="FontSize" Value="22"/>
-            <Setter Property="FontWeight" Value="Light"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-            <Setter Property="Margin" Value="0,0,0,24"/>
-        </Style>
-        <Style Selector="TextBlock.hint">
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
-            <Setter Property="TextWrapping" Value="Wrap"/>
-            <Setter Property="Margin" Value="0,0,0,10"/>
-        </Style>
-        <!-- Buttons -->
-        <Style Selector="Button.primary">
-            <Setter Property="Background" Value="{DynamicResource AccentBlueBrush}"/>
-            <Setter Property="Foreground" Value="White"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="CornerRadius" Value="8"/>
-            <Setter Property="Cursor" Value="Hand"/>
-        </Style>
-        <Style Selector="Button.secondary">
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Foreground" Value="{DynamicResource AccentBlueBrush}"/>
-            <Setter Property="BorderBrush" Value="{DynamicResource AccentBlueBrush}"/>
-            <Setter Property="BorderThickness" Value="1"/>
-            <Setter Property="Padding" Value="14,8"/>
-            <Setter Property="CornerRadius" Value="8"/>
-            <Setter Property="Cursor" Value="Hand"/>
-        </Style>
-        <!-- Sidebar nav -->
-        <Style Selector="Button.nav">
-            <Setter Property="HorizontalAlignment" Value="Stretch"/>
-            <Setter Property="HorizontalContentAlignment" Value="Left"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="BorderThickness" Value="0"/>
-            <Setter Property="Padding" Value="10,8"/>
-            <Setter Property="CornerRadius" Value="6"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Setter Property="Margin" Value="0,0,0,2"/>
-        </Style>
-        <Style Selector="Button.nav:pointerover /template/ ContentPresenter">
-            <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
-        </Style>
-        <Style Selector="Button.nav.active /template/ ContentPresenter">
-            <Setter Property="Background" Value="{DynamicResource BackgroundLightBrush}"/>
-        </Style>
-        <Style Selector="Button.nav ic|SymbolIcon">
-            <Setter Property="Width" Value="16"/>
-            <Setter Property="Height" Value="16"/>
-            <Setter Property="Margin" Value="0,0,8,0"/>
-            <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
-        </Style>
-        <Style Selector="Button.nav TextBlock">
-            <Setter Property="FontSize" Value="14"/>
-            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
-        </Style>
-        <!-- Status line -->
-        <Style Selector="TextBlock.status">
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Foreground" Value="{DynamicResource AccentGreenBrush}"/>
-            <Setter Property="TextWrapping" Value="Wrap"/>
-        </Style>
-        <Style Selector="TextBlock.status.error">
-            <Setter Property="Foreground" Value="{DynamicResource AccentRedBrush}"/>
-        </Style>
-    </Window.Styles>
+    <!-- Form/nav styles are shared: Avalonia/Styles/FormControls.axaml (Application.Styles). -->
 
     <Border Name="WindowSurface"
             Background="{DynamicResource BackgroundDarkBrush}"
@@ -180,37 +68,43 @@
                         <StackPanel Grid.Row="0" Margin="10,16,10,0">
                             <Button Name="NavConnection" Classes="nav" Tag="Connection" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="PlugConnected" IconVariant="Regular"/>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="PlugConnected" IconVariant="Filled"/>
+                                    <TextBlock Classes="iconFallback" Text="⇄"/>
                                     <TextBlock Text="Connection"/>
                                 </StackPanel>
                             </Button>
                             <Button Name="NavSecondary" Classes="nav" Tag="Secondary" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Call" IconVariant="Regular"/>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Call" IconVariant="Filled"/>
+                                    <TextBlock Classes="iconFallback" Text="☎"/>
                                     <TextBlock Text="Second line"/>
                                 </StackPanel>
                             </Button>
                             <Button Name="NavAudio" Classes="nav" Tag="Audio" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Speaker2" IconVariant="Regular"/>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Speaker2" IconVariant="Filled"/>
+                                    <TextBlock Classes="iconFallback" Text="♪"/>
                                     <TextBlock Text="Audio"/>
                                 </StackPanel>
                             </Button>
                             <Button Name="NavKommo" Classes="nav" Tag="Kommo" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="CloudSync" IconVariant="Regular"/>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="CloudSync" IconVariant="Filled"/>
+                                    <TextBlock Classes="iconFallback" Text="☁"/>
                                     <TextBlock Text="Kommo &amp; Gateway"/>
                                 </StackPanel>
                             </Button>
                             <Button Name="NavAppearance" Classes="nav" Tag="Appearance" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="PaintBrush" IconVariant="Regular"/>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="PaintBrush" IconVariant="Filled"/>
+                                    <TextBlock Classes="iconFallback" Text="✎"/>
                                     <TextBlock Text="Appearance"/>
                                 </StackPanel>
                             </Button>
                             <Button Name="NavAdvanced" Classes="nav" Tag="Advanced" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Settings" IconVariant="Regular"/>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Settings" IconVariant="Filled"/>
+                                    <TextBlock Classes="iconFallback" Text="⚙"/>
                                     <TextBlock Text="Advanced"/>
                                 </StackPanel>
                             </Button>
@@ -218,7 +112,8 @@
 
                         <Button Grid.Row="1" Name="NavAbout" Classes="nav" Tag="About" Click="Nav_Click" Margin="10,0,10,16">
                             <StackPanel Orientation="Horizontal">
-                                <ic:SymbolIcon Symbol="Info" IconVariant="Regular"/>
+                                <ic:SymbolIcon Classes="hasFallback" Symbol="Info" IconVariant="Filled"/>
+                                <TextBlock Classes="iconFallback" Text="ⓘ"/>
                                 <TextBlock Text="About"/>
                             </StackPanel>
                         </Button>
@@ -226,7 +121,7 @@
                 </Border>
 
                 <!-- ── Panels ─────────────────────────────────────────── -->
-                <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
+                <ScrollViewer Grid.Column="1" Name="PanelScroll" VerticalScrollBarVisibility="Hidden">
                     <Grid Margin="32,24,32,24">
 
                         <!-- ─── Connection (main line) ───────────────── -->
@@ -269,8 +164,8 @@
                                             </StackPanel>
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" Spacing="24">
-                                            <CheckBox Classes="field" Content="TLS (SIP over TLS, port 5061)" IsChecked="{Binding MainUseTls}"/>
-                                            <CheckBox Classes="field" Content="SRTP media encryption" IsChecked="{Binding MainUseSrtp}"/>
+                                            <ToggleSwitch Classes="field" OnContent="TLS (SIP over TLS, port 5061)" IsChecked="{Binding MainUseTls}"/>
+                                            <ToggleSwitch Classes="field" OnContent="SRTP media encryption" IsChecked="{Binding MainUseSrtp}"/>
                                         </StackPanel>
                                     </StackPanel>
 
@@ -350,8 +245,8 @@
                                             </StackPanel>
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" Spacing="24">
-                                            <CheckBox Classes="field" Content="TLS" IsChecked="{Binding SecondaryUseTls}"/>
-                                            <CheckBox Classes="field" Content="SRTP" IsChecked="{Binding SecondaryUseSrtp}"/>
+                                            <ToggleSwitch Classes="field" OnContent="TLS" IsChecked="{Binding SecondaryUseTls}"/>
+                                            <ToggleSwitch Classes="field" OnContent="SRTP" IsChecked="{Binding SecondaryUseSrtp}"/>
                                         </StackPanel>
                                     </StackPanel>
 
@@ -409,14 +304,14 @@
                             <Border Classes="card">
                                 <StackPanel>
                                     <TextBlock Classes="cardTitle" Text="Processing"/>
-                                    <CheckBox Classes="field" Content="Acoustic echo cancellation" IsChecked="{Binding EchoCancellation}"/>
+                                    <ToggleSwitch Classes="field" OnContent="Acoustic echo cancellation" IsChecked="{Binding EchoCancellation}"/>
                                 </StackPanel>
                             </Border>
 
                             <Border Classes="card">
                                 <StackPanel>
                                     <TextBlock Classes="cardTitle" Text="Ringtone"/>
-                                    <CheckBox Classes="field" Content="Use WAV ringtone (ringtone/incoming_call.wav) instead of generated tone" IsChecked="{Binding RingtoneWav}"/>
+                                    <ToggleSwitch Classes="field" OnContent="Use WAV ringtone (ringtone/incoming_call.wav) instead of generated tone" IsChecked="{Binding RingtoneWav}"/>
                                     <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,8">
                                         <TextBlock Grid.Column="0" Classes="label" Text="Volume" VerticalAlignment="Center" Margin="0,0,12,0"/>
                                         <Slider Grid.Column="1" Minimum="0" Maximum="1" Value="{Binding RingtoneVolume}" VerticalAlignment="Center"/>
@@ -442,11 +337,11 @@
                                 <StackPanel>
                                     <TextBlock Classes="cardTitle" Text="PBX Gateway"/>
                                     <TextBlock Classes="hint" Text="Callspire PBX Gateway provides CallerID list, CDR lookup, TURN credentials, originate and Kommo post-call processing."/>
-                                    <CheckBox Classes="field" Content="Enable PBX Gateway" IsChecked="{Binding GatewayEnabled}"/>
+                                    <ToggleSwitch Classes="field" OnContent="Enable PBX Gateway" IsChecked="{Binding GatewayEnabled}"/>
                                     <StackPanel IsEnabled="{Binding GatewayEnabled}">
                                         <TextBlock Classes="label" Text="Gateway URL"/>
                                         <TextBox Classes="field" Text="{Binding GatewayUrl}" Watermark="https://pbx.example.com:8443"/>
-                                        <Grid ColumnDefinitions="*,16,160">
+                                        <Grid ColumnDefinitions="*,16,120">
                                             <StackPanel Grid.Column="0">
                                                 <TextBlock Classes="label" Text="Access token (JWT)"/>
                                                 <TextBox Classes="field" Text="{Binding GatewayToken}" PasswordChar="●"/>
@@ -463,7 +358,7 @@
                             <Border Classes="card">
                                 <StackPanel>
                                     <TextBlock Classes="cardTitle" Text="Kommo CRM"/>
-                                    <CheckBox Classes="field" Content="Enable Kommo integration" IsChecked="{Binding KommoEnabled}"/>
+                                    <ToggleSwitch Classes="field" OnContent="Enable Kommo integration" IsChecked="{Binding KommoEnabled}"/>
                                     <StackPanel IsEnabled="{Binding KommoEnabled}">
                                         <Grid ColumnDefinitions="*,16,*">
                                             <StackPanel Grid.Column="0">
@@ -494,8 +389,8 @@
                                             <TextBox Classes="field" Text="{Binding KommoRedirectUri}" Watermark="callspire://oauth/callback"/>
                                             <TextBlock Classes="hint" Text="With PBX Gateway enabled, Kommo tokens are provided by the gateway (/api/kommo/session) and these OAuth fields are optional."/>
                                         </StackPanel>
-                                        <CheckBox Classes="field" Content="Ask which lead to attach the call to (manual lead selection)" IsChecked="{Binding KommoLeadSelection}"/>
-                                        <CheckBox Classes="field" Content="Upload call recordings to Kommo" IsChecked="{Binding KommoRecordingUpload}"/>
+                                        <ToggleSwitch Classes="field" OnContent="Ask which lead to attach the call to (manual lead selection)" IsChecked="{Binding KommoLeadSelection}"/>
+                                        <ToggleSwitch Classes="field" OnContent="Upload call recordings to Kommo" IsChecked="{Binding KommoRecordingUpload}"/>
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
@@ -527,7 +422,7 @@
                             <Border Classes="card">
                                 <StackPanel>
                                     <TextBlock Classes="cardTitle" Text="Call recording"/>
-                                    <CheckBox Classes="field" Content="Record calls (SIP: RTP mix, WebRTC: browser MediaRecorder)" IsChecked="{Binding CallRecording}"/>
+                                    <ToggleSwitch Classes="field" OnContent="Record calls (SIP: RTP mix, WebRTC: browser MediaRecorder)" IsChecked="{Binding CallRecording}"/>
                                     <Grid ColumnDefinitions="*,Auto">
                                         <TextBox Grid.Column="0" Classes="field" Text="{Binding RecordingsFolder}" IsReadOnly="True" Margin="0,0,8,12"/>
                                         <Button Grid.Column="1" Classes="secondary" Content="Open folder" Click="OpenRecordings_Click" VerticalAlignment="Top"/>
@@ -538,7 +433,7 @@
                             <Border Classes="card">
                                 <StackPanel>
                                     <TextBlock Classes="cardTitle" Text="Diagnostics"/>
-                                    <CheckBox Classes="field" Content="Verbose WebRTC logging (phone.js)" IsChecked="{Binding WebRtcDebug}"/>
+                                    <ToggleSwitch Classes="field" OnContent="Verbose WebRTC logging (phone.js)" IsChecked="{Binding WebRtcDebug}"/>
                                     <Grid ColumnDefinitions="*,Auto">
                                         <TextBox Grid.Column="0" Classes="field" Text="{Binding LogsFolder}" IsReadOnly="True" Margin="0,0,8,12"/>
                                         <Button Grid.Column="1" Classes="secondary" Content="Open logs" Click="OpenLogs_Click" VerticalAlignment="Top"/>

@@ -92,6 +92,7 @@
 		<AvaloniaResource Include="Avalonia\Themes\DarkTheme.axaml" />
 		<AvaloniaResource Include="Avalonia\Themes\LightTheme.axaml" />
 		<AvaloniaResource Include="Avalonia\Styles\CommonStyles.axaml" />
+		<AvaloniaResource Include="Avalonia\Styles\FormControls.axaml" />
 		<!-- App icon for Avalonia windows (PNG — ICO is not reliably decoded on macOS) -->
 		<AvaloniaResource Include="Assets\**\*.png" />
 	</ItemGroup>

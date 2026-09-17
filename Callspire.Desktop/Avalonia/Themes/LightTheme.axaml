@@ -5,18 +5,20 @@
     <Color x:Key="BackgroundDark">#F5F5F5</Color>
     <Color x:Key="BackgroundMedium">#EBEBEB</Color>
     <Color x:Key="BackgroundLight">#DEDEDE</Color>
+    <Color x:Key="InputBackground">#FFFFFF</Color>
     <Color x:Key="AccentBlue">#5865F2</Color>
     <Color x:Key="AccentGreen">#23A55A</Color>
     <Color x:Key="AccentRed">#F23F42</Color>
     <Color x:Key="TextPrimary">#1A1A1A</Color>
     <Color x:Key="TextSecondary">#6B7280</Color>
     <Color x:Key="HoverBackground">#D4D4D4</Color>
-    <Color x:Key="BorderColor">#CACACA</Color>
+    <Color x:Key="BorderColor">#C4C4C4</Color>
 
     <!-- Brushes -->
     <SolidColorBrush x:Key="BackgroundDarkBrush"   Color="{StaticResource BackgroundDark}"/>
     <SolidColorBrush x:Key="BackgroundMediumBrush" Color="{StaticResource BackgroundMedium}"/>
     <SolidColorBrush x:Key="BackgroundLightBrush"  Color="{StaticResource BackgroundLight}"/>
+    <SolidColorBrush x:Key="InputBackgroundBrush"  Color="{StaticResource InputBackground}"/>
     <SolidColorBrush x:Key="AccentBlueBrush"       Color="{StaticResource AccentBlue}"/>
     <SolidColorBrush x:Key="AccentGreenBrush"      Color="{StaticResource AccentGreen}"/>
     <SolidColorBrush x:Key="AccentRedBrush"        Color="{StaticResource AccentRed}"/>
@@ -28,11 +30,96 @@
     <!-- Dialog surfaces -->
     <SolidColorBrush x:Key="DialogBackgroundBrush" Color="{StaticResource BackgroundDark}"/>
     <SolidColorBrush x:Key="DialogChromeBrush"     Color="{StaticResource BackgroundMedium}"/>
-    <SolidColorBrush x:Key="PopupBackgroundBrush"  Color="{StaticResource BackgroundMedium}"/>
+    <SolidColorBrush x:Key="PopupBackgroundBrush"  Color="{StaticResource InputBackground}"/>
 
     <!-- Status-pill brushes (connection tab) -->
     <SolidColorBrush x:Key="ConnStatusPillOkBrush"   Color="#00000000"/>
     <SolidColorBrush x:Key="ConnStatusPillIdleBrush" Color="#00000000"/>
     <SolidColorBrush x:Key="ConnStatusPillErrBrush"  Color="#33F44336"/>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         Fluent control resource overrides — see DarkTheme.axaml for the rationale.
+         ═══════════════════════════════════════════════════════════════════ -->
+    <CornerRadius x:Key="OverlayCornerRadius">8</CornerRadius>
+
+    <!-- TextBox -->
+    <SolidColorBrush x:Key="TextControlBackground"            Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="TextControlBackgroundFocused"     Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="TextControlBackgroundDisabled"    Color="{StaticResource BackgroundMedium}"/>
+    <SolidColorBrush x:Key="TextControlBorderBrush"            Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="TextControlBorderBrushFocused"     Color="{StaticResource AccentBlue}"/>
+    <SolidColorBrush x:Key="TextControlBorderBrushDisabled"    Color="{StaticResource BorderColor}"/>
+    <Thickness x:Key="TextControlBorderThemeThicknessFocused">2</Thickness>
+    <SolidColorBrush x:Key="TextControlForeground"            Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="TextControlForegroundPointerOver" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="TextControlForegroundFocused"     Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="TextControlForegroundDisabled"    Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="TextControlSelectionHighlightColor" Color="#665865F2"/>
+
+    <!-- ComboBox -->
+    <SolidColorBrush x:Key="ComboBoxBackground"            Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxBackgroundPointerOver" Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxBackgroundPressed"     Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxBackgroundUnfocused"   Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxBackgroundDisabled"    Color="{StaticResource BackgroundMedium}"/>
+    <SolidColorBrush x:Key="ComboBoxBorderBrush"            Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="ComboBoxBorderBrushPointerOver" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ComboBoxBorderBrushPressed"     Color="{StaticResource AccentBlue}"/>
+    <SolidColorBrush x:Key="ComboBoxBorderBrushDisabled"    Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="ComboBoxBackgroundBorderBrushFocused"   Color="{StaticResource AccentBlue}"/>
+    <SolidColorBrush x:Key="ComboBoxBackgroundBorderBrushUnfocused" Color="#00000000"/>
+    <SolidColorBrush x:Key="ComboBoxForeground"               Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxForegroundFocused"        Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxForegroundFocusedPressed" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxForegroundDisabled"       Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ComboBoxPlaceHolderForeground"              Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ComboBoxPlaceHolderForegroundFocusedPressed" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ComboBoxDropDownGlyphForeground"               Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocused"        Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundFocusedPressed" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxDropDownGlyphForegroundDisabled"       Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ComboBoxDropDownBackground"  Color="{StaticResource InputBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxDropDownBorderBrush" Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="ComboBoxItemForeground"                    Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxItemForegroundPointerOver"         Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxItemForegroundPressed"             Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxItemForegroundSelected"            Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxItemForegroundSelectedPointerOver" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxItemForegroundSelectedPressed"     Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ComboBoxItemBackgroundPointerOver"         Color="{StaticResource HoverBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxItemBackgroundPressed"             Color="{StaticResource HoverBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxItemBackgroundSelected"            Color="{StaticResource BackgroundLight}"/>
+    <SolidColorBrush x:Key="ComboBoxItemBackgroundSelectedPointerOver" Color="{StaticResource HoverBackground}"/>
+    <SolidColorBrush x:Key="ComboBoxItemBackgroundSelectedPressed"     Color="{StaticResource HoverBackground}"/>
+
+    <!-- ToggleSwitch -->
+    <SolidColorBrush x:Key="ToggleSwitchContentForeground"  Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ToggleSwitchFillOff"            Color="{StaticResource BackgroundLight}"/>
+    <SolidColorBrush x:Key="ToggleSwitchFillOffPointerOver" Color="{StaticResource HoverBackground}"/>
+    <SolidColorBrush x:Key="ToggleSwitchFillOffPressed"     Color="{StaticResource HoverBackground}"/>
+    <SolidColorBrush x:Key="ToggleSwitchStrokeOff"            Color="{StaticResource BorderColor}"/>
+    <SolidColorBrush x:Key="ToggleSwitchStrokeOffPointerOver" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ToggleSwitchStrokeOffPressed"     Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ToggleSwitchKnobFillOff"            Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="ToggleSwitchKnobFillOffPointerOver" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ToggleSwitchKnobFillOffPressed"     Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="ToggleSwitchFillOn"            Color="{StaticResource AccentGreen}"/>
+    <SolidColorBrush x:Key="ToggleSwitchFillOnPointerOver" Color="#1E8E3E"/>
+    <SolidColorBrush x:Key="ToggleSwitchFillOnPressed"     Color="#178835"/>
+    <SolidColorBrush x:Key="ToggleSwitchStrokeOn"            Color="{StaticResource AccentGreen}"/>
+    <SolidColorBrush x:Key="ToggleSwitchStrokeOnPointerOver" Color="#1E8E3E"/>
+    <SolidColorBrush x:Key="ToggleSwitchStrokeOnPressed"     Color="#178835"/>
+    <SolidColorBrush x:Key="ToggleSwitchKnobFillOn"            Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPointerOver" Color="#FFFFFF"/>
+    <SolidColorBrush x:Key="ToggleSwitchKnobFillOnPressed"     Color="#FFFFFF"/>
+
+    <!-- CheckBox -->
+    <SolidColorBrush x:Key="CheckBoxForegroundUnchecked" Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="CheckBoxForegroundChecked"   Color="{StaticResource TextPrimary}"/>
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundStrokeUnchecked" Color="{StaticResource TextSecondary}"/>
+    <SolidColorBrush x:Key="CheckBoxCheckBackgroundFillUnchecked"   Color="{StaticResource InputBackground}"/>
 
 </ResourceDictionary>

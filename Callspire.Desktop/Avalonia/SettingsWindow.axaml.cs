@@ -65,6 +65,9 @@ namespace Softphone.Avalonia
                 }
             }
 
+            // All panels share one ScrollViewer — start each tab from the top.
+            this.FindControl<ScrollViewer>("PanelScroll")?.ScrollToHome();
+
             if (key == "Audio") _vm.RefreshAudioDevices();
         }
 

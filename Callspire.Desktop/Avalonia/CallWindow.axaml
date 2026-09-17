@@ -155,12 +155,16 @@
                                 Classes.controlActive="{Binding IsMuted}"
                                 ToolTip.Tip="Mute" Click="MuteButton_Click" Margin="8,0">
                             <Panel>
-                                <ic:SymbolIcon Symbol="Mic" Width="24" Height="24" IconVariant="Regular"
-                                               IsVisible="{Binding IsNotMuted}"
-                                               Foreground="{DynamicResource TextPrimaryBrush}"/>
-                                <ic:SymbolIcon Symbol="MicOff" Width="24" Height="24" IconVariant="Regular"
-                                               IsVisible="{Binding IsMuted}"
-                                               Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <Panel IsVisible="{Binding IsNotMuted}">
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Mic" Width="24" Height="24" IconVariant="Filled"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="🎤" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </Panel>
+                                <Panel IsVisible="{Binding IsMuted}">
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="MicOff" Width="24" Height="24" IconVariant="Filled"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="🔇" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </Panel>
                             </Panel>
                         </Button>
 
@@ -168,20 +172,27 @@
                                 Classes.controlActive="{Binding IsOnHold}"
                                 ToolTip.Tip="Hold" Click="HoldButton_Click" Margin="8,0">
                             <Panel>
-                                <ic:SymbolIcon Symbol="Pause" Width="24" Height="24" IconVariant="Regular"
-                                               IsVisible="{Binding IsNotOnHold}"
-                                               Foreground="{DynamicResource TextPrimaryBrush}"/>
-                                <ic:SymbolIcon Symbol="Play" Width="24" Height="24" IconVariant="Regular"
-                                               IsVisible="{Binding IsOnHold}"
-                                               Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <Panel IsVisible="{Binding IsNotOnHold}">
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Pause" Width="24" Height="24" IconVariant="Filled"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="❚❚" FontSize="16" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </Panel>
+                                <Panel IsVisible="{Binding IsOnHold}">
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Play" Width="24" Height="24" IconVariant="Filled"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="▶" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                </Panel>
                             </Panel>
                         </Button>
 
                         <Button Theme="{StaticResource CallControlButton}"
                                 Classes.controlActive="{Binding IsKeypadVisible}"
                                 ToolTip.Tip="Toggle keypad" Click="KeypadToggleButton_Click" Margin="8,0">
-                            <ic:SymbolIcon Symbol="Dialpad" Width="24" Height="24" IconVariant="Regular"
-                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                            <Panel>
+                                <ic:SymbolIcon Classes="hasFallback" Symbol="Dialpad" Width="24" Height="24" IconVariant="Filled"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <TextBlock Classes="iconFallback" Text="⌨" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                            </Panel>
                         </Button>
                     </StackPanel>
 
@@ -192,7 +203,10 @@
                             Click="HangupButton_Click"
                             HorizontalAlignment="Center" VerticalAlignment="Bottom"
                             Margin="0,0,0,8">
-                        <ic:SymbolIcon Symbol="CallEnd" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
+                        <Panel>
+                            <ic:SymbolIcon Classes="hasFallback" Symbol="CallEnd" Width="32" Height="32" IconVariant="Filled" Foreground="White"/>
+                            <TextBlock Classes="iconFallback" Text="☎" FontSize="26" Foreground="White"/>
+                        </Panel>
                     </Button>
 
                     <!-- Incoming: Answer / Reject -->
@@ -202,11 +216,17 @@
                                 Margin="0,0,0,8">
                         <Button Theme="{StaticResource NumpadCallButtonStyle}"
                                 Click="AnswerButton_Click" Margin="0,0,28,0" ToolTip.Tip="Answer">
-                            <ic:SymbolIcon Symbol="Call" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
+                            <Panel>
+                                <ic:SymbolIcon Classes="hasFallback" Symbol="Call" Width="32" Height="32" IconVariant="Filled" Foreground="White"/>
+                                <TextBlock Classes="iconFallback" Text="☎" FontSize="26" Foreground="White"/>
+                            </Panel>
                         </Button>
                         <Button Theme="{StaticResource EndCallButton}"
                                 Click="RejectButton_Click" Margin="28,0,0,0" ToolTip.Tip="Reject">
-                            <ic:SymbolIcon Symbol="CallEnd" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
+                            <Panel>
+                                <ic:SymbolIcon Classes="hasFallback" Symbol="CallEnd" Width="32" Height="32" IconVariant="Filled" Foreground="White"/>
+                                <TextBlock Classes="iconFallback" Text="☎" FontSize="26" Foreground="White"/>
+                            </Panel>
                         </Button>
                     </StackPanel>
                 </Grid>
