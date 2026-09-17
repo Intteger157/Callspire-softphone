@@ -103,5 +103,35 @@ namespace Softphone
                 }
             }
         }
+
+        public void GotEncodedMediaFrame(EncodedAudioFrame encodedMediaFrame)
+        {
+            int payloadId = encodedMediaFrame.AudioFormat.FormatID;
+            if (_allowedPayloadTypes.Contains(payloadId))
+            {
+                Interlocked.Increment(ref _forwardedCount);
+                _innerSink.GotEncodedMediaFrame(encodedMediaFrame);
+            }
+            else
+            {
+                int count = Interlocked.Increment(ref _filteredCount);
+                if (!_loggedFirstFiltered)
+                {
+                    _loggedFirstFiltered = true;
+                    string ptName = payloadId switch
+                    {
+                        13 => "CN (Comfort Noise)",
+                        101 => "telephone-event (DTMF)",
+                        _ => $"Unknown ({payloadId})"
+                    };
+                    AppLog.Log($"[FilteringAudioSink] {_label}FILTERED first non-audio encoded frame: PT={payloadId} ({ptName}), len={encodedMediaFrame.EncodedAudio?.Length ?? 0}. " +
+                                   $"These packets would cause noise if decoded as audio.");
+                }
+                if (count % 500 == 0)
+                {
+                    AppLog.Log($"[FilteringAudioSink] {_label}Stats: {_forwardedCount} audio packets forwarded, {_filteredCount} non-audio packets filtered");
+                }
+            }
+        }
     }
 }

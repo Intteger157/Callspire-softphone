@@ -2,16 +2,132 @@
         xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ic="using:FluentIcons.Avalonia"
+        xmlns:vm="using:Softphone.AppHost.ViewModels"
+        x:DataType="vm:SettingsViewModel"
+        x:CompileBindings="True"
         Title="Settings"
-        Height="680" Width="980"
+        Height="700" Width="1000"
         MinHeight="620" MinWidth="900"
         WindowDecorations="None"
         CanResize="True"
-        WindowStartupLocation="CenterScreen"
+        WindowStartupLocation="CenterOwner"
         Background="Transparent"
         ExtendClientAreaToDecorationsHint="True"
-
         TransparencyLevelHint="None">
+
+    <Window.Styles>
+        <!-- Field label -->
+        <Style Selector="TextBlock.label">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
+            <Setter Property="Margin" Value="0,0,0,5"/>
+        </Style>
+        <!-- Field input -->
+        <Style Selector="TextBox.field">
+            <Setter Property="Background" Value="{DynamicResource BackgroundDarkBrush}"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="10,7"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+        <Style Selector="ComboBox.field">
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="MinHeight" Value="36"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Margin" Value="0,0,0,12"/>
+        </Style>
+        <Style Selector="CheckBox.field">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+        <!-- Card -->
+        <Style Selector="Border.card">
+            <Setter Property="Background" Value="{DynamicResource BackgroundMediumBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="20,16"/>
+            <Setter Property="Margin" Value="0,0,0,16"/>
+        </Style>
+        <Style Selector="TextBlock.cardTitle">
+            <Setter Property="FontSize" Value="15"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="Margin" Value="0,0,0,14"/>
+        </Style>
+        <Style Selector="TextBlock.panelTitle">
+            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="FontWeight" Value="Light"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+            <Setter Property="Margin" Value="0,0,0,24"/>
+        </Style>
+        <Style Selector="TextBlock.hint">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+        <!-- Buttons -->
+        <Style Selector="Button.primary">
+            <Setter Property="Background" Value="{DynamicResource AccentBlueBrush}"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <Style Selector="Button.secondary">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentBlueBrush}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource AccentBlueBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="14,8"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Cursor" Value="Hand"/>
+        </Style>
+        <!-- Sidebar nav -->
+        <Style Selector="Button.nav">
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Margin" Value="0,0,0,2"/>
+        </Style>
+        <Style Selector="Button.nav:pointerover /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource HoverBackgroundBrush}"/>
+        </Style>
+        <Style Selector="Button.nav.active /template/ ContentPresenter">
+            <Setter Property="Background" Value="{DynamicResource BackgroundLightBrush}"/>
+        </Style>
+        <Style Selector="Button.nav ic|SymbolIcon">
+            <Setter Property="Width" Value="16"/>
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="Margin" Value="0,0,8,0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondaryBrush}"/>
+        </Style>
+        <Style Selector="Button.nav TextBlock">
+            <Setter Property="FontSize" Value="14"/>
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimaryBrush}"/>
+        </Style>
+        <!-- Status line -->
+        <Style Selector="TextBlock.status">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{DynamicResource AccentGreenBrush}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+        </Style>
+        <Style Selector="TextBlock.status.error">
+            <Setter Property="Foreground" Value="{DynamicResource AccentRedBrush}"/>
+        </Style>
+    </Window.Styles>
 
     <Border Name="WindowSurface"
             Background="{DynamicResource BackgroundDarkBrush}"
@@ -21,10 +137,11 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- Title Bar -->
-            <Border Grid.Row="0"
+            <!-- Title Bar (custom chrome; hidden on macOS/Linux) -->
+            <Border Grid.Row="0" Name="CustomTitleBar"
                     Background="{DynamicResource BackgroundMediumBrush}"
                     CornerRadius="8,8,0,0">
                 <Grid PointerPressed="TitleBar_PointerPressed">
@@ -32,7 +149,7 @@
                         <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <TextBlock Grid.Column="0" Text="Softphone Settings"
+                    <TextBlock Grid.Column="0" Text="Settings"
                                FontSize="16" FontWeight="SemiBold"
                                Foreground="{DynamicResource TextSecondaryBrush}"
                                Margin="16,12,0,12" VerticalAlignment="Center"/>
@@ -45,7 +162,7 @@
             <!-- Main Content -->
             <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="180"/>
+                    <ColumnDefinition Width="190"/>
                     <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
@@ -53,9 +170,7 @@
                 <Border Grid.Column="0"
                         Background="{DynamicResource BackgroundMediumBrush}"
                         BorderBrush="{DynamicResource BorderBrush}"
-                        BorderThickness="0,0,1,0"
-                        CornerRadius="0,0,0,8"
-                        ClipToBounds="True">
+                        BorderThickness="0,0,1,0">
                     <Grid>
                         <Grid.RowDefinitions>
                             <RowDefinition Height="*"/>
@@ -63,339 +178,393 @@
                         </Grid.RowDefinitions>
 
                         <StackPanel Grid.Row="0" Margin="10,16,10,0">
-                            <Button Name="ConnectionButton"
-                                    HorizontalAlignment="Stretch"
-                                    HorizontalContentAlignment="Left"
-                                    Background="Transparent" BorderThickness="0"
-                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
-                                    Click="ConnectionButton_Click">
+                            <Button Name="NavConnection" Classes="nav" Tag="Connection" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="PlugConnected" Width="16" Height="16"
-                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
-                                    <TextBlock Text="Connection" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <ic:SymbolIcon Symbol="PlugConnected" IconVariant="Regular"/>
+                                    <TextBlock Text="Connection"/>
                                 </StackPanel>
                             </Button>
-
-                            <Button Name="AudioButton"
-                                    HorizontalAlignment="Stretch"
-                                    HorizontalContentAlignment="Left"
-                                    Background="Transparent" BorderThickness="0"
-                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
-                                    Click="AudioButton_Click">
+                            <Button Name="NavSecondary" Classes="nav" Tag="Secondary" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Speaker2" Width="16" Height="16"
-                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
-                                    <TextBlock Text="Audio" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <ic:SymbolIcon Symbol="Call" IconVariant="Regular"/>
+                                    <TextBlock Text="Second line"/>
                                 </StackPanel>
                             </Button>
-
-                            <Button Name="NotificationsButton"
-                                    HorizontalAlignment="Stretch"
-                                    HorizontalContentAlignment="Left"
-                                    Background="Transparent" BorderThickness="0"
-                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
-                                    Click="NotificationsButton_Click">
+                            <Button Name="NavAudio" Classes="nav" Tag="Audio" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Alert" Width="16" Height="16"
-                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
-                                    <TextBlock Text="Notifications" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <ic:SymbolIcon Symbol="Speaker2" IconVariant="Regular"/>
+                                    <TextBlock Text="Audio"/>
                                 </StackPanel>
                             </Button>
-
-                            <Button Name="AppearanceButton"
-                                    HorizontalAlignment="Stretch"
-                                    HorizontalContentAlignment="Left"
-                                    Background="Transparent" BorderThickness="0"
-                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
-                                    Click="AppearanceButton_Click">
+                            <Button Name="NavKommo" Classes="nav" Tag="Kommo" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="PaintBrush" Width="16" Height="16"
-                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
-                                    <TextBlock Text="Appearance" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <ic:SymbolIcon Symbol="CloudSync" IconVariant="Regular"/>
+                                    <TextBlock Text="Kommo &amp; Gateway"/>
                                 </StackPanel>
                             </Button>
-
-                            <Button Name="AdvancedButton"
-                                    HorizontalAlignment="Stretch"
-                                    HorizontalContentAlignment="Left"
-                                    Background="Transparent" BorderThickness="0"
-                                    Padding="10,8" CornerRadius="6" Cursor="Hand"
-                                    Click="AdvancedButton_Click">
+                            <Button Name="NavAppearance" Classes="nav" Tag="Appearance" Click="Nav_Click">
                                 <StackPanel Orientation="Horizontal">
-                                    <ic:SymbolIcon Symbol="Settings" Width="16" Height="16"
-                                                   IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
-                                    <TextBlock Text="Advanced" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                    <ic:SymbolIcon Symbol="PaintBrush" IconVariant="Regular"/>
+                                    <TextBlock Text="Appearance"/>
+                                </StackPanel>
+                            </Button>
+                            <Button Name="NavAdvanced" Classes="nav" Tag="Advanced" Click="Nav_Click">
+                                <StackPanel Orientation="Horizontal">
+                                    <ic:SymbolIcon Symbol="Settings" IconVariant="Regular"/>
+                                    <TextBlock Text="Advanced"/>
                                 </StackPanel>
                             </Button>
                         </StackPanel>
 
-                        <!-- About / version at the bottom -->
-                        <Button Grid.Row="1" Name="AboutButton"
-                                HorizontalAlignment="Stretch"
-                                HorizontalContentAlignment="Left"
-                                Background="Transparent" BorderThickness="0"
-                                Padding="10,8" Margin="10,0,10,16" CornerRadius="6" Cursor="Hand"
-                                Click="AboutButton_Click">
+                        <Button Grid.Row="1" Name="NavAbout" Classes="nav" Tag="About" Click="Nav_Click" Margin="10,0,10,16">
                             <StackPanel Orientation="Horizontal">
-                                <ic:SymbolIcon Symbol="Info" Width="16" Height="16"
-                                               IconVariant="Regular" Margin="0,0,8,0" VerticalAlignment="Center"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
-                                <TextBlock Text="About" FontSize="14" Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <ic:SymbolIcon Symbol="Info" IconVariant="Regular"/>
+                                <TextBlock Text="About"/>
                             </StackPanel>
                         </Button>
                     </Grid>
                 </Border>
 
-                <!-- ── Settings Panels ───────────────────────────────────── -->
+                <!-- ── Panels ─────────────────────────────────────────── -->
                 <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto">
                     <Grid Margin="32,24,32,24">
 
-                        <!-- ─── Connection Panel ─────────────────────────── -->
+                        <!-- ─── Connection (main line) ───────────────── -->
                         <StackPanel Name="ConnectionPanel">
-                            <TextBlock Text="Connection" FontSize="22" FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+                            <TextBlock Classes="panelTitle" Text="Main connection"/>
 
-                            <!-- Main connection card -->
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                            <Border Classes="card">
                                 <StackPanel>
-                                    <TextBlock Text="Main Connection" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,16"/>
+                                    <Grid ColumnDefinitions="*,16,*">
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Classes="label" Text="Display name (optional)"/>
+                                            <TextBox Classes="field" Text="{Binding MainName}" Watermark="Main"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Classes="label" Text="Transport"/>
+                                            <ComboBox Classes="field" ItemsSource="{x:Static vm:SettingsViewModel.TransportOptions}" SelectedItem="{Binding MainTransport}"/>
+                                        </StackPanel>
+                                    </Grid>
 
-                                    <TextBlock Text="Server host" FontSize="12" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
-                                    <TextBox Name="MainServerTextBox"
-                                             Background="{DynamicResource BackgroundDarkBrush}"
-                                             Foreground="{DynamicResource TextPrimaryBrush}"
-                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                             Padding="10,7" FontSize="13" MinHeight="36"
-                                             CornerRadius="8" Margin="0,0,0,12"/>
-
-                                    <TextBlock Text="Username / Extension" FontSize="12" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
-                                    <TextBox Name="MainUsernameTextBox"
-                                             Background="{DynamicResource BackgroundDarkBrush}"
-                                             Foreground="{DynamicResource TextPrimaryBrush}"
-                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                             Padding="10,7" FontSize="13" MinHeight="36"
-                                             CornerRadius="8" Margin="0,0,0,12"/>
-
-                                    <TextBlock Text="Password" FontSize="12" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
-                                    <TextBox Name="MainPasswordTextBox"
-                                             PasswordChar="●"
-                                             Background="{DynamicResource BackgroundDarkBrush}"
-                                             Foreground="{DynamicResource TextPrimaryBrush}"
-                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                             Padding="10,7" FontSize="13" MinHeight="36"
-                                             CornerRadius="8" Margin="0,0,0,12"/>
-
-                                    <TextBlock Text="Port" FontSize="12" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,5"/>
-                                    <TextBox Name="MainPortTextBox"
-                                             Background="{DynamicResource BackgroundDarkBrush}"
-                                             Foreground="{DynamicResource TextPrimaryBrush}"
-                                             BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                             Padding="10,7" FontSize="13" MinHeight="36"
-                                             CornerRadius="8" Margin="0,0,0,16"
-                                             Width="120" HorizontalAlignment="Left"/>
-
-                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                        <Button Name="MainConnectionTestButton"
-                                                Content="Test Connection"
-                                                Background="Transparent"
-                                                Foreground="{DynamicResource AccentBlueBrush}"
-                                                BorderBrush="{DynamicResource AccentBlueBrush}" BorderThickness="1"
-                                                Padding="14,8" CornerRadius="8" Cursor="Hand"
-                                                Click="MainConnectionTestButton_Click" Margin="0,0,8,0"/>
-                                        <Button Name="MainConnectionSaveButton"
-                                                Content="Save"
-                                                Background="{DynamicResource AccentBlueBrush}"
-                                                Foreground="White"
-                                                BorderThickness="0"
-                                                Padding="14,8" CornerRadius="8" Cursor="Hand"
-                                                Click="SaveConnectionButton_Click"/>
+                                    <!-- SIP fields -->
+                                    <StackPanel IsVisible="{Binding MainIsSip}">
+                                        <Grid ColumnDefinitions="*,16,140">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Server host"/>
+                                                <TextBox Classes="field" Text="{Binding MainServer}" Watermark="pbx.example.com"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Port"/>
+                                                <TextBox Classes="field" Text="{Binding MainPort}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Username / extension"/>
+                                                <TextBox Classes="field" Text="{Binding MainUsername}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Password"/>
+                                                <TextBox Classes="field" Text="{Binding MainPassword}" PasswordChar="●"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Spacing="24">
+                                            <CheckBox Classes="field" Content="TLS (SIP over TLS, port 5061)" IsChecked="{Binding MainUseTls}"/>
+                                            <CheckBox Classes="field" Content="SRTP media encryption" IsChecked="{Binding MainUseSrtp}"/>
+                                        </StackPanel>
                                     </StackPanel>
-                                </StackPanel>
-                            </Border>
 
-                            <!-- Connection status info -->
-                            <Border Name="MainConnectionStatusCard"
-                                    Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16">
-                                <StackPanel Orientation="Horizontal">
-                                    <Border Name="MainConnectionStatusDot"
-                                            Width="8" Height="8" CornerRadius="4"
-                                            Background="{DynamicResource TextSecondaryBrush}"
-                                            VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                    <TextBlock Name="MainConnectionStatusText"
-                                               Text="Not connected"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"
-                                               VerticalAlignment="Center"/>
+                                    <!-- WebRTC fields -->
+                                    <StackPanel IsVisible="{Binding MainIsWebRtc}">
+                                        <TextBlock Classes="label" Text="WebSocket URI"/>
+                                        <TextBox Classes="field" Text="{Binding MainWsUri}" Watermark="wss://pbx.example.com:8089/ws"/>
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Username / extension"/>
+                                                <TextBox Classes="field" Text="{Binding MainWebRtcUsername}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Password"/>
+                                                <TextBox Classes="field" Text="{Binding MainWebRtcPassword}" PasswordChar="●"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock Classes="label" Text="TURN server (optional; synced from PBX Gateway when configured)"/>
+                                        <TextBox Classes="field" Text="{Binding MainTurnUri}" Watermark="turn:turn.example.com:3478?transport=udp"/>
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="TURN username"/>
+                                                <TextBox Classes="field" Text="{Binding MainTurnUsername}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="TURN password"/>
+                                                <TextBox Classes="field" Text="{Binding MainTurnPassword}" PasswordChar="●"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
+                                        <Button Classes="secondary" Content="Test reachability" Click="TestMain_Click" IsEnabled="{Binding !IsBusy}"/>
+                                        <Button Classes="primary" Content="Save &amp; reconnect" Click="Save_Click" IsEnabled="{Binding !IsBusy}"/>
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
 
-                        <!-- ─── Audio Panel ──────────────────────────────── -->
+                        <!-- ─── Secondary line ───────────────────────── -->
+                        <StackPanel Name="SecondaryPanel" IsVisible="False">
+                            <TextBlock Classes="panelTitle" Text="Second line"/>
+                            <TextBlock Classes="hint" Text="Optional second registration (e.g. a carrier SIP trunk or a second PBX). Leave the server empty to disable."/>
+
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <Grid ColumnDefinitions="*,16,*">
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Classes="label" Text="Display name (optional)"/>
+                                            <TextBox Classes="field" Text="{Binding SecondaryName}" Watermark="Secondary"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Classes="label" Text="Transport"/>
+                                            <ComboBox Classes="field" ItemsSource="{x:Static vm:SettingsViewModel.TransportOptions}" SelectedItem="{Binding SecondaryTransport}"/>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <StackPanel IsVisible="{Binding SecondaryIsSip}">
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Server host[:port]"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryServer}" Watermark="sip.carrier.example:5060"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="RTP/media server (optional)"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryRtpServer}" Watermark="if different from SIP server"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Username"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryUsername}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Password"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryPassword}" PasswordChar="●"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Spacing="24">
+                                            <CheckBox Classes="field" Content="TLS" IsChecked="{Binding SecondaryUseTls}"/>
+                                            <CheckBox Classes="field" Content="SRTP" IsChecked="{Binding SecondaryUseSrtp}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+
+                                    <StackPanel IsVisible="{Binding SecondaryIsWebRtc}">
+                                        <TextBlock Classes="label" Text="WebSocket URI"/>
+                                        <TextBox Classes="field" Text="{Binding SecondaryWsUri}" Watermark="wss://pbx2.example.com:8089/ws"/>
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Username / extension"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryWebRtcUsername}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Password"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryWebRtcPassword}" PasswordChar="●"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <TextBlock Classes="label" Text="TURN server (optional)"/>
+                                        <TextBox Classes="field" Text="{Binding SecondaryTurnUri}"/>
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="TURN username"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryTurnUsername}"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="TURN password"/>
+                                                <TextBox Classes="field" Text="{Binding SecondaryTurnPassword}" PasswordChar="●"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
+                                        <Button Classes="secondary" Content="Test reachability" Click="TestSecondary_Click" IsEnabled="{Binding !IsBusy}"/>
+                                        <Button Classes="primary" Content="Save &amp; reconnect" Click="Save_Click" IsEnabled="{Binding !IsBusy}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+
+                        <!-- ─── Audio ─────────────────────────────────── -->
                         <StackPanel Name="AudioPanel" IsVisible="False">
-                            <TextBlock Text="Audio" FontSize="22" FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
+                            <TextBlock Classes="panelTitle" Text="Audio"/>
+                            <TextBlock Classes="hint" Text="{Binding AudioBackendInfo}"/>
 
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                            <Border Classes="card">
                                 <StackPanel>
-                                    <TextBlock Text="Microphone" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <ComboBox Name="MicrophoneComboBox"
-                                              HorizontalAlignment="Stretch" Height="34" FontSize="13"
-                                              SelectionChanged="AudioDevice_SelectionChanged"/>
+                                    <TextBlock Classes="cardTitle" Text="Devices"/>
+                                    <TextBlock Classes="label" Text="Microphone"/>
+                                    <ComboBox Classes="field" ItemsSource="{Binding Microphones}" SelectedItem="{Binding SelectedMicrophone}"/>
+                                    <TextBlock Classes="label" Text="Speaker / playback"/>
+                                    <ComboBox Classes="field" ItemsSource="{Binding Speakers}" SelectedItem="{Binding SelectedSpeaker}"/>
+                                    <Button Classes="secondary" Content="Refresh devices" Click="RefreshDevices_Click" HorizontalAlignment="Left"/>
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
+                            <Border Classes="card">
                                 <StackPanel>
-                                    <TextBlock Text="Speaker / Playback Device" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <ComboBox Name="SpeakerComboBox"
-                                              HorizontalAlignment="Stretch" Height="34" FontSize="13"
-                                              SelectionChanged="AudioDevice_SelectionChanged"/>
+                                    <TextBlock Classes="cardTitle" Text="Processing"/>
+                                    <CheckBox Classes="field" Content="Acoustic echo cancellation" IsChecked="{Binding EchoCancellation}"/>
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16">
+                            <Border Classes="card">
                                 <StackPanel>
-                                    <TextBlock Text="Echo Cancellation" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <CheckBox Name="AecEnabledCheckBox" Content="Enable acoustic echo cancellation"
-                                              Foreground="{DynamicResource TextPrimaryBrush}"
-                                              IsCheckedChanged="AecEnabled_CheckedChanged"/>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-
-                        <!-- ─── Notifications Panel ──────────────────────── -->
-                        <StackPanel Name="NotificationsPanel" IsVisible="False">
-                            <TextBlock Text="Notifications" FontSize="22" FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16">
-                                <StackPanel>
-                                    <CheckBox Name="ToastNotificationsCheckBox"
-                                              Content="Show toast notification for incoming calls"
-                                              Foreground="{DynamicResource TextPrimaryBrush}"
-                                              Margin="0,0,0,12"/>
-                                    <CheckBox Name="RingtoneCheckBox"
-                                              Content="Play ringtone for incoming calls"
-                                              Foreground="{DynamicResource TextPrimaryBrush}"
-                                              Margin="0,0,0,12"/>
-                                    <CheckBox Name="FlashTaskbarCheckBox"
-                                              Content="Flash taskbar on incoming call"
-                                              Foreground="{DynamicResource TextPrimaryBrush}"/>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-
-                        <!-- ─── Appearance Panel ─────────────────────────── -->
-                        <StackPanel Name="AppearancePanel" IsVisible="False">
-                            <TextBlock Text="Appearance" FontSize="22" FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16">
-                                <StackPanel>
-                                    <TextBlock Text="Theme" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <ComboBox Name="ThemeComboBox"
-                                              HorizontalAlignment="Left" Width="200" Height="34" FontSize="13"
-                                              SelectionChanged="ThemeComboBox_SelectionChanged"/>
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-
-                        <!-- ─── Advanced Panel ───────────────────────────── -->
-                        <StackPanel Name="AdvancedPanel" IsVisible="False">
-                            <TextBlock Text="Advanced" FontSize="22" FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16" Margin="0,0,0,16">
-                                <StackPanel>
-                                    <TextBlock Text="Call Recording" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <CheckBox Name="RecordCallsCheckBox"
-                                              Content="Record calls automatically"
-                                              Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="Recording folder" FontSize="12"
-                                                   Foreground="{DynamicResource TextSecondaryBrush}"
-                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
-                                        <TextBox Name="RecordingFolderTextBox"
-                                                 Width="260" Height="34" FontSize="13"
-                                                 Background="{DynamicResource BackgroundDarkBrush}"
-                                                 Foreground="{DynamicResource TextPrimaryBrush}"
-                                                 BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                                 Padding="8,6" CornerRadius="6" Margin="0,0,8,0"/>
-                                        <Button Content="Browse…" Padding="12,6" CornerRadius="6" Cursor="Hand"
-                                                Background="{DynamicResource BackgroundLightBrush}"
-                                                Foreground="{DynamicResource TextPrimaryBrush}"
-                                                BorderThickness="0"
-                                                Click="BrowseRecordingFolder_Click"/>
+                                    <TextBlock Classes="cardTitle" Text="Ringtone"/>
+                                    <CheckBox Classes="field" Content="Use WAV ringtone (ringtone/incoming_call.wav) instead of generated tone" IsChecked="{Binding RingtoneWav}"/>
+                                    <Grid ColumnDefinitions="Auto,*,Auto" Margin="0,0,0,8">
+                                        <TextBlock Grid.Column="0" Classes="label" Text="Volume" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                        <Slider Grid.Column="1" Minimum="0" Maximum="1" Value="{Binding RingtoneVolume}" VerticalAlignment="Center"/>
+                                        <TextBlock Grid.Column="2" Text="{Binding RingtoneVolumeText}" Foreground="{DynamicResource TextPrimaryBrush}" VerticalAlignment="Center" Margin="12,0,0,0" MinWidth="40"/>
+                                    </Grid>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Classes="secondary" Content="Preview" Click="PreviewRingtone_Click"/>
+                                        <Button Classes="secondary" Content="Stop" Click="StopRingtone_Click"/>
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16">
-                                <StackPanel>
-                                    <TextBlock Text="Diagnostic" FontSize="15" FontWeight="SemiBold"
-                                               Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,12"/>
-                                    <CheckBox Name="VerboseLoggingCheckBox"
-                                              Content="Enable verbose logging"
-                                              Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
-                                    <Button Content="Open Logs Folder"
-                                            Background="Transparent"
-                                            Foreground="{DynamicResource AccentBlueBrush}"
-                                            BorderBrush="{DynamicResource AccentBlueBrush}" BorderThickness="1"
-                                            Padding="12,6" CornerRadius="6" Cursor="Hand"
-                                            HorizontalAlignment="Left"
-                                            Click="OpenLogsFolderButton_Click"/>
-                                </StackPanel>
-                            </Border>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Classes="primary" Content="Save" Click="Save_Click" IsEnabled="{Binding !IsBusy}"/>
+                            </StackPanel>
                         </StackPanel>
 
-                        <!-- ─── About Panel ──────────────────────────────── -->
+                        <!-- ─── Kommo & Gateway ───────────────────────── -->
+                        <StackPanel Name="KommoPanel" IsVisible="False">
+                            <TextBlock Classes="panelTitle" Text="Kommo &amp; PBX Gateway"/>
+
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <TextBlock Classes="cardTitle" Text="PBX Gateway"/>
+                                    <TextBlock Classes="hint" Text="Callspire PBX Gateway provides CallerID list, CDR lookup, TURN credentials, originate and Kommo post-call processing."/>
+                                    <CheckBox Classes="field" Content="Enable PBX Gateway" IsChecked="{Binding GatewayEnabled}"/>
+                                    <StackPanel IsEnabled="{Binding GatewayEnabled}">
+                                        <TextBlock Classes="label" Text="Gateway URL"/>
+                                        <TextBox Classes="field" Text="{Binding GatewayUrl}" Watermark="https://pbx.example.com:8443"/>
+                                        <Grid ColumnDefinitions="*,16,160">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Access token (JWT)"/>
+                                                <TextBox Classes="field" Text="{Binding GatewayToken}" PasswordChar="●"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Extension"/>
+                                                <TextBox Classes="field" Text="{Binding GatewayExtension}" Watermark="204"/>
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <TextBlock Classes="cardTitle" Text="Kommo CRM"/>
+                                    <CheckBox Classes="field" Content="Enable Kommo integration" IsChecked="{Binding KommoEnabled}"/>
+                                    <StackPanel IsEnabled="{Binding KommoEnabled}">
+                                        <Grid ColumnDefinitions="*,16,*">
+                                            <StackPanel Grid.Column="0">
+                                                <TextBlock Classes="label" Text="Subdomain"/>
+                                                <TextBox Classes="field" Text="{Binding KommoSubdomain}" Watermark="yourcompany"/>
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Classes="label" Text="Authentication"/>
+                                                <ComboBox Classes="field" ItemsSource="{x:Static vm:SettingsViewModel.KommoAuthOptions}" SelectedItem="{Binding KommoAuthMode}"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <StackPanel IsVisible="{Binding KommoIsManual}">
+                                            <TextBlock Classes="label" Text="Long-lived access token"/>
+                                            <TextBox Classes="field" Text="{Binding KommoToken}" PasswordChar="●"/>
+                                        </StackPanel>
+                                        <StackPanel IsVisible="{Binding KommoIsOAuth}">
+                                            <Grid ColumnDefinitions="*,16,*">
+                                                <StackPanel Grid.Column="0">
+                                                    <TextBlock Classes="label" Text="OAuth client ID"/>
+                                                    <TextBox Classes="field" Text="{Binding KommoClientId}"/>
+                                                </StackPanel>
+                                                <StackPanel Grid.Column="2">
+                                                    <TextBlock Classes="label" Text="OAuth client secret"/>
+                                                    <TextBox Classes="field" Text="{Binding KommoClientSecret}" PasswordChar="●"/>
+                                                </StackPanel>
+                                            </Grid>
+                                            <TextBlock Classes="label" Text="Redirect URI"/>
+                                            <TextBox Classes="field" Text="{Binding KommoRedirectUri}" Watermark="callspire://oauth/callback"/>
+                                            <TextBlock Classes="hint" Text="With PBX Gateway enabled, Kommo tokens are provided by the gateway (/api/kommo/session) and these OAuth fields are optional."/>
+                                        </StackPanel>
+                                        <CheckBox Classes="field" Content="Ask which lead to attach the call to (manual lead selection)" IsChecked="{Binding KommoLeadSelection}"/>
+                                        <CheckBox Classes="field" Content="Upload call recordings to Kommo" IsChecked="{Binding KommoRecordingUpload}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Classes="primary" Content="Save" Click="Save_Click" IsEnabled="{Binding !IsBusy}"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- ─── Appearance ───────────────────────────── -->
+                        <StackPanel Name="AppearancePanel" IsVisible="False">
+                            <TextBlock Classes="panelTitle" Text="Appearance"/>
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <TextBlock Classes="cardTitle" Text="Theme"/>
+                                    <ComboBox Classes="field" HorizontalAlignment="Left" Width="220"
+                                              ItemsSource="{x:Static vm:SettingsViewModel.ThemeOptions}" SelectedItem="{Binding Theme}"/>
+                                    <TextBlock Classes="hint" Text="“System” follows the macOS / Windows appearance setting."/>
+                                </StackPanel>
+                            </Border>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Classes="primary" Content="Save" Click="Save_Click" IsEnabled="{Binding !IsBusy}"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- ─── Advanced ─────────────────────────────── -->
+                        <StackPanel Name="AdvancedPanel" IsVisible="False">
+                            <TextBlock Classes="panelTitle" Text="Advanced"/>
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <TextBlock Classes="cardTitle" Text="Call recording"/>
+                                    <CheckBox Classes="field" Content="Record calls (SIP: RTP mix, WebRTC: browser MediaRecorder)" IsChecked="{Binding CallRecording}"/>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBox Grid.Column="0" Classes="field" Text="{Binding RecordingsFolder}" IsReadOnly="True" Margin="0,0,8,12"/>
+                                        <Button Grid.Column="1" Classes="secondary" Content="Open folder" Click="OpenRecordings_Click" VerticalAlignment="Top"/>
+                                    </Grid>
+                                    <TextBlock Classes="hint" Text="Recordings older than 7 days are cleaned up automatically."/>
+                                </StackPanel>
+                            </Border>
+                            <Border Classes="card">
+                                <StackPanel>
+                                    <TextBlock Classes="cardTitle" Text="Diagnostics"/>
+                                    <CheckBox Classes="field" Content="Verbose WebRTC logging (phone.js)" IsChecked="{Binding WebRtcDebug}"/>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBox Grid.Column="0" Classes="field" Text="{Binding LogsFolder}" IsReadOnly="True" Margin="0,0,8,12"/>
+                                        <Button Grid.Column="1" Classes="secondary" Content="Open logs" Click="OpenLogs_Click" VerticalAlignment="Top"/>
+                                    </Grid>
+                                    <TextBlock Classes="label" Text="Settings file"/>
+                                    <TextBox Classes="field" Text="{Binding SettingsFile}" IsReadOnly="True"/>
+                                </StackPanel>
+                            </Border>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button Classes="primary" Content="Save" Click="Save_Click" IsEnabled="{Binding !IsBusy}"/>
+                            </StackPanel>
+                        </StackPanel>
+
+                        <!-- ─── About ─────────────────────────────────── -->
                         <StackPanel Name="AboutPanel" IsVisible="False">
-                            <TextBlock Text="About" FontSize="22" FontWeight="Light"
-                                       Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,24"/>
-                            <Border Background="{DynamicResource BackgroundMediumBrush}"
-                                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                                    CornerRadius="8" Padding="20,16">
+                            <TextBlock Classes="panelTitle" Text="About"/>
+                            <Border Classes="card">
                                 <StackPanel>
                                     <TextBlock Text="Callspire Softphone" FontSize="20" FontWeight="SemiBold"
                                                Foreground="{DynamicResource TextPrimaryBrush}" Margin="0,0,0,8"/>
-                                    <TextBlock Name="VersionTextBlock" Text="Version —"
-                                               FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}"
-                                               Margin="0,0,0,16"/>
-                                    <Button Name="CheckUpdateButton"
-                                            Content="Check for Updates"
-                                            Background="{DynamicResource AccentBlueBrush}"
-                                            Foreground="White" BorderThickness="0"
-                                            Padding="14,8" CornerRadius="8" Cursor="Hand"
-                                            HorizontalAlignment="Left"
-                                            Click="CheckUpdateButton_Click"/>
+                                    <TextBlock Text="{Binding VersionText}" FontSize="13" Foreground="{DynamicResource TextSecondaryBrush}" Margin="0,0,0,16"/>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Classes="primary" Content="Check for updates" Click="CheckUpdates_Click" IsEnabled="{Binding !IsBusy}"/>
+                                        <Button Classes="secondary" Content="Download" Click="DownloadUpdate_Click" IsVisible="{Binding UpdateAvailable}"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding UpdateStatus}" Classes="hint" Margin="0,12,0,0"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -403,6 +572,13 @@
                     </Grid>
                 </ScrollViewer>
             </Grid>
+
+            <!-- Status bar -->
+            <Border Grid.Row="2" Background="{DynamicResource BackgroundMediumBrush}"
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0"
+                    Padding="16,8" IsVisible="{Binding StatusText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}">
+                <TextBlock Classes="status" Classes.error="{Binding StatusIsError}" Text="{Binding StatusText}"/>
+            </Border>
         </Grid>
     </Border>
 </Window>

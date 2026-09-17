@@ -331,7 +331,12 @@ namespace Softphone
         /// <summary>
         /// Обновляет статус загрузки записи в AmoCRM для звонка
         /// </summary>
-        public void UpdateAmoCrmUploadStatus(string phoneNumber, DateTime callTime, AmoCrmUploadStatus status, string? reason = null)
+        public void UpdateAmoCrmUploadStatus(
+            string phoneNumber,
+            DateTime callTime,
+            AmoCrmUploadStatus status,
+            string? reason = null,
+            AmoCrmUploadedRecordingSource? uploadedRecordingSource = null)
         {
             var call = FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
 
@@ -339,14 +344,87 @@ namespace Softphone
             {
                 call.AmoCrmUploadStatus = status;
                 call.AmoCrmUploadReason = reason;
+                if (uploadedRecordingSource.HasValue)
+                    call.AmoCrmUploadedRecordingSource = uploadedRecordingSource.Value;
+                else if (status != AmoCrmUploadStatus.Uploaded)
+                    call.AmoCrmUploadedRecordingSource = AmoCrmUploadedRecordingSource.None;
                 SaveHistory();
                 AppLog.Log($"[CallHistoryService] AmoCrmUploadStatus updated for {phoneNumber} at {callTime:HH:mm:ss.fff}: {status}" +
-                    (string.IsNullOrEmpty(reason) ? "" : $" ({reason})"));
+                    (string.IsNullOrEmpty(reason) ? "" : $" ({reason})") +
+                    (uploadedRecordingSource.HasValue ? $", recordingSource={uploadedRecordingSource.Value}" : ""));
             }
             else
             {
                 AppLog.Log($"[CallHistoryService] UpdateAmoCrmUploadStatus: no row for {phoneNumber} near {callTime:O} (status={status})");
             }
+        }
+
+        /// <summary>
+        /// Applies PBX CDR truth from gateway process-call job status (optional fields on GET /api/kommo/process-call/{id}).
+        /// Fixes desktop "Hung up before answer" when Miko trunk was ANSWERED (robot/voicemail) but WebRTC did not detect B-leg.
+        /// </summary>
+        public bool ApplyPbxTruthFromGateway(
+            string phoneNumber,
+            DateTime callTime,
+            bool? pbxWasAnswered,
+            int? pbxDurationSeconds,
+            string? sessionId = null,
+            double maxDiffSeconds = 5)
+        {
+            if (pbxWasAnswered != true && (pbxDurationSeconds ?? 0) <= 0)
+                return false;
+
+            var call = GetCallForAmoCrmUpload(phoneNumber, callTime, sessionId, maxDiffSeconds)
+                ?? FindMatchingCall(phoneNumber, callTime, transport: null, preferInProgress: false);
+            if (call == null)
+            {
+                AppLog.Log($"[CallHistoryService] ApplyPbxTruthFromGateway: no row for {phoneNumber} near {callTime:O}");
+                return false;
+            }
+
+            bool changed = false;
+
+            if (pbxWasAnswered == true && !call.WasAnswered)
+            {
+                call.WasAnswered = true;
+                changed = true;
+            }
+
+            if (pbxDurationSeconds.HasValue && pbxDurationSeconds.Value > 0)
+            {
+                var pbxDuration = TimeSpan.FromSeconds(pbxDurationSeconds.Value);
+                if (!call.Duration.HasValue
+                    || Math.Abs(call.Duration.Value.TotalSeconds - pbxDurationSeconds.Value) > 2)
+                {
+                    call.Duration = pbxDuration;
+                    changed = true;
+                }
+            }
+
+            if (call.WasAnswered && call.Status == CallStatus.Cancelled)
+            {
+                call.Status = CallStatus.Ended;
+                changed = true;
+            }
+
+            if (call.WasAnswered && !call.AnswerTime.HasValue && call.RingbackEndTime.HasValue)
+            {
+                call.AnswerTime = call.RingbackEndTime;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                const string detailPrefix = "PBX CDR status sync:";
+                string detail = $"{detailPrefix} answered={pbxWasAnswered}, duration={pbxDurationSeconds}s";
+                if (!call.TechnicalDetails.Any(d => d.StartsWith(detailPrefix, StringComparison.Ordinal)))
+                    call.TechnicalDetails.Add(detail);
+                SaveHistory();
+                AppLog.Log($"[CallHistoryService] ApplyPbxTruthFromGateway: updated {phoneNumber} at {callTime:HH:mm:ss.fff} " +
+                    $"(WasAnswered={call.WasAnswered}, Status={call.Status}, Duration={call.Duration})");
+            }
+
+            return changed;
         }
 
         private List<CallHistoryItem> LoadHistory()

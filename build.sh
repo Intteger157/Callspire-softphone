@@ -48,10 +48,12 @@ build_macos() {
   run build "$ROOT/Callspire.Desktop/Callspire.Desktop.csproj" \
       -f net8.0 -c "$CONFIGURATION"
   if [[ $PUBLISH -eq 1 ]]; then
-    run publish "$ROOT/Callspire.Desktop/Callspire.Desktop.csproj" \
-        -f net8.0 -c "$CONFIGURATION" -r osx-x64 --no-self-contained \
-        -o "$ROOT/publish/macos"
-    green "Artifact: $ROOT/publish/macos"
+    # Produces publish/macos/Callspire.app (self-contained, Info.plist with callspire:// scheme,
+    # NSMicrophoneUsageDescription, icon). Add --sign/--notarize-profile/--dmg via env or by
+    # calling macOS/package-app.sh directly. Arch: CALLSPIRE_MAC_ARCH=arm64|x64|universal.
+    bash "$ROOT/Callspire.Desktop/macOS/package-app.sh" \
+        --arch "${CALLSPIRE_MAC_ARCH:-arm64}" --config "$CONFIGURATION"
+    green "Artifact: $ROOT/publish/macos/Callspire.app"
   fi
 }
 

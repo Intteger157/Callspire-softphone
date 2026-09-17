@@ -58,17 +58,19 @@ jobs:
           dotnet-version: '8.0.x'
           global-json-file: global.json
 
-      - name: Restore
-        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -p:TargetFramework=net8.0 -r osx-x64
+      - name: Build (net8.0 / Avalonia)
+        run: dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release
 
-      - name: Publish
-        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release -r osx-x64 --no-self-contained --no-restore -o publish/macos
+      # Self-contained .app bundle (Info.plist with callspire:// + microphone usage, icon).
+      # Unsigned in CI (ad-hoc); sign/notarize locally with macOS/package-app.sh --sign … --dmg.
+      - name: Package Callspire.app (arm64)
+        run: bash Callspire.Desktop/macOS/package-app.sh --arch arm64 --config Release
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: callspire-macos-x64
-          path: publish/macos
+          name: callspire-macos-arm64-app
+          path: publish/macos/Callspire.app
           retention-days: 30
 
   # ─── Linux Desktop ────────────────────────────────────────────────────────

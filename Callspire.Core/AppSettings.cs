@@ -119,6 +119,9 @@ namespace Softphone
         public string? MainWebRtcTurnPassword { get; set; }
 
         public string? MainWebRtcTurnPasswordEncrypted { get; set; }
+
+        /// <summary>Last applied TURN config revision from PBX Gateway (<c>config_revision</c>).</summary>
+        public string? MainWebRtcTurnGatewayRevision { get; set; }
         // NOTE: Secondary connection is SIP-only; TURN/ICE does not apply there.
         
         // Call recording settings
@@ -135,7 +138,8 @@ namespace Softphone
         public bool EnableAmoCrmIntegration { get; set; } = false; // Включить интеграцию с AmoCRM
         public string? AmoCrmSubdomain { get; set; } // Поддомен AmoCRM (например: "yourcompany" для yourcompany.amocrm.ru)
         public string? AmoCrmAccessTokenEncrypted { get; set; } // Зашифрованный Access Token для AmoCRM API (Manual Token mode)
-        public bool EnableAmoCrmLeadSelection { get; set; } = false; // Ручной выбор лида для загрузки записей
+        public bool EnableAmoCrmLeadSelection { get; set; } = false; // Ручной выбор лида (local upload или gateway process-call)
+        public bool EnableAmoCrmRecordingUpload { get; set; } = true; // Автоматическая загрузка аудиозаписей в Kommo
         // ...удалено: ShowFirstLeadAfterCall...
         
         // AmoCRM OAuth settings
@@ -151,6 +155,12 @@ namespace Softphone
         /// When both local Kommo settings and gateway Kommo are available: "local" or "gateway".
         /// </summary>
         public string? AmoCrmConnectionSource { get; set; }
+
+        /// <summary>
+        /// Where CRM upload runs: "local" (desktop AmoCrmService) or "gateway" (PBX Gateway process-call).
+        /// Independent from <see cref="AmoCrmConnectionSource"/>.
+        /// </summary>
+        public string? AmoCrmRecordingUploadSource { get; set; }
 
         // Callspire PBX Gateway (JWT API on/near MikoPBX — CDR, recordings, originate, WebRTC admin, …)
         public bool EnableMikoPbxCdr { get; set; } = false;

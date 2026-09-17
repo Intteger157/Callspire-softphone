@@ -22,6 +22,7 @@ namespace Softphone
         }
 
         public event EncodedSampleDelegate? OnAudioSourceEncodedSample;
+        public event Action<EncodedAudioFrame>? OnAudioSourceEncodedFrameReady;
         public event RawAudioSampleDelegate? OnAudioSourceRawSample;
         public event SourceErrorDelegate? OnAudioSourceError;
 
@@ -43,6 +44,7 @@ namespace Softphone
             // Это важно, чтобы не пропустить события, которые могут быть подняты сразу после старта
             _baseSource.OnAudioSourceRawSample += OnBaseSourceRawSample;
             _baseSource.OnAudioSourceEncodedSample += OnBaseSourceEncodedSample;
+            _baseSource.OnAudioSourceEncodedFrameReady += OnBaseSourceEncodedFrameReady;
             _baseSource.OnAudioSourceError += OnBaseSourceError;
             
             AppLog.Log($"[AmplifiedAudioSource] Subscribed to base source events, calling base.StartAudio()");
@@ -126,6 +128,7 @@ namespace Softphone
         {
             _baseSource.OnAudioSourceRawSample -= OnBaseSourceRawSample;
             _baseSource.OnAudioSourceEncodedSample -= OnBaseSourceEncodedSample;
+            _baseSource.OnAudioSourceEncodedFrameReady -= OnBaseSourceEncodedFrameReady;
             _baseSource.OnAudioSourceError -= OnBaseSourceError;
             return _baseSource.CloseAudio();
         }
@@ -218,6 +221,11 @@ namespace Softphone
         private void OnBaseSourceEncodedSample(uint durationMilliseconds, byte[] sample)
         {
             OnAudioSourceEncodedSample?.Invoke(durationMilliseconds, sample);
+        }
+
+        private void OnBaseSourceEncodedFrameReady(EncodedAudioFrame frame)
+        {
+            OnAudioSourceEncodedFrameReady?.Invoke(frame);
         }
 
         private void OnBaseSourceError(string errorMessage)

@@ -23,7 +23,7 @@ namespace Softphone
             {
                 try { post(action); return; } catch { }
             }
-            try { action(); } catch { }
+            // Never run UI-bound callbacks inline from SIP/WebRTC worker threads.
         }
 
         public static void BeginInvokeUrgent(Action action)
@@ -33,7 +33,6 @@ namespace Softphone
             {
                 try { post(action); return; } catch { }
             }
-            try { action(); } catch { }
         }
     }
 }

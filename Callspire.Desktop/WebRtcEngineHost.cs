@@ -1,6 +1,7 @@
 #if WINDOWS
 using System;
 using System.Collections.Generic;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -19,6 +20,8 @@ namespace Softphone
     {
         private readonly WebView2 _webView;
         private bool _initialized = false;
+        private readonly HashSet<string> _readySlots = new(StringComparer.OrdinalIgnoreCase);
+        private readonly object _slotReadyLock = new();
         private static readonly TimeSpan DefaultScriptTimeout = TimeSpan.FromSeconds(6);
         private static readonly TimeSpan HeartbeatScriptTimeout = TimeSpan.FromSeconds(2);
         private static readonly TimeSpan StatsScriptTimeout = TimeSpan.FromSeconds(3);
@@ -131,6 +134,8 @@ namespace Softphone
                 
                 if (System.IO.Directory.Exists(webRtcClientPath))
                 {
+                    ValidateWebRtcClientAssets(webRtcClientPath);
+
                     AppLog.Log($"[WebRtcEngineHost] Setting virtual host mapping: softphone.local -> {webRtcClientPath}");
                     _webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
                         "softphone.local",
@@ -156,6 +161,7 @@ namespace Softphone
                     var json = e.TryGetWebMessageAsString();
                     if (!string.IsNullOrEmpty(json))
                     {
+                        TryMarkSlotReadyFromMessage(json);
                         EngineEvent?.Invoke(json);
                     }
                 };
@@ -740,6 +746,123 @@ namespace Softphone
             }
         }
 
+        private void TryMarkSlotReadyFromMessage(string json)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("type", out var typeEl) ||
+                    !string.Equals(typeEl.GetString(), "slot_ready", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                if (!root.TryGetProperty("slot", out var slotEl))
+                    return;
+
+                var slot = slotEl.GetString();
+                if (string.IsNullOrWhiteSpace(slot))
+                    return;
+
+                lock (_slotReadyLock)
+                {
+                    if (_readySlots.Add(slot))
+                    {
+                        AppLog.Log($"[WebRtcEngineHost] Slot '{slot}' ready");
+                    }
+                }
+            }
+            catch
+            {
+                // slot_ready is best-effort; never break the message pipeline
+            }
+        }
+
+        /// <summary>
+        /// Waits until index.html reports that the slot iframe finished loading (slot_ready postMessage),
+        /// or until timeout. Prevents initUA from hitting the no-op Proxy when an iframe is not ready yet.
+        /// </summary>
+        public async Task WaitForSlotReadyAsync(string slot, TimeSpan timeout, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(slot))
+                return;
+
+            var deadlineUtc = DateTime.UtcNow + timeout;
+            while (DateTime.UtcNow < deadlineUtc)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                lock (_slotReadyLock)
+                {
+                    if (_readySlots.Contains(slot))
+                        return;
+                }
+
+                if (_webView.CoreWebView2 != null)
+                {
+                    try
+                    {
+                        var safeSlot = slot.Replace("'", "\\'");
+                        var script =
+                            $"(() => {{ try {{ return !!(window._slotReady && window._slotReady['{safeSlot}']); }} catch (e) {{ return false; }} }})()";
+                        var result = await SendEvaluateScriptAsync(script, TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+                        if (string.Equals(result, "true", StringComparison.OrdinalIgnoreCase))
+                        {
+                            lock (_slotReadyLock)
+                            {
+                                _readySlots.Add(slot);
+                            }
+                            AppLog.Log($"[WebRtcEngineHost] Slot '{slot}' ready (polled)");
+                            return;
+                        }
+                    }
+                    catch
+                    {
+                        // keep polling until timeout
+                    }
+                }
+
+                await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+            }
+
+            AppLog.Log($"[WebRtcEngineHost] WARNING: Slot '{slot}' not ready after {timeout.TotalSeconds:F1}s — proceeding anyway");
+        }
+
+        private async Task<string?> SendEvaluateScriptAsync(string script, TimeSpan timeout)
+        {
+            if (_webView.CoreWebView2 == null)
+                return null;
+
+            async Task<string?> ExecuteAsync()
+            {
+                try
+                {
+                    return await _webView.CoreWebView2.ExecuteScriptAsync(script).ConfigureAwait(true);
+                }
+                catch (ObjectDisposedException)
+                {
+                    return null;
+                }
+            }
+
+            Task<string?> execTask;
+            if (!_webView.Dispatcher.CheckAccess())
+            {
+                execTask = _webView.Dispatcher.InvokeAsync(ExecuteAsync).Task.Unwrap();
+            }
+            else
+            {
+                execTask = ExecuteAsync();
+            }
+
+            var completed = await Task.WhenAny(execTask, Task.Delay(timeout)).ConfigureAwait(false);
+            if (completed != execTask)
+                return null;
+
+            return await execTask.ConfigureAwait(false);
+        }
+
         public bool IsInitialized
         {
             get
@@ -802,6 +925,29 @@ namespace Softphone
                 {
                     AppLog.Log($"[WebRtcEngineHost] IsInitialized: Unexpected error: {ex.Message}");
                     return false;
+                }
+            }
+        }
+
+        private static void ValidateWebRtcClientAssets(string webRtcClientPath)
+        {
+            string[] requiredFiles = { "jssip.min.js", "slot.html", "phone.js", "index.html" };
+            foreach (string file in requiredFiles)
+            {
+                string fullPath = System.IO.Path.Combine(webRtcClientPath, file);
+                if (!System.IO.File.Exists(fullPath))
+                {
+                    AppLog.Log($"[WebRtcEngineHost] ERROR: Required WebRTC asset missing: {fullPath}");
+                    continue;
+                }
+
+                if (string.Equals(file, "jssip.min.js", StringComparison.OrdinalIgnoreCase))
+                {
+                    long size = new System.IO.FileInfo(fullPath).Length;
+                    if (size < 100_000)
+                        AppLog.Log($"[WebRtcEngineHost] ERROR: jssip.min.js looks truncated ({size} bytes) at {fullPath}");
+                    else
+                        AppLog.Log($"[WebRtcEngineHost] jssip.min.js OK ({size / 1024} KB)");
                 }
             }
         }

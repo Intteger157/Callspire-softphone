@@ -6,6 +6,7 @@ using System;
 using System.Threading;
 using Avalonia;
 using Avalonia.Threading;
+using Softphone.Platform;
 
 namespace Softphone
 {
@@ -14,35 +15,53 @@ namespace Softphone
         [STAThread]
         public static void Main(string[] args)
         {
+            // ── Single instance + click-to-call forwarding ────────────────────
+            // callspire://… / tel: may arrive as an argument (Linux xdg-open, manual launch).
+            // On macOS the .app bundle normally receives URLs via application:openURLs:
+            // (handled in AvaloniaApp through IActivatableLifetime), but a raw binary launch
+            // still goes through here.
+            string? protocolUrl = ProtocolActivation.FindInArgs(args);
+            var instance = new CrossPlatformSingleInstance();
+            if (!instance.TryAcquire())
+            {
+                if (protocolUrl != null)
+                    instance.Forward(protocolUrl);
+                else
+                    instance.Forward("activate");
+                instance.Dispose();
+                return;
+            }
+            if (protocolUrl != null) ProtocolActivation.Enqueue(protocolUrl);
+
             // ── Bootstrap DI before any Avalonia window is created ────────────
             CrossPlatformBootstrap.Initialize(
                 postToUiThread:        action => Dispatcher.UIThread.Post(action),
                 postUrgentToUiThread:  action => Dispatcher.UIThread.Post(action, DispatcherPriority.Send));
 
-            // ── WebRTC: headless stub on macOS / Linux ────────────────────────
-            // WebRtcService requires an IWebRtcEngineHost to be attached before
-            // any call attempts.  MacLinuxWebRtcEngineHost is a no-op that prevents
-            // crashes while WebRTC calls are not yet supported on this platform.
-            // Attach via WebRtcService.AttachEngine(...) from the MainWindow ctor
-            // once the service is instantiated; the stub is exported below so that
-            // other startup code can reference it.
-            WebRtcEngineHostPlatform.Current = new MacLinuxWebRtcEngineHost();
+            instance.StartServer(msg =>
+            {
+                if (ProtocolActivation.LooksLikeProtocolUrl(msg)) ProtocolActivation.Enqueue(msg);
+                else AvaloniaApp.RequestActivate();
+            });
+
+            // ── WebRTC ────────────────────────────────────────────────────────
+            // The real engine host (Softphone.WebRtc.AvaloniaWebRtcEngineHost over
+            // NativeWebView / WKWebView) is created lazily by Avalonia MainWindow via
+            // DesktopAppController.WebRtcHostFactory. MacLinuxWebRtcEngineHost remains
+            // only as a no-op fallback when the platform has no usable web engine.
 
             // ── Start Avalonia UI ─────────────────────────────────────────────
-            AvaloniaAppBuilder
-                .BuildAvaloniaApp()
-                .StartWithClassicDesktopLifetime(args);
+            try
+            {
+                AvaloniaAppBuilder
+                    .BuildAvaloniaApp()
+                    .StartWithClassicDesktopLifetime(args);
+            }
+            finally
+            {
+                instance.Dispose();
+            }
         }
-    }
-
-    /// <summary>
-    /// Cross-platform accessor for the active IWebRtcEngineHost instance.
-    /// On Windows the host is constructed and attached inside App.xaml.cs.
-    /// On macOS/Linux Program.Main() sets it to MacLinuxWebRtcEngineHost.
-    /// </summary>
-    public static class WebRtcEngineHostPlatform
-    {
-        public static IWebRtcEngineHost? Current { get; set; }
     }
 }
 

@@ -134,6 +134,7 @@ namespace Softphone
 
         // Events (IAudioSource)
         public event EncodedSampleDelegate? OnAudioSourceEncodedSample;
+        public event Action<EncodedAudioFrame>? OnAudioSourceEncodedFrameReady;
 #pragma warning disable CS0067 // Event is never used (required by interface)
         public event RawAudioSampleDelegate? OnAudioSourceRawSample;
 #pragma warning restore CS0067
@@ -143,7 +144,8 @@ namespace Softphone
         public event SourceErrorDelegate? OnAudioSinkError;
 
         // IAudioSource interface methods (not properties)
-        public bool HasEncodedAudioSubscribers() => OnAudioSourceEncodedSample != null;
+        public bool HasEncodedAudioSubscribers() =>
+            OnAudioSourceEncodedSample != null || OnAudioSourceEncodedFrameReady != null;
         public bool IsAudioSourcePaused() => _isPaused;
 
         public WasapiAudioEndPoint(AudioEncoder audioEncoder, int audioOutDeviceIndex = -1, int audioInDeviceIndex = -1)
@@ -481,7 +483,7 @@ namespace Softphone
                             var encoded = _audioEncoder.EncodeAudio(_captureFrame, _sendFormat.Value);
                             if (encoded != null && encoded.Length > 0)
                             {
-                                OnAudioSourceEncodedSample?.Invoke((uint)FRAME_SAMPLES, encoded);
+                                NotifyEncodedFrameSent(encoded);
 
                                 int count = Interlocked.Increment(ref _captureFramesSent);
                                 if (count == 1)
@@ -521,7 +523,7 @@ namespace Softphone
                         var encoded = _audioEncoder.EncodeAudio(_captureFrame, _sendFormat.Value);
                         if (encoded != null && encoded.Length > 0)
                         {
-                            OnAudioSourceEncodedSample?.Invoke((uint)FRAME_SAMPLES, encoded);
+                            NotifyEncodedFrameSent(encoded);
 
                             int count = Interlocked.Increment(ref _captureFramesSent);
                             if (count == 1)
@@ -673,32 +675,46 @@ namespace Softphone
             if (_isClosed || _playbackBuffer == null || payload == null || payload.Length == 0)
                 return;
 
+            AudioFormat format;
+            if (_recvFormat != null && _recvFormat.Value.FormatID == payloadID)
+            {
+                format = _recvFormat.Value;
+            }
+            else
+            {
+                var matchingFormat = _supportedFormats.FirstOrDefault(f => f.FormatID == payloadID);
+                if (matchingFormat.FormatID != payloadID)
+                    return;
+                format = matchingFormat;
+            }
+
+            TryPlayEncodedPayload(payload, format, payloadID);
+        }
+
+        public void GotEncodedMediaFrame(EncodedAudioFrame encodedMediaFrame)
+        {
+            if (_isClosed || _playbackBuffer == null)
+                return;
+
+            var payload = encodedMediaFrame.EncodedAudio;
+            if (payload == null || payload.Length == 0)
+                return;
+
+            var format = encodedMediaFrame.AudioFormat;
+            TryPlayEncodedPayload(payload, format, format.FormatID);
+        }
+
+        private void TryPlayEncodedPayload(byte[] payload, AudioFormat format, int payloadID)
+        {
             // Filter non-audio payload types (DTMF, Comfort Noise)
             if (payloadID == 101 || payloadID == 13 || payloadID >= 96)
             {
-                // Dynamic payload types >= 96 are typically DTMF/CN, skip unless it matches recv format
                 if (_recvFormat == null || payloadID != _recvFormat.Value.FormatID)
                     return;
             }
 
             try
             {
-                // Find the matching audio format for decoding
-                AudioFormat format;
-                if (_recvFormat != null && _recvFormat.Value.FormatID == payloadID)
-                {
-                    format = _recvFormat.Value;
-                }
-                else
-                {
-                    // Try to find format by payload type
-                    var matchingFormat = _supportedFormats.FirstOrDefault(f => f.FormatID == payloadID);
-                    if (matchingFormat.FormatID != payloadID)
-                        return; // Unknown format
-                    format = matchingFormat;
-                }
-
-                // Decode encoded audio to 16-bit PCM at codec rate
                 var pcm = _audioEncoder.DecodeAudio(payload, format);
                 if (pcm == null || pcm.Length == 0) return;
 
@@ -758,6 +774,16 @@ namespace Softphone
                 if (_playbackFramesDecoded < 5)
                     MainWindow.Log($"[WasapiAudio] Decode/playback error: {ex.Message}");
             }
+        }
+
+        private void NotifyEncodedFrameSent(byte[] encoded)
+        {
+            if (_sendFormat == null)
+                return;
+
+            OnAudioSourceEncodedSample?.Invoke((uint)FRAME_SAMPLES, encoded);
+            OnAudioSourceEncodedFrameReady?.Invoke(
+                new EncodedAudioFrame(0, _sendFormat.Value, (uint)FRAME_MS, encoded));
         }
 
 

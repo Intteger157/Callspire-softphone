@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -71,6 +71,31 @@ namespace Softphone
             catch (Exception ex)
             {
                 AppLog.Log($"[RecordingAudioSink] ERROR calling original sink GotAudioRtp: {ex.Message}");
+            }
+        }
+
+        public void GotEncodedMediaFrame(EncodedAudioFrame encodedMediaFrame)
+        {
+            var payload = encodedMediaFrame.EncodedAudio;
+            if (payload != null && payload.Length > 0)
+            {
+                _sipService?.RecordInboundRtp(
+                    new IPEndPoint(IPAddress.Any, 0),
+                    0,
+                    0,
+                    0,
+                    encodedMediaFrame.AudioFormat.FormatID,
+                    false,
+                    payload);
+            }
+
+            try
+            {
+                _originalSink?.GotEncodedMediaFrame(encodedMediaFrame);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Log($"[RecordingAudioSink] ERROR calling original sink GotEncodedMediaFrame: {ex.Message}");
             }
         }
     }

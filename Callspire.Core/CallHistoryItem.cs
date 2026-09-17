@@ -42,6 +42,14 @@ namespace Softphone
         Failed          // Ошибка загрузки
     }
 
+    /// <summary>Which recording file was attached to AmoCRM on upload.</summary>
+    public enum AmoCrmUploadedRecordingSource
+    {
+        None = 0,
+        Local,
+        MikoPbx
+    }
+
     /// <summary>
     /// Контекст звонка с информацией о транспорте и идентификаторах
     /// </summary>
@@ -94,6 +102,7 @@ namespace Softphone
         public long? AmoCrmLeadId { get; set; } // ID лида в AmoCRM/Kommo, к которому прикреплён звонок
         public AmoCrmUploadStatus AmoCrmUploadStatus { get; set; } = AmoCrmUploadStatus.NotUploaded; // Статус загрузки записи в AmoCRM
         public string? AmoCrmUploadReason { get; set; } // Причина статуса (например, "File not found", "User cancelled", "Upload failed: ...")
+        public AmoCrmUploadedRecordingSource AmoCrmUploadedRecordingSource { get; set; } = AmoCrmUploadedRecordingSource.None;
 
         // Outbound CallerID from P-Asserted-Identity header (the number PBX presents to the remote party)
         public string? OutboundCallerId { get; set; }

@@ -22,34 +22,128 @@ namespace Softphone
             // FluentIcons.Avalonia SymbolIcon controls are self-contained and need no extra theme.
             Styles.Add(new FluentTheme());
 
-            // Load Phase 5 theme + shared control styles embedded as avares:// resources.
-            // The active theme (Dark/Light) is swapped at runtime by ThemeService.ApplyAvaloniaTheme.
-            LoadAvaloniaResource("avares://Callspire/Avalonia/Themes/DarkTheme.axaml");
+            // Brand palette: Dark + Light dictionaries registered as ThemeDictionaries so every
+            // {DynamicResource ...Brush} follows Application.RequestedThemeVariant, which is what
+            // ThemeService.ApplyAvaloniaTheme toggles. (Previously only DarkTheme was merged and the
+            // Light theme never took effect.)
+            LoadThemeDictionaries(
+                darkUri:  "avares://Callspire/Avalonia/Themes/DarkTheme.axaml",
+                lightUri: "avares://Callspire/Avalonia/Themes/LightTheme.axaml");
+
             LoadAvaloniaResource("avares://Callspire/Avalonia/Styles/CommonStyles.axaml");
         }
 
         public override void OnFrameworkInitializationCompleted()
         {
-            // Phase 5: still co-existing with WPF — no desktop lifetime wiring here.
-            // Phase 6 will add:
-            //   if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
-            //       desktop.MainWindow = new Softphone.Avalonia.MainWindow(...);
+            // Theme must be resolved before the first window is shown, otherwise the
+            // window is created with the default variant and re-styled a frame later.
+            try { ThemeService.EnsureAvaloniaInitialized(); }
+            catch (Exception ex) { AppLog.Log($"[AvaloniaApp] Theme init: {ex.Message}"); }
+
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            {
+                desktop.ShutdownMode = global::Avalonia.Controls.ShutdownMode.OnMainWindowClose;
+
+                var controller = Softphone.AppHost.DesktopAppController.CreateFromSettings();
+                var main = new Softphone.Avalonia.MainWindow(controller);
+                desktop.MainWindow = main;
+
+                desktop.ShutdownRequested += (_, _) =>
+                {
+                    try { controller.ShutdownTelephonyBestEffort(); } catch { }
+                };
+                desktop.Exit += (_, _) =>
+                {
+                    try { controller.Dispose(); } catch { }
+                };
+
+                main.Show();
+                _ = controller.StartAsync();
+
+                // ── click-to-call plumbing ───────────────────────────────────
+                _controller = controller;
+                _mainWindow = main;
+                Softphone.Platform.ProtocolActivation.AttachHandler(url =>
+                    global::Avalonia.Threading.Dispatcher.UIThread.Post(() => controller.HandleProtocolUrl(url)));
+
+                // Linux/xdg-open or manual launch: URL as a command-line argument.
+                var fromArgs = Softphone.Platform.ProtocolActivation.FindInArgs(desktop.Args);
+                if (fromArgs != null) Softphone.Platform.ProtocolActivation.Enqueue(fromArgs);
+
+                // macOS: LaunchServices delivers callspire:// via application:openURLs: → IActivatableLifetime.
+                if (TryGetFeature(typeof(IActivatableLifetime)) is IActivatableLifetime activatable)
+                {
+                    activatable.Activated += (_, e) =>
+                    {
+                        switch (e)
+                        {
+                            case ProtocolActivatedEventArgs p when e.Kind == ActivationKind.OpenUri:
+                                Softphone.Platform.ProtocolActivation.Enqueue(p.Uri.ToString());
+                                break;
+                            case { Kind: ActivationKind.Reopen }:
+                                RequestActivate();
+                                break;
+                        }
+                    };
+                }
+            }
+
             base.OnFrameworkInitializationCompleted();
         }
 
+        private static Softphone.AppHost.DesktopAppController? _controller;
+        private static Softphone.Avalonia.MainWindow? _mainWindow;
+
+        /// <summary>Bring the main window forward (second instance launched, dock icon click).</summary>
+        public static void RequestActivate()
+        {
+            global::Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                try
+                {
+                    var w = _mainWindow;
+                    if (w == null) return;
+                    if (!w.IsVisible) w.Show();
+                    if (w.WindowState == global::Avalonia.Controls.WindowState.Minimized)
+                        w.WindowState = global::Avalonia.Controls.WindowState.Normal;
+                    w.Activate();
+                }
+                catch (Exception ex) { AppLog.Log($"[AvaloniaApp] activate: {ex.Message}"); }
+            });
+        }
+
         // ── Helpers ───────────────────────────────────────────────────────────
-        private void LoadAvaloniaResource(string uri)
+        private void LoadThemeDictionaries(string darkUri, string lightUri)
+        {
+            var dark  = TryLoadDictionary(darkUri);
+            var light = TryLoadDictionary(lightUri);
+            if (dark == null && light == null) return;
+
+            var themed = new global::Avalonia.Controls.ResourceDictionary();
+            if (dark != null)  themed.ThemeDictionaries[ThemeVariant.Dark]  = dark;
+            if (light != null) themed.ThemeDictionaries[ThemeVariant.Light] = light;
+            // Default (unspecified) variant falls back to Dark to preserve the historic look.
+            if (dark != null)  themed.ThemeDictionaries[ThemeVariant.Default] = dark;
+            Resources.MergedDictionaries.Add(themed);
+        }
+
+        private static global::Avalonia.Controls.ResourceDictionary? TryLoadDictionary(string uri)
         {
             try
             {
-                var dict = (global::Avalonia.Controls.ResourceDictionary)
-                    AvaloniaXamlLoader.Load(new Uri(uri));
-                Resources.MergedDictionaries.Add(dict);
+                return (global::Avalonia.Controls.ResourceDictionary)AvaloniaXamlLoader.Load(new Uri(uri));
             }
             catch (Exception ex)
             {
                 AppLog.Log($"[AvaloniaApp] Warning: could not load resource '{uri}': {ex.Message}");
+                return null;
             }
+        }
+
+        private void LoadAvaloniaResource(string uri)
+        {
+            var dict = TryLoadDictionary(uri);
+            if (dict != null) Resources.MergedDictionaries.Add(dict);
         }
     }
 

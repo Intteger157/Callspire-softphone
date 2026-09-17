@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -58,6 +58,12 @@ namespace Softphone
         {
             add => _originalSource.OnAudioSourceEncodedSample += value;
             remove => _originalSource.OnAudioSourceEncodedSample -= value;
+        }
+
+        public event Action<EncodedAudioFrame>? OnAudioSourceEncodedFrameReady
+        {
+            add => _originalSource.OnAudioSourceEncodedFrameReady += value;
+            remove => _originalSource.OnAudioSourceEncodedFrameReady -= value;
         }
 
         private event RawAudioSampleDelegate? _onAudioSourceRawSample;

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Linq;
@@ -236,6 +236,12 @@ namespace Softphone
         private IPAddress? _lastKnownGoodServerIp;
         private volatile bool _outgoingInviteReceivedSipResponse;
         private bool _lastFailureWasConnectTimeout;
+
+        /// <summary>True when DNS returned only VPN/virtual IPs and no cached good IP is available.</summary>
+        public bool ServerDnsUnusable { get; private set; }
+
+        /// <summary>Last registration failure message (for UI diagnostics).</summary>
+        public string? LastRegistrationError { get; private set; }
 
         /// <summary>True when the last outgoing call failed before any SIP response (TLS/DNS/VPN routing).</summary>
         public bool LastFailureWasConnectTimeout => _lastFailureWasConnectTimeout;
@@ -1053,9 +1059,13 @@ namespace Softphone
             else
             {
                 _resolvedServerIp = dnsIp;
+                ServerDnsUnusable = dnsIp == null && _lastKnownGoodServerIp == null;
                 if (dnsIp == null)
                     AppLog.Log($"[SipService] {label}WARNING: Could not resolve server '{host}' to a usable IP");
             }
+
+            if (_resolvedServerIp != null)
+                ServerDnsUnusable = false;
         }
 
         private string GetServerPartForUri()
@@ -2196,6 +2206,31 @@ namespace Softphone
         }
 
         /// <summary>
+        /// IP to advertise in SDP c= line. Prefer STUN public IP when the local address is VPN/virtual
+        /// or symmetric NAT was detected — otherwise the PBX sends RTP to an unreachable address (e.g. 198.18.x.x).
+        /// </summary>
+        private string GetSdpAdvertiseAddress(string localIP)
+        {
+            string? publicIP = null;
+            try { publicIP = GetCachedPublicIP(); } catch { }
+
+            if (string.IsNullOrWhiteSpace(publicIP))
+                return localIP;
+
+            if (_isSecondaryConnection)
+                return publicIP;
+
+            if (IPAddress.TryParse(localIP, out var lip) && IsVpnOrVirtualInterface(lip))
+                return publicIP;
+
+            if (!string.IsNullOrEmpty(_detectedNatType)
+                && _detectedNatType.Contains("Symmetric", StringComparison.OrdinalIgnoreCase))
+                return publicIP;
+
+            return localIP;
+        }
+
+        /// <summary>
         /// Closes VoIPMediaSession and disposes audio devices. Required after cancel/BYE paths that
         /// only called Close() without nulling — otherwise the next call reuses closed WASAPI endpoints.
         /// </summary>
@@ -2241,6 +2276,8 @@ namespace Softphone
 
             ReleaseMediaSessionAndAudio("reinitialize");
 
+            string connLabel = _isSecondaryConnection ? "[Connection2] " : "";
+
             try
             {
                 SetStatus("Initializing audio...");
@@ -2248,12 +2285,10 @@ namespace Softphone
                 var audioEncoder = new AudioEncoder();
                 _audioEncoder = audioEncoder;
 
-                string connLabel = _isSecondaryConnection ? "[Connection2] " : "";
-
                 var deviceFactory = _audioDeviceFactory ?? AudioDeviceFactory.Default
                     ?? throw new InvalidOperationException("No IAudioDeviceFactory available (platform head must set AudioDeviceFactory.Default at startup)");
 
-                // Платформенная фабрика выбирает бэкенд (Windows: WASAPI → WinMM; macOS/Linux: PortAudio).
+                // Платформенная фабрика выбирает бэкенд (Windows: WASAPI → PortAudio; macOS/Linux: PortAudio).
                 // Prioritize PCMA (A-law, PT=8): VoIPMediaSession picks the FIRST codec from our
                 // list, PCMA is the international standard, PCMU stays as fallback in the offer.
                 _audioDevices = deviceFactory.Create(new AudioDeviceOptions
@@ -2353,7 +2388,8 @@ namespace Softphone
                 }
                 
                 string mode = _audioDevices?.Description ?? "unknown";
-                AppLog.Log($"[SipService] {connLabel}Audio chain: {mode} → VoIPMediaSession (native codecs, RTP bind={rtpBindAddress})");
+                var sipAsm = typeof(VoIPMediaSession).Assembly.GetName();
+                AppLog.Log($"[SipService] {connLabel}Audio chain: {mode} → VoIPMediaSession (SIPSorcery {sipAsm.Version}, RTP bind={rtpBindAddress})");
                 
                 // Информация о NAT traversal
                 string? publicIP = GetCachedPublicIP();
@@ -2379,6 +2415,10 @@ namespace Softphone
                     errorMessage += $" ({ex.InnerException.Message})";
                 }
                 errorMessage += ". Please check your audio devices are connected and not being used by another application.";
+
+                AppLog.Log($"[SipService] {connLabel}Audio initialization failed: {ex.GetType().Name}: {ex.Message}");
+                if (ex.InnerException != null)
+                    AppLog.Log($"[SipService] {connLabel}  Inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}");
                 
                 SetStatus(errorMessage);
                 
@@ -2599,19 +2639,12 @@ namespace Softphone
                                 // 2. Firewall блокирует входящие UDP пакеты
                                 // 3. Провайдер не может достучаться до локального IP
                                 string localIP = GetLocalIPAddress();
-                                string? publicIP = null;
-                                try { publicIP = GetCachedPublicIP(); } catch { }
+                                string advertiseIP = GetSdpAdvertiseAddress(localIP);
                                 
-                                // Заменяем 0.0.0.0 на локальный IP в SDP
+                                // Заменяем 0.0.0.0 на advertise IP в SDP
                                 if (sdpBody.Contains("c=IN IP4 0.0.0.0"))
                                 {
-                                    string modifiedSdp = sdpBody.Replace("c=IN IP4 0.0.0.0", $"c=IN IP4 {localIP}");
-                                    // For secondary connection behind NAT, prefer advertising our public (STUN) address to PBX/SBC.
-                                    if (_isSecondaryConnection && !string.IsNullOrWhiteSpace(publicIP))
-                                    {
-                                        modifiedSdp = modifiedSdp.Replace($"c=IN IP4 {localIP}", $"c=IN IP4 {publicIP}");
-                                        AppLog.Log($"[SipService] [Connection2] SDP c= rewritten to public IP {publicIP} (was {localIP})");
-                                    }
+                                    string modifiedSdp = sdpBody.Replace("c=IN IP4 0.0.0.0", $"c=IN IP4 {advertiseIP}");
 
                                     request.Body = modifiedSdp;
                                     // IMPORTANT: We mutate the SIP request after it has been built.
@@ -2625,30 +2658,27 @@ namespace Softphone
                                         }
                                     }
                                     catch { }
-                                    AppLog.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}✅ Replaced 0.0.0.0 with local IP {localIP} in SDP");
+                                    AppLog.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}✅ SDP c= set to {advertiseIP} (local={localIP})");
+                                }
+                                else if (!string.Equals(advertiseIP, localIP, StringComparison.Ordinal)
+                                         && sdpBody.Contains($"c=IN IP4 {localIP}"))
+                                {
+                                    string modifiedSdp = sdpBody.Replace($"c=IN IP4 {localIP}", $"c=IN IP4 {advertiseIP}");
+                                    request.Body = modifiedSdp;
+                                    try
+                                    {
+                                        if (request.Header != null)
+                                        {
+                                            request.Header.ContentType = "application/sdp";
+                                            request.Header.ContentLength = Encoding.UTF8.GetByteCount(modifiedSdp);
+                                        }
+                                    }
+                                    catch { }
+                                    AppLog.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}✅ SDP c= rewritten to {advertiseIP} (was {localIP})");
                                 }
                                 else
                                 {
-                                    // If SDP already contains a connection line with our local IP, and we have public IP, rewrite it.
-                                    if (_isSecondaryConnection && !string.IsNullOrWhiteSpace(publicIP) && sdpBody.Contains($"c=IN IP4 {localIP}"))
-                                    {
-                                        string modifiedSdp = sdpBody.Replace($"c=IN IP4 {localIP}", $"c=IN IP4 {publicIP}");
-                                        request.Body = modifiedSdp;
-                                        try
-                                        {
-                                            if (request.Header != null)
-                                            {
-                                                request.Header.ContentType = "application/sdp";
-                                                request.Header.ContentLength = Encoding.UTF8.GetByteCount(modifiedSdp);
-                                            }
-                                        }
-                                        catch { }
-                                        AppLog.Log($"[SipService] [Connection2] SDP c= rewritten to public IP {publicIP} (was {localIP})");
-                                    }
-                                    else
-                                    {
-                                        AppLog.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}ℹ️ Using local IP {localIP} in SDP for NAT traversal");
-                                    }
+                                    AppLog.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2]" : "")}ℹ️ Using {advertiseIP} in SDP for NAT traversal");
                                 }
                                 
                                 // Keep NAT troubleshooting concise; TURN is for WebRTC, not SIP.
@@ -3786,6 +3816,7 @@ namespace Softphone
             _regUserAgent.RegistrationFailed += (uri, response, errorMessage) =>
             {
                 IsRegistered = false;
+                LastRegistrationError = errorMessage;
                 string connectionLabel = _isSecondaryConnection ? "[Connection2] " : "";
                 AppLog.Log($"[SipService] {connectionLabel}Registration failed: {errorMessage}, URI: {uri}");
                 if (response != null)
@@ -3880,6 +3911,8 @@ namespace Softphone
             _regUserAgent.RegistrationSuccessful += (uri, response) =>
             {
                 IsRegistered = true;
+                LastRegistrationError = null;
+                ServerDnsUnusable = false;
                 if (response != null && response.Header != null)
                 {
                     var contactHeader = response.Header.Contact;

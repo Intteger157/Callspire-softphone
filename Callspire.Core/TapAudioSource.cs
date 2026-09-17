@@ -34,6 +34,7 @@ namespace Softphone
 
         public event RawAudioSampleDelegate? OnAudioSourceRawSample;
         public event EncodedSampleDelegate? OnAudioSourceEncodedSample;
+        public event Action<EncodedAudioFrame>? OnAudioSourceEncodedFrameReady;
         public event SourceErrorDelegate? OnAudioSourceError;
 
         public Task StartAudio()
@@ -48,6 +49,7 @@ namespace Softphone
                 // Подписываемся на внутренний источник
                 _inner.OnAudioSourceRawSample += Inner_OnAudioSourceRawSample;
                 _inner.OnAudioSourceEncodedSample += Inner_OnAudioSourceEncodedSample;
+                _inner.OnAudioSourceEncodedFrameReady += Inner_OnAudioSourceEncodedFrameReady;
                 
                 AppLog.Log($"[TapAudioSource] Subscribed to inner source ({_inner.GetType().Name}), starting audio...");
             }
@@ -63,6 +65,7 @@ namespace Softphone
                 {
                     _inner.OnAudioSourceRawSample -= Inner_OnAudioSourceRawSample;
                     _inner.OnAudioSourceEncodedSample -= Inner_OnAudioSourceEncodedSample;
+                    _inner.OnAudioSourceEncodedFrameReady -= Inner_OnAudioSourceEncodedFrameReady;
                     _started = false;
                     AppLog.Log("[TapAudioSource] Unsubscribed from inner source");
                 }
@@ -118,11 +121,17 @@ namespace Softphone
             OnAudioSourceEncodedSample?.Invoke(durationMs, sample);
         }
 
+        private void Inner_OnAudioSourceEncodedFrameReady(EncodedAudioFrame frame)
+        {
+            OnAudioSourceEncodedFrameReady?.Invoke(frame);
+        }
+
         public Task PauseAudio() => _inner.PauseAudio();
         public Task ResumeAudio() => _inner.ResumeAudio();
         public void SetAudioSourceFormat(AudioFormat audioFormat) => _inner.SetAudioSourceFormat(audioFormat);
         public void RestrictFormats(Func<AudioFormat, bool> filter) => _inner.RestrictFormats(filter);
-        public bool HasEncodedAudioSubscribers() => _inner.HasEncodedAudioSubscribers();
+        public bool HasEncodedAudioSubscribers() =>
+            _inner.HasEncodedAudioSubscribers() || OnAudioSourceEncodedFrameReady != null;
         public bool IsAudioSourcePaused() => _inner.IsAudioSourcePaused();
         public List<AudioFormat> GetAudioSourceFormats() => _inner.GetAudioSourceFormats();
         

@@ -43,6 +43,7 @@ namespace Softphone
             bool isSecondaryWebRtc = false)
         {
             InitializeComponent();
+            ShowInTaskbar = false;
 
             _mainCallerIdItems = mainCallerIdItems ?? new List<CallerIdItem>();
             _initialSelectedMainCallerId = selectedMainCallerId;

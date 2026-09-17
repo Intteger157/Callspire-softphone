@@ -8,14 +8,19 @@ no duplicated auth/CDR logic.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
+
+log = logging.getLogger("gateway_web_softphone")
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.types import ASGIApp
 
@@ -54,6 +59,39 @@ def _session_secure_flag() -> bool:
     if raw == "false":
         return False
     return False
+
+
+def _strip_cookie_persistence(set_cookie: bytes) -> bytes:
+    """Remove Max-Age/Expires so the browser keeps a session cookie only."""
+    text = set_cookie.decode("latin-1")
+    parts = text.split(";")
+    kept = [parts[0]]
+    for part in parts[1:]:
+        name = part.strip().split("=", 1)[0].lower()
+        if name in ("max-age", "expires"):
+            continue
+        kept.append(part)
+    return ";".join(kept).encode("latin-1")
+
+
+class PublicComputerSessionMiddleware(BaseHTTPMiddleware):
+    """When ``public_computer`` is set in session, drop persistent cookie attributes."""
+
+    def __init__(self, app: ASGIApp, *, session_cookie_name: str):
+        super().__init__(app)
+        self.session_cookie_name = session_cookie_name
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        if not request.session.get("public_computer"):
+            return response
+        prefix = f"{self.session_cookie_name}=".encode("latin-1")
+        raw = list(response.raw_headers)
+        response.raw_headers = [
+            (name, _strip_cookie_persistence(value) if name.lower() == b"set-cookie" and value.startswith(prefix) else value)
+            for name, value in raw
+        ]
+        return response
 
 
 @dataclass
@@ -114,6 +152,14 @@ class WebSoftphoneConfig:
         )
 
 
+def _asgi_transport(asgi_app: ASGIApp) -> httpx.ASGITransport:
+    """httpx >= 0.27 supports ``lifespan='off'``; older versions do not."""
+    try:
+        return httpx.ASGITransport(app=asgi_app, lifespan="off")
+    except TypeError:
+        return httpx.ASGITransport(app=asgi_app)
+
+
 async def _asgi_fetch(
     request: Request,
     method: str,
@@ -122,9 +168,13 @@ async def _asgi_fetch(
     extra_headers: dict[str, str] | None = None,
     content: bytes | None = None,
 ) -> httpx.Response:
-    """Dispatch a sub-request to the same FastAPI/Starlette app (in-process)."""
-    app: ASGIApp = request.app
-    transport = httpx.ASGITransport(app=app, lifespan="off")
+    """Dispatch a sub-request to the same FastAPI/Starlette app (in-process).
+
+    Uses the ASGI stack captured **before** SessionMiddleware so nested calls do
+    not re-enter session / BaseHTTPMiddleware (that pattern returns 500s).
+    """
+    asgi_app: ASGIApp = getattr(request.app.state, "_callspire_internal_asgi", None) or request.app
+    transport = _asgi_transport(asgi_app)
     headers: list[tuple[str, str]] = []
     for k, v in request.headers.items():
         kl = k.lower()
@@ -179,6 +229,9 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
 
     https_only = _session_secure_flag()
 
+    # Sub-requests via httpx.ASGITransport must bypass session middleware below.
+    app.state._callspire_internal_asgi = app.middleware_stack
+
     app.add_middleware(
         SessionMiddleware,
         secret_key=cfg.session_secret,
@@ -187,10 +240,15 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
         same_site="lax",
         https_only=https_only,
     )
+    app.add_middleware(
+        PublicComputerSessionMiddleware,
+        session_cookie_name=cfg.session_cookie_name,
+    )
 
-    router = APIRouter(tags=["web-softphone"])
     base = cfg.softphone_base.rstrip("/")
-    api = cfg.api_prefix.rstrip("/")
+    # Browser session API lives under /softphone/api — separate from desktop JWT routes at /api/*.
+    api = f"{base}/api"
+    router = APIRouter(tags=["web-softphone"])
 
     def require_session(request: Request) -> None:
         if not request.session.get("proxyJwt") or not request.session.get("me"):
@@ -206,13 +264,19 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
         return extra
 
     async def proxy_json(request: Request, method: str, path: str, body: Any | None = None) -> Any:
-        extra = await _proxy_headers(request)
-        content: bytes | None = None
-        if body is not None:
-            raw = json.dumps(body).encode()
-            extra.setdefault("Content-Type", "application/json")
-            content = raw
-        r = await _asgi_fetch(request, method, path, extra_headers=extra, content=content)
+        try:
+            extra = await _proxy_headers(request)
+            content: bytes | None = None
+            if body is not None:
+                raw = json.dumps(body).encode()
+                extra.setdefault("Content-Type", "application/json")
+                content = raw
+            r = await _asgi_fetch(request, method, path, extra_headers=extra, content=content)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.exception("proxy_json %s %s failed", method, path)
+            raise HTTPException(502, f"Gateway proxy error: {exc!s}") from exc
         if r.status_code >= 400:
             detail = _json_or_text(r)
             if isinstance(detail, str):
@@ -221,8 +285,11 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
                 msg = detail.get("detail", detail.get("message", r.reason_phrase))
                 if isinstance(msg, list):
                     msg = "; ".join(str(x) for x in msg)
+                elif not isinstance(msg, str):
+                    msg = str(msg)
             else:
                 msg = r.reason_phrase
+            log.warning("proxy_json %s %s -> %s: %s", method, path, r.status_code, msg)
             raise HTTPException(status_code=r.status_code, detail=msg)
         return _json_or_text(r)
 
@@ -256,6 +323,7 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
             raise HTTPException(400, detail="Invalid JSON")
         email = str(payload.get("email") or "").strip().lower()
         password = str(payload.get("password") or "")
+        public_computer = bool(payload.get("public_computer"))
         if not email or not password:
             raise HTTPException(400, detail="email and password are required")
 
@@ -279,12 +347,15 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
 
         request.session.clear()
         request.session["proxyJwt"] = data["token"]
-        request.session["me"] = {
+        request.session["public_computer"] = public_computer
+        me = {
             "email": email,
             "extension": data.get("extension") or "",
             "must_change_password": bool(data.get("must_change_password")),
+            "public_computer": public_computer,
         }
-        return {"ok": True, "me": request.session["me"]}
+        request.session["me"] = me
+        return {"ok": True, "me": me, "public_computer": public_computer}
 
     @router.post(f"{api}/auth/logout")
     async def browser_logout(request: Request):
@@ -296,7 +367,9 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
     @router.get(f"{api}/me")
     async def browser_me(request: Request):
         require_session(request)
-        return request.session["me"]
+        me = dict(request.session["me"])
+        me["public_computer"] = bool(request.session.get("public_computer"))
+        return me
 
     @router.post(f"{api}/me/change-password")
     async def browser_change_password(request: Request):
@@ -370,8 +443,12 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
                 raw_ice = r.get("iceServers")
                 if isinstance(raw_ice, list):
                     ice_servers = raw_ice
-        except HTTPException:
+        except HTTPException as exc:
             # Same as BFF: leave ws_url empty on 403 / failure
+            log.warning("webrtc config proxy: %s", exc.detail)
+        except Exception as exc:
+            log.exception("webrtc config proxy failed")
+            # Never fail the whole page load because WSS lookup failed
             pass
 
         out: dict[str, Any] = {
@@ -435,6 +512,57 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
             path += "?force_refresh=true"
         return await proxy_json(request, "GET", path)
 
+    @router.get(f"{api}/kommo/contact")
+    async def kommo_contact(request: Request, phone: str = Query("")):
+        require_session(request)
+        q = urlencode({"phone": phone}) if phone else ""
+        path = f"/api/kommo/contact?{q}" if q else "/api/kommo/contact"
+        return await proxy_json(request, "GET", path)
+
+    @router.post(f"{api}/kommo/process-call")
+    async def kommo_process_call(request: Request):
+        require_session(request)
+        body = await request.json()
+        return await proxy_json(request, "POST", "/api/kommo/process-call", body=body)
+
+    @router.get(f"{api}/kommo/process-call/{{job_id}}")
+    async def kommo_process_call_status(request: Request, job_id: str):
+        require_session(request)
+        return await proxy_json(request, "GET", f"/api/kommo/process-call/{job_id}")
+
+    @router.get(f"{api}/kommo/call-attachments")
+    async def kommo_call_attachments(request: Request, hours: int = Query(72)):
+        require_session(request)
+        path = f"/api/kommo/call-attachments?hours={hours}"
+        return await proxy_json(request, "GET", path)
+
+    @router.put(f"{api}/kommo/process-call/{{job_id}}/recording")
+    async def kommo_process_call_recording(request: Request, job_id: str):
+        require_session(request)
+        extra = await _proxy_headers(request)
+        content = await request.body()
+        ct = request.headers.get("content-type")
+        if ct:
+            extra["Content-Type"] = ct
+        r = await _asgi_fetch(
+            request,
+            "PUT",
+            f"/api/kommo/process-call/{job_id}/recording",
+            extra_headers=extra,
+            content=content,
+        )
+        if r.status_code >= 400:
+            detail = _json_or_text(r)
+            msg = detail if isinstance(detail, str) else detail.get("detail", r.reason_phrase)
+            raise HTTPException(status_code=r.status_code, detail=msg)
+        return _json_or_text(r)
+
+    @router.post(f"{api}/kommo/process-call/retry")
+    async def kommo_process_call_retry(request: Request):
+        require_session(request)
+        body = await request.json()
+        return await proxy_json(request, "POST", "/api/kommo/process-call/retry", body=body)
+
     @router.get(f"{api}/sip-auth-failures")
     async def sip_auth_failures(request: Request):
         require_session(request)
@@ -447,6 +575,18 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
         return {"ok": True}
 
     app.include_router(router)
+
+    # Legacy browser path: /api/webrtc/config (older SPA). Desktop JWT APIs stay at /api/* on app.py.
+    legacy_api = (cfg.api_prefix or "/api").rstrip("/")
+    legacy_webrtc = f"{legacy_api}/webrtc/config"
+    namespaced_webrtc = f"{api}/webrtc/config"
+    if legacy_webrtc != namespaced_webrtc:
+        webrtc_ep = next(
+            (r.endpoint for r in router.routes if getattr(r, "path", "") == namespaced_webrtc),
+            None,
+        )
+        if webrtc_ep is not None:
+            app.add_api_route(legacy_webrtc, webrtc_ep, methods=["GET"], tags=["web-softphone-legacy"])
 
     static = cfg.static_dir
     index = static / "index.html"
@@ -491,6 +631,9 @@ def mount_web_softphone(app, config: WebSoftphoneConfig | None = None) -> None:
     @app.get(f"{base}/{{full_path:path}}")
     async def softphone_spa(full_path: str):
         """Serve static files under /softphone; unknown paths -> index.html (SPA)."""
+        # Never serve index.html for /softphone/api/* — that breaks login with "HTML instead of JSON".
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(404, "API route not found - redeploy gateway_web_softphone/mount.py")
         if not index.is_file():
             return JSONResponse(
                 {"error": "softphone UI not built", "expected": str(index)},

@@ -343,5 +343,33 @@ namespace Softphone
         
         [JsonProperty("mandatory")]
         public bool Mandatory { get; set; } = false;
+
+        /// <summary>Optional macOS package (.dmg/.zip). When absent, macOS falls back to <see cref="Url"/>.</summary>
+        [JsonProperty("mac_url")]
+        public string? MacUrl { get; set; }
+
+        [JsonProperty("mac_sha256")]
+        public string? MacSha256 { get; set; }
+
+        /// <summary>Optional Linux package. When absent, Linux falls back to <see cref="Url"/>.</summary>
+        [JsonProperty("linux_url")]
+        public string? LinuxUrl { get; set; }
+
+        [JsonProperty("linux_sha256")]
+        public string? LinuxSha256 { get; set; }
+
+        /// <summary>Download URL for the current OS (platform-specific field first, then the generic <see cref="Url"/>).</summary>
+        [JsonIgnore]
+        public string PlatformUrl =>
+            OperatingSystem.IsMacOS() && !string.IsNullOrWhiteSpace(MacUrl) ? MacUrl! :
+            OperatingSystem.IsLinux() && !string.IsNullOrWhiteSpace(LinuxUrl) ? LinuxUrl! :
+            Url;
+
+        /// <summary>SHA-256 matching <see cref="PlatformUrl"/>.</summary>
+        [JsonIgnore]
+        public string? PlatformSha256 =>
+            OperatingSystem.IsMacOS() && !string.IsNullOrWhiteSpace(MacUrl) ? MacSha256 :
+            OperatingSystem.IsLinux() && !string.IsNullOrWhiteSpace(LinuxUrl) ? LinuxSha256 :
+            Sha256;
     }
 }

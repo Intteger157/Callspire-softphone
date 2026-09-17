@@ -29,6 +29,7 @@ namespace Softphone
         }
 
         public event EncodedSampleDelegate? OnAudioSourceEncodedSample;
+        public event Action<EncodedAudioFrame>? OnAudioSourceEncodedFrameReady;
         public event RawAudioSampleDelegate? OnAudioSourceRawSample;
         public event SourceErrorDelegate? OnAudioSourceError;
 
@@ -75,6 +76,7 @@ namespace Softphone
         {
             _baseSource.OnAudioSourceRawSample += OnBaseSourceRawSample;
             _baseSource.OnAudioSourceEncodedSample += OnBaseSourceEncodedSample;
+            _baseSource.OnAudioSourceEncodedFrameReady += OnBaseSourceEncodedFrameReady;
             _baseSource.OnAudioSourceError += OnBaseSourceError;
             return _baseSource.StartAudio();
         }
@@ -112,6 +114,7 @@ namespace Softphone
         {
             _baseSource.OnAudioSourceRawSample -= OnBaseSourceRawSample;
             _baseSource.OnAudioSourceEncodedSample -= OnBaseSourceEncodedSample;
+            _baseSource.OnAudioSourceEncodedFrameReady -= OnBaseSourceEncodedFrameReady;
             _baseSource.OnAudioSourceError -= OnBaseSourceError;
             return _baseSource.CloseAudio();
         }
@@ -154,6 +157,11 @@ namespace Softphone
         private void OnBaseSourceEncodedSample(uint durationMilliseconds, byte[] sample)
         {
             OnAudioSourceEncodedSample?.Invoke(durationMilliseconds, sample);
+        }
+
+        private void OnBaseSourceEncodedFrameReady(EncodedAudioFrame frame)
+        {
+            OnAudioSourceEncodedFrameReady?.Invoke(frame);
         }
 
         private void OnBaseSourceError(string errorMessage)

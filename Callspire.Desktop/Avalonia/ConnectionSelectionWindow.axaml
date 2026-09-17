@@ -13,7 +13,8 @@
 
         TransparencyLevelHint="None">
 
-    <Border Background="{DynamicResource BackgroundDarkBrush}"
+    <Border Name="WindowSurface"
+            Background="{DynamicResource BackgroundDarkBrush}"
             CornerRadius="8"
             ClipToBounds="True">
         <Grid>
@@ -22,8 +23,8 @@
                 <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
 
-            <!-- Title Bar -->
-            <Border Grid.Row="0"
+            <!-- Title Bar (custom chrome; hidden on macOS/Linux) -->
+            <Border Grid.Row="0" Name="CustomTitleBar"
                     Background="{DynamicResource BackgroundMediumBrush}"
                     CornerRadius="8,8,0,0">
                 <Grid PointerPressed="TitleBar_PointerPressed">

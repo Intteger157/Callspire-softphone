@@ -77,6 +77,9 @@ namespace Softphone
         private List<CallerIdItem> _callerIdItems = new List<CallerIdItem>();
         private readonly SemaphoreSlim _callerIdLoadSemaphore = new SemaphoreSlim(1, 1);
         private System.Threading.Timer? _callerIdListRetryTimer;
+
+        /// <summary>Runtime transport last known to be active (WebRtc/Sip). Used for WebView crash recovery.</summary>
+        private string? _lastActiveMainTransport;
         private static readonly TimeSpan _callerIdRetryFirst = TimeSpan.FromSeconds(15);
         private static readonly TimeSpan _callerIdRetryInterval = TimeSpan.FromMinutes(1);
         // Browser click-to-call: prevent delayed/duplicate auto-calls when WebRTC isn't ready yet.
@@ -87,6 +90,8 @@ namespace Softphone
         private const int PendingBrowserCallTtlSeconds = 90;
         /// <summary>When both lines are configured, wait up to this long before auto-picking a single connection (click-to-call).</summary>
         private const int ConnectionReadyWaitSeconds = 20;
+        /// <summary>When main is ready, don't block outbound calls longer than this waiting for secondary.</summary>
+        private const int SecondaryReadyGraceSeconds = 3;
 
         // Protocol click-to-call dedupe (some browsers/extensions may deliver the same protocol URL twice).
         private readonly object _protocolDedupeLock = new object();
@@ -613,6 +618,11 @@ namespace Softphone
                 try { WebRtcService.Main.DetachEngine(resetState: true); } catch { }
 
                 // Dispose old engine (if any) and recreate via existing initialization path.
+                bool forceWebRtcRecovery =
+                    string.Equals(reason, "webview_process_failed", StringComparison.OrdinalIgnoreCase)
+                    && (string.Equals(_lastActiveMainTransport, "WebRtc", StringComparison.OrdinalIgnoreCase)
+                        || WebRtcService.Main?.IsReadyForCalls == true);
+
                 await Dispatcher.InvokeAsync(() =>
                 {
                     try
@@ -637,7 +647,14 @@ namespace Softphone
                     catch { }
                 }, System.Windows.Threading.DispatcherPriority.Background);
 
-                await InitializeWebRtcServiceAsync();
+                await InitializeWebRtcServiceAsync("main", forceWebRtcRecovery);
+                
+                if (forceWebRtcRecovery)
+                {
+                    try { UpdateConnectionStatus(); } catch { }
+                    try { UpdateWebRtcIndicator(); } catch { }
+                    Log($"[MainWindow] WebRTC recovery: forced WebRTC re-init (lastTransport={_lastActiveMainTransport ?? "<none>"})");
+                }
                 
                 // Переподключаем второе подключение после восстановления WebRTC
                 try
@@ -740,6 +757,8 @@ namespace Softphone
             Log("[MainWindow] MainWindow_Loaded: Scheduling connection initialization...");
             Dispatcher.BeginInvoke(new System.Action(async () =>
             {
+                await EnsureGatewayTurnSyncedBeforeConnectAsync();
+
                 // Инициализируем основное подключение в соответствии с режимом
                 if (ShouldUseWebRtc())
                 {
@@ -765,6 +784,91 @@ namespace Softphone
             }), System.Windows.Threading.DispatcherPriority.ApplicationIdle);
         }
         
+        private async Task<bool> EnsureGatewayTurnSyncedBeforeConnectAsync()
+        {
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (!File.Exists(settingsPath))
+                    return false;
+
+                string json = File.ReadAllText(settingsPath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null || !settings.EnableMikoPbxCdr)
+                    return false;
+
+                if (_mikoPbxCdrService == null)
+                    InitializeMikoPbxCdrService(settings);
+                if (_mikoPbxCdrService == null)
+                    return false;
+
+                bool changed = await GatewayTurnSync.TrySyncAsync(_mikoPbxCdrService, settings, settingsPath);
+                if (changed)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        Application.Current.Windows.OfType<SettingsWindow>().FirstOrDefault()?.RefreshTurnFieldsFromSettings();
+                    });
+
+                    if (ShouldUseWebRtc() && !CallHandlingHelpers.IsWebRtcCallActive())
+                        await TryReinitializeMainWebRtcAfterTurnSyncAsync(settingsPath);
+                }
+                return changed;
+            }
+            catch (Exception ex)
+            {
+                Log($"[PBX Gateway] TURN sync error: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task TryReinitializeMainWebRtcAfterTurnSyncAsync(string settingsPath)
+        {
+            try
+            {
+                if (!File.Exists(settingsPath))
+                    return;
+
+                string json = File.ReadAllText(settingsPath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null)
+                    return;
+
+                bool engineInitialized = WebRtcService.Main.IsReadyForCalls;
+                if (!engineInitialized)
+                {
+                    try
+                    {
+                        var engineField = typeof(WebRtcService).GetField("_engine", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                        var engine = engineField?.GetValue(WebRtcService.Main);
+                        if (engine != null)
+                        {
+                            var isInitializedProp = engine.GetType().GetProperty("IsInitialized");
+                            if (isInitializedProp != null)
+                                engineInitialized = (bool)(isInitializedProp.GetValue(engine) ?? false);
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!engineInitialized)
+                    return;
+
+                var config = GetWebRtcConfigForConnection(false);
+                string? mainRtcPassword = SipPasswordProvider.GetMainWebRtcPassword(settings);
+                if (config == null || mainRtcPassword == null)
+                    return;
+
+                await WebRtcService.Main.ReinitializeUAAsync(
+                    config.WsUri, config.SipUri, AppSettings.EffectiveMainWebRtcUsername(settings) ?? "", mainRtcPassword);
+                Log("[PBX Gateway] TURN sync: WebRTC UA reinitialized with gateway TURN");
+            }
+            catch (Exception ex)
+            {
+                Log($"[PBX Gateway] TURN sync reinit error: {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// Инициализирует WebRTC сервис
         /// </summary>
@@ -773,11 +877,16 @@ namespace Softphone
             return InitializeWebRtcServiceAsync("main");
         }
 
+        private static bool HasMainWebRtcCredentials(AppSettings settings) =>
+            AppSettings.HasMeaningfulWebRtcWsUri(settings.WebRtcWsUri)
+            && !string.IsNullOrEmpty(AppSettings.EffectiveMainWebRtcUsername(settings))
+            && SipPasswordProvider.GetMainWebRtcPassword(settings) != null;
+
         /// <summary>
         /// Инициализирует WebRTC слот (main / secondary). Общий WebView2-хост создаётся
         /// один раз — при первом вызове; последующие слоты только подключаются к нему.
         /// </summary>
-        private async Task InitializeWebRtcServiceAsync(string slot)
+        private async Task InitializeWebRtcServiceAsync(string slot, bool forceWebRtcRecovery = false)
         {
             try
             {
@@ -825,8 +934,9 @@ namespace Softphone
                     : AppSettings.EffectiveMainWebRtcUsername(settings);
                 bool transportEnabled = isSecondary
                     ? AppSettings.SecondaryLineUsesWebRtc(settings)
-                    : ShouldUseWebRtcForConnection(false);
-                Log($"[MainWindow] InitializeWebRtcServiceAsync(slot={slot}): transportEnabled={transportEnabled}, wsUri={(string.IsNullOrEmpty(wsUri) ? "empty" : "set")}, user={(string.IsNullOrEmpty(username) ? "empty" : "set")}, pass={(string.IsNullOrEmpty(sipPassword) ? "empty" : "set")}");
+                    : (forceWebRtcRecovery && HasMainWebRtcCredentials(settings))
+                      || ShouldUseWebRtcForConnection(false);
+                Log($"[MainWindow] InitializeWebRtcServiceAsync(slot={slot}): transportEnabled={transportEnabled}, forceRecovery={forceWebRtcRecovery}, wsUri={(string.IsNullOrEmpty(wsUri) ? "empty" : "set")}, user={(string.IsNullOrEmpty(username) ? "empty" : "set")}, pass={(string.IsNullOrEmpty(sipPassword) ? "empty" : "set")}");
 
                 if (!transportEnabled ||
                     string.IsNullOrEmpty(wsUri) ||
@@ -962,6 +1072,11 @@ namespace Softphone
                 var config = GetWebRtcConfigForConnection(isSecondary);
                 if (config != null)
                 {
+                    if (sharedHost is WebRtcEngineHost concreteHost)
+                    {
+                        await concreteHost.WaitForSlotReadyAsync(slot, TimeSpan.FromSeconds(8)).ConfigureAwait(false);
+                    }
+
                     await slotService.ReinitializeUAAsync(
                         config.WsUri,
                         config.SipUri,
@@ -1099,7 +1214,7 @@ namespace Softphone
                                 break;
                             }
 
-                            // ВАЖНО: WebRtcService уже обновил _registered в OnEngineEvent
+                            _lastActiveMainTransport = "WebRtc";
                             // Проверяем состояние перед обновлением
                             bool isReady = WebRtcService.Main?.IsReadyForCalls ?? false;
                             bool isConnectedCheck = IsConnected;
@@ -1249,26 +1364,10 @@ namespace Softphone
         }
         
         /// <summary>Digits-only comparison so "+1 702-900-0000" matches "+17029000000" from SIP.</summary>
-        private static string NormalizePhoneDigits(string? s)
-        {
-            if (string.IsNullOrEmpty(s)) return "";
-            return new string(s.Where(char.IsDigit).ToArray());
-        }
+        private static string NormalizePhoneDigits(string? s) => PhoneNumberHelper.DigitsOnly(s);
 
-        /// <summary>
-        /// Compact destination for SIP/AMI/WebRTC: strip spaces and punctuation; add leading +
-        /// for E.164 (&gt;= 11 digits or user typed +). Short internal extensions (no +, ≤6 digits) unchanged.
-        /// </summary>
-        private static string NormalizePhoneForDial(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return "";
-            var trimmed = raw.Trim();
-            var digits = NormalizePhoneDigits(trimmed);
-            if (digits.Length == 0) return trimmed;
-            if (trimmed.StartsWith("+", StringComparison.Ordinal) || digits.Length >= 11)
-                return "+" + digits;
-            return digits;
-        }
+        /// <summary>See <see cref="PhoneNumberHelper.NormalizeForDial"/>.</summary>
+        private static string NormalizePhoneForDial(string? raw) => PhoneNumberHelper.NormalizeForDial(raw);
 
         private static bool PhoneNumbersLooselyMatch(string? a, string? b)
         {
@@ -1287,6 +1386,221 @@ namespace Softphone
             if (string.IsNullOrEmpty(number) || _allowedCallerIds.Count == 0)
                 return false;
             return _allowedCallerIds.Any(id => PhoneNumbersLooselyMatch(number, id));
+        }
+
+        /// <summary>
+        /// PBX Originate rings the JWT/gateway extension. When it differs from the WebRTC SIP user
+        /// (e.g. gateway 52678419 vs WebRTC 20426732-WS), the callback INVITE never reaches this client.
+        /// </summary>
+        private static string? GetWebRtcUserFromConfig(WebRtcConfig webRtcConfig)
+        {
+            try
+            {
+                string sipUri = webRtcConfig.SipUri ?? "";
+                if (sipUri.StartsWith("sip:", StringComparison.OrdinalIgnoreCase))
+                    sipUri = sipUri.Substring(4);
+                int at = sipUri.IndexOf('@');
+                return (at > 0 ? sipUri.Substring(0, at) : sipUri).Trim();
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private bool HasOriginateExtensionMismatch(WebRtcConfig webRtcConfig)
+        {
+            if (string.IsNullOrWhiteSpace(_mikoPbxExtension))
+                return false;
+
+            string? webRtcUser = GetWebRtcUserFromConfig(webRtcConfig);
+            if (string.IsNullOrEmpty(webRtcUser))
+                return false;
+
+            return !ExtensionsLooselyMatch(webRtcUser, _mikoPbxExtension);
+        }
+
+        private void LogOriginateExtensionMismatchIfAny(AppSettings settings)
+        {
+            if (string.IsNullOrWhiteSpace(_mikoPbxExtension))
+                return;
+
+            string? webRtcUser = AppSettings.EffectiveMainWebRtcUsername(settings);
+            if (string.IsNullOrWhiteSpace(webRtcUser) || ExtensionsLooselyMatch(webRtcUser, _mikoPbxExtension))
+                return;
+
+            Log($"[PBX Gateway] WebRTC extension ({webRtcUser}) ≠ gateway extension ({_mikoPbxExtension}). " +
+                "CallerID originate requires matching extensions — outbound calls will use direct WebRTC until WebRTC Username is aligned.");
+        }
+
+        private static string StripWsSuffixLocal(string ext)
+        {
+            return ext.EndsWith("-WS", StringComparison.OrdinalIgnoreCase)
+                ? ext.Substring(0, ext.Length - 3)
+                : ext;
+        }
+
+        /// <summary>
+        /// PBX Originate must callback with an inbound INVITE. If none arrives, show an error instead of hanging on "Connecting...".
+        /// </summary>
+        private async Task MonitorOriginateCallbackAsync(
+            CallWindow callWindow,
+            string originateId,
+            WebRtcService? webRtcForCallback = null)
+        {
+            const int timeoutMs = 20000;
+            const int pollMs = 500;
+
+            bool webRtcReadyWhenOriginateSent = false;
+            if (webRtcForCallback != null)
+            {
+                try
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                        webRtcReadyWhenOriginateSent = webRtcForCallback.IsReadyForCalls);
+                }
+                catch { }
+            }
+
+            for (int elapsed = 0; elapsed < timeoutMs; elapsed += pollMs)
+            {
+                await Task.Delay(pollMs).ConfigureAwait(false);
+
+                if (callWindow.IsClosing())
+                    return;
+
+                if (!string.IsNullOrEmpty(OriginateCoordinator.AcceptedSessionId))
+                    return;
+
+                bool sipAnswered = false;
+                bool hasSession = false;
+                try
+                {
+                    await Dispatcher.InvokeAsync(() =>
+                    {
+                        sipAnswered = callWindow.IsSipOriginateAnswered;
+                        hasSession = callWindow.HasWebRtcSession();
+                    });
+                }
+                catch { }
+
+                if (sipAnswered)
+                    return;
+
+                if (hasSession)
+                    return;
+            }
+
+            try
+            {
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    if (callWindow.IsClosing())
+                        return;
+
+                    bool webRtcReadyAtTimeout = webRtcForCallback?.IsReadyForCalls ?? false;
+                    var timeoutContext = new CallWindow.OriginateCallbackTimeoutContext
+                    {
+                        IsWebRtc = webRtcForCallback != null,
+                        WebRtcReadyWhenOriginateSent = webRtcReadyWhenOriginateSent,
+                        WebRtcReadyAtTimeout = webRtcReadyAtTimeout,
+                        GatewayExtension = _mikoPbxExtension
+                    };
+
+                    Log($"[Call][Originate] TIMEOUT: No PBX callback INVITE within {timeoutMs / 1000}s " +
+                        $"(originateId={originateId}, gatewayExt={_mikoPbxExtension}, " +
+                        $"isWebRtc={timeoutContext.IsWebRtc}, readyAtSend={webRtcReadyWhenOriginateSent}, " +
+                        $"readyAtTimeout={webRtcReadyAtTimeout}).");
+
+                    callWindow.ShowOriginateCallbackTimeout(timeoutContext);
+                });
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// PBX Originate callback on native SIP: auto-answer on the pending outbound CallWindow.
+        /// </summary>
+        private bool TryHandleOriginateSipInboundInvite(string callerNumber, SipService serviceToUse)
+        {
+            bool callerIsOwnTrunk = IsOwnOutboundCallerId(callerNumber)
+                || (!string.IsNullOrEmpty(OriginateCoordinator.PendingCallerId)
+                    && PhoneNumbersLooselyMatch(callerNumber, OriginateCoordinator.PendingCallerId));
+
+            CallWindow? outgoing = OriginateCoordinator.GetOutgoingCallWindow();
+            bool hasOriginateContext = OriginateCoordinator.IsPending
+                                       || (outgoing != null && outgoing.OpenedAsOutgoingCall);
+
+            if (!hasOriginateContext && !callerIsOwnTrunk)
+                return false;
+
+            bool isOriginateCallback = false;
+            if (OriginateCoordinator.IsPending)
+            {
+                if (!string.IsNullOrEmpty(OriginateCoordinator.PendingCallerId)
+                    && PhoneNumbersLooselyMatch(callerNumber, OriginateCoordinator.PendingCallerId))
+                {
+                    Log($"[Call][Originate][SIP] Matched by CallerID: incoming={callerNumber}, expected={OriginateCoordinator.PendingCallerId}");
+                    isOriginateCallback = true;
+                }
+                else if (OriginateCoordinator.GetPendingCallWindow() != null)
+                {
+                    Log($"[Call][Originate][SIP] Fallback: inbound INVITE while pending outbound CallWindow (caller={callerNumber})");
+                    isOriginateCallback = true;
+                }
+            }
+            else if (callerIsOwnTrunk && outgoing != null && outgoing.OpenedAsOutgoingCall)
+            {
+                Log($"[Call][Originate][SIP] Own-trunk INVITE matched open outbound window (caller={callerNumber})");
+                isOriginateCallback = true;
+            }
+
+            if (!isOriginateCallback)
+                return false;
+
+            var attachWindow = OriginateCoordinator.GetPendingCallWindow() ?? outgoing;
+            if (attachWindow == null)
+                return false;
+
+            Log($"[Call][Originate][SIP] Auto-answering PBX callback for originate to {OriginateCoordinator.PendingDestination ?? attachWindow.CallRemoteNumber}");
+            OriginateCoordinator.AcceptSession("sip-originate");
+            attachWindow.MarkAsOriginateCall();
+
+            _ = AutoAnswerOriginateSipAsync(attachWindow, serviceToUse);
+            return true;
+        }
+
+        private async Task AutoAnswerOriginateSipAsync(CallWindow callWindow, SipService sipService)
+        {
+            try
+            {
+                bool answered = await sipService.AnswerIncomingCallAsync().ConfigureAwait(true);
+                if (answered)
+                {
+                    callWindow.NotifyOriginateSipAnswered();
+                }
+                else
+                {
+                    Log("[Call][Originate][SIP] Auto-answer failed");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[Call][Originate][SIP] Auto-answer error: {ex.Message}");
+            }
+        }
+
+        private static bool ExtensionsLooselyMatch(string a, string b)
+        {
+            if (string.Equals(a, b, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            static string StripWsSuffix(string ext)
+            {
+                return StripWsSuffixLocal(ext);
+            }
+
+            return string.Equals(StripWsSuffix(a), StripWsSuffix(b), StringComparison.OrdinalIgnoreCase);
         }
 
         private void ClearPendingOriginateState(bool resetAcceptedSession = false)
@@ -1404,6 +1718,15 @@ namespace Softphone
                 if (TryHandleOriginateInboundInvite(dto))
                     return;
 
+                // Web (or another endpoint) started PBX originate — Miko forks the callback INVITE
+                // to every -WS registration on this extension. Reject silently when we did not originate.
+                if (!OriginateCoordinator.IsPending && IsOwnOutboundCallerId(dto.CallerNumber))
+                {
+                    Log($"[Call][Originate] Silently rejecting foreign originate callback (caller={dto.CallerNumber}, session={dto.SessionId})");
+                    _ = WebRtcService.GetSlot(dto.Slot ?? "main").HangupAsync(dto.SessionId);
+                    return;
+                }
+
                 // PBX Originate: пока ждём callback — никакого входящего UI, только auto-answer на нужную сессию.
                 if (OriginateCoordinator.IsPending)
                 {
@@ -1490,6 +1813,7 @@ namespace Softphone
                         string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
 
                         long? foundLeadId = null;
+                        long? browserLeadId = null;
                         if (!string.IsNullOrEmpty(sessionId))
                         {
                             var callWindows = Application.Current.Windows.OfType<CallWindow>().ToList();
@@ -1497,6 +1821,7 @@ namespace Softphone
                             {
                                 try
                                 {
+                                    browserLeadId = window.GetAmoCrmBrowserLeadId();
                                     var windowLeadId = window.GetAmoCrmLeadId();
                                     if (windowLeadId.HasValue)
                                     {
@@ -1509,7 +1834,7 @@ namespace Softphone
                             }
                         }
                         
-                        ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId, foundLeadId);
+                        ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId, foundLeadId, browserLeadId);
                     };
                     
                     callWindow.Show();
@@ -1787,6 +2112,13 @@ namespace Softphone
         private void CenterNonOwnedWindowOverThis(Window child)
         {
             WindowWorkAreaHelper.CenterOverHost(child, this);
+        }
+
+        private void ShowCallDetailsWindow(CallHistoryItem callItem)
+        {
+            var detailsWindow = new CallDetailsWindow(callItem);
+            CenterNonOwnedWindowOverThis(detailsWindow);
+            WindowForegroundHelper.ShowAboveAll(detailsWindow, this);
         }
 
         private async System.Threading.Tasks.Task TryConnectFromSettings()
@@ -2607,15 +2939,7 @@ namespace Softphone
                         var callItem = callItemProperty.GetValue(dataContext) as CallHistoryItem;
                         if (callItem != null)
                         {
-                            var detailsWindow = new CallDetailsWindow(callItem);
-                            CenterNonOwnedWindowOverThis(detailsWindow);
-                            detailsWindow.Show();
-                            try
-                            {
-                                detailsWindow.Activate();
-                                detailsWindow.Focus();
-                            }
-                            catch { }
+                            ShowCallDetailsWindow(callItem);
                         }
                     }
                 }
@@ -2897,6 +3221,7 @@ namespace Softphone
 
                 if (mainUsesWebRtc)
                 {
+                    _lastActiveMainTransport = "WebRtc";
                     Log("[MainWindow] ReconnectFromSettingsAsync: Main connection transport=WebRtc, stopping SIP and initializing WebRTC slot...");
 
                     Dispatcher.Invoke(() =>
@@ -2954,6 +3279,7 @@ namespace Softphone
                 }
                 else
                 {
+                    _lastActiveMainTransport = "Sip";
                     Log("[MainWindow] ReconnectFromSettingsAsync: Main connection transport=Sip, shutting down main WebRTC (if any) and reconnecting SIP...");
 
                     // Detach main WebRTC slot so it stops registering on transport switch.
@@ -3358,6 +3684,7 @@ namespace Softphone
             }
 
             int maxSteps = ConnectionReadyWaitSeconds * 2;
+            int secondaryGraceSteps = SecondaryReadyGraceSeconds * 2;
             for (int i = 0; i < maxSteps; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -3367,6 +3694,13 @@ namespace Softphone
                 if (mainReady && secondaryReady)
                 {
                     Log("[MainWindow] WaitForConfiguredConnections: both connections ready.");
+                    return;
+                }
+
+                // Main is enough to place a call; don't freeze the UI for 20s when secondary PBX is down.
+                if (mainReady && !secondaryReady && i >= secondaryGraceSteps)
+                {
+                    Log($"[MainWindow] WaitForConfiguredConnections: main ready, secondary not connected after {SecondaryReadyGraceSeconds}s — proceeding with main.");
                     return;
                 }
 
@@ -3411,6 +3745,10 @@ namespace Softphone
 
                 // Используем переданный сервис или основной по умолчанию
                 SipService? serviceToUse = sipService ?? _sipService;
+                
+                // PBX Originate callback on native SIP — attach to outbound window, do not open incoming UI.
+                if (TryHandleOriginateSipInboundInvite(callerNumber, serviceToUse))
+                    return;
                 
                 // IMPORTANT: When WebRTC mode is enabled, SIP incoming calls must be ignored/disabled.
                 // ВАЖНО: Второе подключение всегда работает через SIP, не проверяет WebRTC
@@ -3500,7 +3838,14 @@ namespace Softphone
                         TryFetchOutboundCallerIdFromCdr(phoneNumber, callTime);
                     
                     string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
-                    ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId);
+                    ProcessCallInAmoCrm(
+                        phoneNumber,
+                        callTime,
+                        technicalDetails,
+                        recordingFilePath,
+                        sessionId,
+                        callWindow.GetAmoCrmLeadId(),
+                        callWindow.GetAmoCrmBrowserLeadId());
                 };
                 
                 var showStartTime = DateTime.Now;
@@ -4089,9 +4434,9 @@ namespace Softphone
                             WindowForegroundHelper.BeginElevatedForegroundSession(this);
                             try
                             {
-                                await WaitForConfiguredConnectionsAsync(myToken).ConfigureAwait(true);
+                                await WaitForConfiguredConnectionsAsync(myToken).ConfigureAwait(false);
                                 _allowNextProgrammaticCall = true;
-                                await PerformCall(phoneNumber, leadId);
+                                await PerformCall(phoneNumber, leadId, forceCallerIdSelection: true);
                             }
                             finally
                             {
@@ -4109,9 +4454,9 @@ namespace Softphone
 
             _allowNextProgrammaticCall = true;
             if (Dispatcher.CheckAccess())
-                await PerformCall(phoneNumber, leadId).ConfigureAwait(true);
+                await PerformCall(phoneNumber, leadId, forceCallerIdSelection: true).ConfigureAwait(true);
             else
-                await Dispatcher.InvokeAsync(() => PerformCall(phoneNumber, leadId)).Task.Unwrap().ConfigureAwait(false);
+                await Dispatcher.InvokeAsync(() => PerformCall(phoneNumber, leadId, forceCallerIdSelection: true)).Task.Unwrap().ConfigureAwait(false);
         }
         
         private async System.Threading.Tasks.Task PerformCall(string number, long? leadId = null, bool forceCallerIdSelection = false)
@@ -4187,7 +4532,7 @@ namespace Softphone
 
             if (hasMainConnectionConfigured && hasSecondaryConnectionConfigured)
             {
-                await WaitForConfiguredConnectionsAsync().ConfigureAwait(true);
+                await WaitForConfiguredConnectionsAsync().ConfigureAwait(false);
             }
 
             string? mainStatus = null;
@@ -4234,9 +4579,8 @@ namespace Softphone
             ConnectionSelectionWindow.ConnectionType? selectedConnectionType = null;
             string? selectedMainCallerId = null;
             
-            // Caller ID выбор имеет смысл только для Main подключения в WebRTC режиме
-            // (там используется PBX Originate).
-            bool canSelectCallerId = useWebRtc && _callerIdItems.Count > 0 && _mikoPbxCdrService != null;
+            // Caller ID выбор: PBX Originate (WebRTC и native SIP на gateway extension).
+            bool canSelectCallerId = _callerIdItems.Count > 0 && _mikoPbxCdrService != null;
             List<CallerIdItem>? mainCallerIdItemsForDialog = canSelectCallerId ? _callerIdItems : null;
             string? currentSelectedCallerId = null;
             try
@@ -4311,7 +4655,8 @@ namespace Softphone
                 // Если Caller ID не выбран (частый сценарий при звонке из истории), просим выбрать его явно.
                 bool shouldPromptCallerId =
                     canSelectCallerId &&
-                    (forceCallerIdSelection || (_callerIdItems.Count > 1 && string.IsNullOrWhiteSpace(currentSelectedCallerId)));
+                    _callerIdItems.Count > 1 &&
+                    (forceCallerIdSelection || string.IsNullOrWhiteSpace(currentSelectedCallerId));
 
                 if (shouldPromptCallerId)
                 {
@@ -4401,7 +4746,14 @@ namespace Softphone
                 string? sessionId = transport == CallTransport.WebRtc ? webRtcSessionId : sipCallId;
                 long? callLeadId = callWindow.GetAmoCrmLeadId();
                 Log($"[MainWindow] OnCallDetailsChanged: Retrieved leadId from CallWindow: {callLeadId?.ToString() ?? "null"}");
-                ProcessCallInAmoCrm(phoneNumber, callTime, technicalDetails, recordingFilePath, sessionId, callLeadId);
+                ProcessCallInAmoCrm(
+                    phoneNumber,
+                    callTime,
+                    technicalDetails,
+                    recordingFilePath,
+                    sessionId,
+                    callLeadId,
+                    callWindow.GetAmoCrmBrowserLeadId());
             };
 
             callWindow.Closed += (s, e) =>
@@ -4584,7 +4936,17 @@ namespace Softphone
                         
                         // CallerID Originate is only supported on the main MikoPBX gateway connection.
                         // Secondary slots (plain Asterisk etc.) must use direct WebRTC INVITE via their own UA.
+                        // Originate rings the JWT/gateway extension — WebRTC must register on the SAME extension.
                         bool useOriginate = !isSecondary && _allowedCallerIds.Count > 0 && _mikoPbxCdrService != null;
+                        if (useOriginate && HasOriginateExtensionMismatch(webRtcConfig))
+                        {
+                            string? webRtcUser = GetWebRtcUserFromConfig(webRtcConfig);
+                            Log($"[Call][Originate] Skipped: WebRTC extension ({webRtcUser}) " +
+                                $"≠ PBX Gateway extension ({_mikoPbxExtension}). Originate would ring {_mikoPbxExtension}, not your WebRTC line. " +
+                                "Set WebRTC Username = PBX Gateway extension in Settings for CallerID originate, or use direct WebRTC call.");
+                            useOriginate = false;
+                        }
+
                         if (useOriginate)
                         {
                             string selectedCallerId =
@@ -4613,11 +4975,15 @@ namespace Softphone
 
                             try
                             {
-                                var origResult = await _mikoPbxCdrService!.OriginateCallAsync(number, selectedCallerId);
+                                string? ringExtension = GetWebRtcUserFromConfig(webRtcConfig);
+                                var origResult = await _mikoPbxCdrService!.OriginateCallAsync(
+                                    number, selectedCallerId, ringExtension);
                                 if (origResult.Success)
                                 {
                                     OriginateCoordinator.SetPendingId(origResult.OriginateId);
-                                    Log($"[Call][Originate] Success. Waiting for PBX callback, originateId={origResult.OriginateId}, callerId={selectedCallerId}");
+                                    Log($"[Call][Originate] Success. Waiting for PBX callback, originateId={origResult.OriginateId}, callerId={selectedCallerId}, gatewayExt={_mikoPbxExtension}");
+
+                                    _ = MonitorOriginateCallbackAsync(callWindow, origResult.OriginateId, webRtcSlotService);
 
                                     // Save last selected CallerID
                                     try
@@ -4711,6 +5077,75 @@ namespace Softphone
                     {
                         Owner = this
                     };
+
+                    // CallerID via PBX Originate (same gateway flow as WebRTC, ring_extension = SIP extension).
+                    bool useOriginate = !isSecondary && _allowedCallerIds.Count > 0 && _mikoPbxCdrService != null;
+                    if (useOriginate)
+                    {
+                        string selectedCallerId =
+                            !string.IsNullOrWhiteSpace(selectedOutboundCallerIdForOriginate) &&
+                            _allowedCallerIds.Contains(selectedOutboundCallerIdForOriginate)
+                                ? selectedOutboundCallerIdForOriginate
+                                : (_allowedCallerIds.Count == 1
+                                    ? _allowedCallerIds[0]
+                                    : ((CallerIdComboBox.SelectedItem as CallerIdItem)?.Number ?? _allowedCallerIds[0]));
+
+                        Log($"[Call][Originate][SIP] Using PBX Originate: dst={number}, callerId={selectedCallerId}");
+
+                        OriginateCoordinator.BeginPending(number, selectedCallerId, callWindow);
+                        callWindow.MarkAsOriginateCall();
+                        callWindow.SetOutboundCallerId(selectedCallerId);
+                        CallHandlingHelpers.PrepareCallWindowForDisplay(callWindow, isIncomingCall: false);
+                        WindowForegroundHelper.ShowAboveAll(callWindow, this);
+                        callWindowShownEarly = true;
+
+                        TryAttachOutgoingCallCoreHandlers(
+                            callWindow, number, callStartTime, currentCallHistoryItem,
+                            sipServiceToUse, webRtcSlotService, ref outgoingCallHandlersAttached);
+
+                        try
+                        {
+                            string? ringExtension = _mikoPbxExtension;
+                            var origResult = await _mikoPbxCdrService!.OriginateCallAsync(
+                                number, selectedCallerId, ringExtension);
+                            if (origResult.Success)
+                            {
+                                OriginateCoordinator.SetPendingId(origResult.OriginateId);
+                                Log($"[Call][Originate][SIP] Success. Waiting for PBX callback, originateId={origResult.OriginateId}, callerId={selectedCallerId}, ringExt={ringExtension ?? "<jwt>"}");
+
+                                _ = MonitorOriginateCallbackAsync(callWindow, origResult.OriginateId);
+
+                                try
+                                {
+                                    string settingsPath = System.IO.Path.Combine(
+                                        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                                        "Callspire", "settings.json");
+                                    if (System.IO.File.Exists(settingsPath))
+                                    {
+                                        string json = System.IO.File.ReadAllText(settingsPath);
+                                        var sett = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(json);
+                                        if (sett != null)
+                                        {
+                                            sett.SelectedOutboundCallerId = selectedCallerId;
+                                            System.IO.File.WriteAllText(settingsPath,
+                                                Newtonsoft.Json.JsonConvert.SerializeObject(sett, Newtonsoft.Json.Formatting.Indented));
+                                        }
+                                    }
+                                }
+                                catch { }
+
+                                goto afterCallWindowCreated;
+                            }
+
+                            Log($"[Call][Originate][SIP] Failed: {origResult.Error}. Falling back to direct SIP INVITE (default PBX CallerID).");
+                            ClearPendingOriginateState(resetAcceptedSession: true);
+                        }
+                        catch (Exception ex)
+                        {
+                            Log($"[Call][Originate][SIP] Exception: {ex.Message}. Falling back to direct SIP INVITE.");
+                            ClearPendingOriginateState(resetAcceptedSession: true);
+                        }
+                    }
                 }
                 
                 afterCallWindowCreated:
@@ -5224,6 +5659,12 @@ namespace Softphone
         /// </summary>
         public void UpdateConnectionStatus()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(UpdateConnectionStatus));
+                return;
+            }
+
             try
             {
                 EnsureConnectionStatusLabelsCurrent();
@@ -5317,6 +5758,7 @@ namespace Softphone
                     // SIP режим
                     if (isConnected)
                     {
+                        _lastActiveMainTransport = "Sip";
                         newStatus = "Connected";
                         statusColor = (Brush)FindResource("AccentGreenBrush");
                     }
@@ -5390,12 +5832,23 @@ namespace Softphone
                     ? (WebRtcService.Secondary?.IsReadyForCalls ?? false)
                     : (_sipService2?.IsRegistered ?? false);
 
-                string newStatus = isConnected
-                    ? (secondaryUsesWebRtc ? "Connected with WebRTC" : "Connected")
-                    : "Not connected";
-                Brush statusColor = isConnected 
-                    ? (Brush)FindResource("AccentGreenBrush")
-                    : (Brush)FindResource("TextSecondaryBrush");
+                string newStatus;
+                Brush statusColor;
+                if (isConnected)
+                {
+                    newStatus = secondaryUsesWebRtc ? "Connected with WebRTC" : "Connected";
+                    statusColor = (Brush)FindResource("AccentGreenBrush");
+                }
+                else if (!secondaryUsesWebRtc && _sipService2 != null && IsSecondaryDnsOrVpnIssue(_sipService2))
+                {
+                    newStatus = "DNS/VPN issue";
+                    statusColor = (Brush)FindResource("AccentRedBrush");
+                }
+                else
+                {
+                    newStatus = "Not connected";
+                    statusColor = (Brush)FindResource("TextSecondaryBrush");
+                }
                 
                 if (SecondaryStatusTextBlock.Text != newStatus)
                 {
@@ -5407,6 +5860,20 @@ namespace Softphone
             {
                 Log($"[MainWindow] Error in UpdateSecondaryConnectionStatus: {ex.Message}");
             }
+        }
+
+        private static bool IsSecondaryDnsOrVpnIssue(SipService sipService)
+        {
+            if (sipService.ServerDnsUnusable)
+                return true;
+
+            string? err = sipService.LastRegistrationError;
+            if (string.IsNullOrWhiteSpace(err))
+                return false;
+
+            return err.Contains("resolve", StringComparison.OrdinalIgnoreCase)
+                   || err.Contains("DNS", StringComparison.OrdinalIgnoreCase)
+                   || err.Contains("Could not resolve", StringComparison.OrdinalIgnoreCase);
         }
         
         private void UpdateAmoCrmConnectionStatus()
@@ -5461,6 +5928,12 @@ namespace Softphone
         /// </summary>
         private void UpdateUserAccountInfo()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(UpdateUserAccountInfo));
+                return;
+            }
+
             try
             {
                 if (UserAccountTextBlock == null) return;
@@ -6534,10 +7007,8 @@ namespace Softphone
                         await Dispatcher.InvokeAsync(() =>
                         {
                             Log($"[MainWindow] AmoCRM integration not enabled or subdomain missing: EnableIntegration={settings.EnableAmoCrmIntegration}, Subdomain={settings.AmoCrmSubdomain}");
+                            DisconnectAmoCrmService();
                         });
-                        
-                        // Отключаем сервис, если интеграция выключена
-                        DisconnectAmoCrmService();
                     }
                 }
                 catch (Exception ex)
@@ -6711,6 +7182,12 @@ namespace Softphone
         /// </summary>
         public void DisconnectAmoCrmService()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(DisconnectAmoCrmService));
+                return;
+            }
+
             if (_amoCrmService != null)
             {
                 _amoCrmService.Dispose();
@@ -6745,12 +7222,26 @@ namespace Softphone
         /// <summary>
         /// Обрабатывает завершенный звонок в AmoCRM с дедупликацией для предотвращения множественных записей
         /// </summary>
-        private void ProcessCallInAmoCrm(string phoneNumber, DateTime callTime, List<string>? technicalDetails, string? recordingFilePath, string? sessionId = null, long? leadId = null)
+        private void ProcessCallInAmoCrm(string phoneNumber, DateTime callTime, List<string>? technicalDetails, string? recordingFilePath, string? sessionId = null, long? leadId = null, long? browserLeadId = null)
         {
-            Log($"[MainWindow] ProcessCallInAmoCrm called: phone={phoneNumber}, leadId={leadId?.ToString() ?? "null"}, sessionId={sessionId ?? "null"}");
-            if (!IsAmoCrmIntegrationEnabled() || _amoCrmService == null || !_amoCrmService.IsInitialized)
+            Log($"[MainWindow] ProcessCallInAmoCrm called: phone={phoneNumber}, leadId={leadId?.ToString() ?? "null"}, browserLeadId={browserLeadId?.ToString() ?? "null"}, sessionId={sessionId ?? "null"}");
+            if (!IsAmoCrmIntegrationEnabled())
             {
-                return; // Интеграция не включена или не инициализирована
+                return;
+            }
+
+            bool gatewayUpload = IsGatewayKommoRecordingUploadSource();
+            if (gatewayUpload)
+            {
+                if (_mikoPbxCdrService == null)
+                {
+                    Log("[MainWindow] AmoCRM gateway upload: PBX Gateway client not initialized");
+                    return;
+                }
+            }
+            else if (_amoCrmService == null || !_amoCrmService.IsInitialized)
+            {
+                return; // Local upload requires initialized AmoCrmService
             }
 
             // PBX Originate callback leg arrives as inbound INVITE From=our trunk CallerID — not a real client call.
@@ -6801,13 +7292,354 @@ namespace Softphone
                     RecordingFilePath = recordingFilePath,
                     DedupKey = dedupKey,
                     SessionId = sessionId,
-                    AmoCrmLeadId = leadId // ID лида из браузера, если звонок инициирован из AmoCRM
+                    AmoCrmLeadId = leadId,
+                    AmoCrmBrowserLeadId = browserLeadId,
                 });
-                Log($"[MainWindow] AmoCrmJob added successfully with leadId={leadId?.ToString() ?? "null"}");
+                Log($"[MainWindow] AmoCrmJob added successfully with leadId={leadId?.ToString() ?? "null"}, browserLeadId={browserLeadId?.ToString() ?? "null"}");
             }
             catch (InvalidOperationException)
             {
                 // Очередь завершена (приложение закрывается)
+            }
+        }
+
+        private static string? LoadKommoRecordingUploadSourceFromDisk()
+        {
+            try
+            {
+                var source = AppDataHelper.LoadSettingsOrNew().AmoCrmRecordingUploadSource?.Trim().ToLowerInvariant();
+                return source is "local" or "gateway" ? source : null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private static bool IsGatewayKommoRecordingUploadSource()
+        {
+            return string.Equals(
+                LoadKommoRecordingUploadSourceFromDisk() ?? "local",
+                "gateway",
+                StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static AmoCrmUploadedRecordingSource? MapGatewayUploadSource(string? uploadSource)
+        {
+            if (string.IsNullOrWhiteSpace(uploadSource))
+                return null;
+            if (uploadSource.Equals("miko_pbx", StringComparison.OrdinalIgnoreCase))
+                return AmoCrmUploadedRecordingSource.MikoPbx;
+            if (uploadSource.Equals("local", StringComparison.OrdinalIgnoreCase)
+                || uploadSource.Equals("client", StringComparison.OrdinalIgnoreCase))
+                return AmoCrmUploadedRecordingSource.Local;
+            return null;
+        }
+
+        private static AmoCrmUploadStatus MapGatewayJobStatus(string? status)
+        {
+            return (status ?? "").ToLowerInvariant() switch
+            {
+                "uploaded" => AmoCrmUploadStatus.Uploaded,
+                "failed" => AmoCrmUploadStatus.Failed,
+                "skipped" => AmoCrmUploadStatus.NotUploaded,
+                _ => AmoCrmUploadStatus.NotUploaded,
+            };
+        }
+
+        private const int GatewayKommoManualLeadSubmitDelayMs = 3000;
+        private const int GatewayKommoManualLeadPollIntervalMs = 2000;
+        private const int GatewayKommoManualLeadMaxPolls = 30;
+
+        private sealed class GatewayKommoLeadSelectionResult
+        {
+            public bool Proceed { get; init; }
+            public bool Cancelled { get; init; }
+            public long? LeadId { get; init; }
+        }
+
+        /// <summary>
+        /// After a call (gateway recording mode + manual lead selection): show open leads,
+        /// same flow as Upload call result in CallDetailsWindow.
+        /// </summary>
+        private async Task<GatewayKommoLeadSelectionResult> PromptGatewayKommoLeadSelectionAsync(string phoneNumber)
+        {
+            if (_amoCrmService == null || !_amoCrmService.IsInitialized)
+            {
+                Log("[MainWindow] Gateway Kommo lead selection: AmoCRM not initialized — gateway will auto-resolve lead");
+                return new GatewayKommoLeadSelectionResult { Proceed = true, LeadId = null };
+            }
+
+            var leads = await _amoCrmService.GetLeadsByPhoneAsync(phoneNumber, openLeadsOnly: true, ownLeadsOnly: true).ConfigureAwait(false);
+            if (leads.Count == 0)
+            {
+                leads = await _amoCrmService.GetLeadsByPhoneAsync(phoneNumber, openLeadsOnly: false, ownLeadsOnly: true).ConfigureAwait(false);
+                if (leads.Count > 0)
+                    Log($"[MainWindow] Gateway Kommo lead selection: no open deals; offering {leads.Count} lead(s) including closed");
+            }
+
+            if (leads.Count == 0)
+            {
+                bool attachToContact = false;
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    attachToContact = CustomMessageBox.Show(
+                        "There is no open deal for this contact.\n\nAttach the call result to the contact?",
+                        "No open deal",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question,
+                        this,
+                        "Yes",
+                        "No") == MessageBoxResult.Yes;
+                }).Task.ConfigureAwait(false);
+
+                if (!attachToContact)
+                {
+                    Log("[MainWindow] Gateway Kommo lead selection: user declined contact attach");
+                    return new GatewayKommoLeadSelectionResult { Proceed = false, Cancelled = true };
+                }
+
+                Log("[MainWindow] Gateway Kommo lead selection: attach to contact (no lead id)");
+                return new GatewayKommoLeadSelectionResult { Proceed = true, LeadId = null };
+            }
+
+            long? selectedLeadId = null;
+            bool cancelled = false;
+            string? subdomain = _amoCrmService.KommoSubdomain;
+
+            await Dispatcher.InvokeAsync(() =>
+            {
+                var selectionWindow = new LeadSelectionWindow(leads, subdomain);
+                selectionWindow.Owner = this;
+                bool? selectionResult = selectionWindow.ShowDialog();
+                if (selectionResult == true && selectionWindow.SelectedLeadId.HasValue)
+                {
+                    selectedLeadId = selectionWindow.SelectedLeadId.Value;
+                    Log($"[MainWindow] Gateway Kommo lead selection: user selected lead {selectedLeadId.Value}");
+                }
+                else
+                {
+                    cancelled = true;
+                    Log("[MainWindow] Gateway Kommo lead selection: user cancelled");
+                }
+            }).Task.ConfigureAwait(false);
+
+            if (cancelled)
+                return new GatewayKommoLeadSelectionResult { Proceed = false, Cancelled = true };
+
+            return new GatewayKommoLeadSelectionResult { Proceed = true, LeadId = selectedLeadId };
+        }
+
+        private async Task GatewayKommoWorkerAsync(AmoCrmJob job)
+        {
+            if (_mikoPbxCdrService == null)
+            {
+                _processedCalls.TryRemove(job.DedupKey, out _);
+                return;
+            }
+
+            try
+            {
+                CallHistoryItem? call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId);
+                bool enableRecordingUpload = true;
+                bool enableLeadSelection = false;
+                try
+                {
+                    var settings = AppDataHelper.LoadSettingsOrNew();
+                    enableRecordingUpload = settings.EnableAmoCrmRecordingUpload;
+                    enableLeadSelection = settings.EnableAmoCrmLeadSelection;
+                }
+                catch (Exception ex)
+                {
+                    Log($"[MainWindow] Gateway Kommo: settings error: {ex.Message}");
+                }
+
+                Log($"[MainWindow] Gateway Kommo: enableLeadSelection={enableLeadSelection}, jobLeadId={job.AmoCrmLeadId?.ToString() ?? "null"}, browserLeadId={job.AmoCrmBrowserLeadId?.ToString() ?? "null"}");
+
+                bool manualLeadSelectionUsed = false;
+                long? leadIdForRequest = job.AmoCrmLeadId;
+
+                if (enableLeadSelection)
+                {
+                    if (job.AmoCrmBrowserLeadId.HasValue)
+                    {
+                        leadIdForRequest = job.AmoCrmBrowserLeadId;
+                        Log($"[MainWindow] Gateway Kommo: using browser lead {leadIdForRequest.Value}, skipping selection dialog");
+                    }
+                    else
+                    {
+                        var selection = await PromptGatewayKommoLeadSelectionAsync(job.PhoneNumber).ConfigureAwait(false);
+                        if (!selection.Proceed)
+                        {
+                            if (call != null)
+                            {
+                                _callHistoryService.UpdateAmoCrmUploadStatus(
+                                    job.PhoneNumber,
+                                    call.CallTime,
+                                    AmoCrmUploadStatus.Cancelled,
+                                    selection.Cancelled ? "User cancelled lead selection" : "Lead selection failed");
+                                try { Dispatcher.Invoke(RefreshVisibleDashboards); } catch { }
+                            }
+
+                            _processedCalls.TryRemove(job.DedupKey, out _);
+                            return;
+                        }
+
+                        leadIdForRequest = selection.LeadId;
+                        manualLeadSelectionUsed = true;
+                        Log($"[MainWindow] Gateway Kommo: manual lead selection → lead_id={leadIdForRequest?.ToString() ?? "contact"}");
+                    }
+                }
+
+                if (call?.Transport == CallTransport.Sip)
+                {
+                    SipService? activeSip = call.ConnectionSlot == CallConnectionSlot.Secondary
+                        ? _sipService2
+                        : _sipService;
+                    for (int wait = 0;
+                         wait < 300
+                         && activeSip?.IsInCall == true
+                         && string.Equals(activeSip.ActiveDialNumber, job.PhoneNumber, StringComparison.OrdinalIgnoreCase);
+                         wait++)
+                    {
+                        if (wait == 0)
+                            Log($"[MainWindow] Gateway Kommo: waiting for SIP hangup ({job.PhoneNumber})...");
+                        await Task.Delay(1000).ConfigureAwait(false);
+                        call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId) ?? call;
+                    }
+                }
+
+                call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId) ?? call;
+                if (call != null && call.AmoCrmUploadStatus == AmoCrmUploadStatus.Uploaded)
+                {
+                    Log($"[MainWindow] Gateway Kommo: already uploaded for {job.DedupKey}");
+                    return;
+                }
+
+                bool isIncoming = call?.IsIncoming ?? false;
+                int durationSeconds = call?.Duration?.TotalSeconds != null ? (int)call.Duration.Value.TotalSeconds : 0;
+                bool wasAnswered = call?.WasAnswered ?? false;
+                if (call?.AnswerTime.HasValue == true)
+                    wasAnswered = true;
+
+                string connectionSlot = call != null
+                    && CallStatisticsService.GetEffectiveConnectionSlot(call) == CallConnectionSlot.Secondary
+                    ? "secondary"
+                    : "main";
+
+                string? callLog = job.TechnicalDetails != null && job.TechnicalDetails.Count > 0
+                    ? string.Join("\n", job.TechnicalDetails)
+                    : null;
+                string? callFromLabel = await ResolveCallFromSubtitleForAmoAsync(call, job.PhoneNumber, job.CallTime).ConfigureAwait(false);
+
+                if (manualLeadSelectionUsed)
+                {
+                    Log($"[MainWindow] Gateway Kommo: waiting {GatewayKommoManualLeadSubmitDelayMs / 1000}s before process-call (Miko recording may not be ready yet)");
+                    await Task.Delay(GatewayKommoManualLeadSubmitDelayMs).ConfigureAwait(false);
+                }
+
+                var request = new KommoProcessCallRequest
+                {
+                    Phone = job.PhoneNumber,
+                    CallTime = CallWindowHelpers.FormatCallTimeUtcIso(call?.CallTime ?? job.CallTime),
+                    SessionId = job.SessionId,
+                    IsIncoming = isIncoming,
+                    DurationSeconds = durationSeconds,
+                    WasAnswered = wasAnswered,
+                    LeadId = leadIdForRequest,
+                    // PBX Gateway fetches recording from Miko CDR (same as web softphone).
+                    ClientRecordingEnabled = false,
+                    ConnectionSlot = connectionSlot,
+                    CallFromLabel = callFromLabel,
+                    CallLog = callLog,
+                    EnableRecordingUpload = enableRecordingUpload,
+                    AnswerTime = call?.AnswerTime?.ToUniversalTime().ToString("o"),
+                    CallEndTime = CallWindowHelpers.FormatCallEndTimeIso(call),
+                };
+
+                Log("[MainWindow] Gateway Kommo: submitting process-call job (Miko PBX recording)");
+                var (submitted, submitError) = await _mikoPbxCdrService.SubmitKommoProcessCallAsync(request).ConfigureAwait(false);
+                if (submitted == null || string.IsNullOrWhiteSpace(submitted.Id))
+                {
+                    Log($"[MainWindow] Gateway Kommo: submit failed: {submitError ?? "unknown"}");
+                    if (call != null)
+                    {
+                        _callHistoryService.UpdateAmoCrmUploadStatus(
+                            job.PhoneNumber, call.CallTime, AmoCrmUploadStatus.Failed, submitError);
+                    }
+                    _processedCalls.TryRemove(job.DedupKey, out _);
+                    return;
+                }
+
+                string jobId = submitted.Id;
+                Log($"[MainWindow] Gateway Kommo: job id={jobId} for {job.PhoneNumber} session={job.SessionId ?? "none"}");
+
+                KommoProcessCallJobStatus? finalStatus = null;
+                int maxPolls = manualLeadSelectionUsed
+                    ? GatewayKommoManualLeadMaxPolls
+                    : 180;
+                for (int i = 0; i < maxPolls; i++)
+                {
+                    await Task.Delay(GatewayKommoManualLeadPollIntervalMs).ConfigureAwait(false);
+                    finalStatus = await _mikoPbxCdrService.GetKommoProcessCallStatusAsync(jobId).ConfigureAwait(false);
+                    if (finalStatus == null)
+                        continue;
+                    string st = finalStatus.Status?.ToLowerInvariant() ?? "";
+                    if (st is "uploaded" or "failed" or "skipped")
+                        break;
+                }
+
+                if (finalStatus == null)
+                {
+                    Log("[MainWindow] Gateway Kommo: status polling timed out");
+                    if (call != null)
+                    {
+                        _callHistoryService.UpdateAmoCrmUploadStatus(
+                            job.PhoneNumber, call.CallTime, AmoCrmUploadStatus.Failed, "Gateway status timeout");
+                    }
+                    _processedCalls.TryRemove(job.DedupKey, out _);
+                    return;
+                }
+
+                call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId) ?? call;
+                if (call != null)
+                {
+                    var uploadStatus = MapGatewayJobStatus(finalStatus.Status);
+                    var uploadSource = MapGatewayUploadSource(finalStatus.UploadSource);
+                    _callHistoryService.UpdateAmoCrmUploadStatus(
+                        job.PhoneNumber,
+                        call.CallTime,
+                        uploadStatus,
+                        finalStatus.Reason,
+                        uploadSource);
+                    if (finalStatus.LeadId.HasValue && uploadStatus == AmoCrmUploadStatus.Uploaded)
+                        _callHistoryService.UpdateAmoCrmLeadId(job.PhoneNumber, call.CallTime, finalStatus.LeadId.Value);
+
+                    if (_callHistoryService.ApplyPbxTruthFromGateway(
+                            job.PhoneNumber,
+                            call.CallTime,
+                            finalStatus.PbxWasAnswered,
+                            finalStatus.PbxDurationSeconds,
+                            job.SessionId))
+                    {
+                        Log($"[MainWindow] Gateway Kommo: call history updated from PBX CDR for {job.PhoneNumber}");
+                    }
+
+                    try { Dispatcher.Invoke(() => { LoadCallHistory(); RefreshVisibleDashboards(); }); } catch { }
+
+                    if (uploadStatus == AmoCrmUploadStatus.Uploaded)
+                        Log($"[MainWindow] Gateway Kommo: success for {job.PhoneNumber}, lead={finalStatus.LeadId}");
+                    else
+                    {
+                        Log($"[MainWindow] Gateway Kommo: failed for {job.PhoneNumber}: {finalStatus.Reason}");
+                        _processedCalls.TryRemove(job.DedupKey, out _);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"[MainWindow] Gateway Kommo error: {ex.Message}");
+                _processedCalls.TryRemove(job.DedupKey, out _);
             }
         }
 
@@ -6826,7 +7658,19 @@ namespace Softphone
                     break; // Очередь завершена
                 }
 
-                if (!IsAmoCrmIntegrationEnabled() || _amoCrmService == null || !_amoCrmService.IsInitialized)
+                if (!IsAmoCrmIntegrationEnabled())
+                {
+                    _processedCalls.TryRemove(job.DedupKey, out _);
+                    continue;
+                }
+
+                if (IsGatewayKommoRecordingUploadSource())
+                {
+                    await GatewayKommoWorkerAsync(job).ConfigureAwait(false);
+                    continue;
+                }
+
+                if (_amoCrmService == null || !_amoCrmService.IsInitialized)
                 {
                     _processedCalls.TryRemove(job.DedupKey, out _);
                     continue;
@@ -6849,6 +7693,22 @@ namespace Softphone
                     }
                     // Логируем для диагностики
                     Log($"[MainWindow] AmoCrmWorkerAsync: call?.WasAnswered={call?.WasAnswered}, call?.AnswerTime.HasValue={call?.AnswerTime.HasValue}, final wasAnswered={wasAnswered}, duration={durationSeconds}s");
+
+                    bool enableRecordingUpload = true;
+                    bool enableLeadSelection = false;
+                    try
+                    {
+                        var amoSettings = AppDataHelper.LoadSettingsOrNew();
+                        enableRecordingUpload = amoSettings.EnableAmoCrmRecordingUpload;
+                        enableLeadSelection = amoSettings.EnableAmoCrmLeadSelection;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[MainWindow] Error loading AmoCRM upload settings: {ex.Message}");
+                    }
+
+                    if (!enableRecordingUpload)
+                        Log("[MainWindow] AmoCRM: Recording upload disabled in settings — syncing call note only");
                     var endedBy = call?.EndedBy ?? CallEndedBy.Unknown;
                     var ringbackStart = call?.RingbackStartTime;
                     var ringbackEnd = call?.RingbackEndTime;
@@ -6884,12 +7744,6 @@ namespace Softphone
 
                     string? finalRecordingPath = job.RecordingFilePath;
 
-                    string? FindMatchingCallFromHistory()
-                    {
-                        return _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId)
-                            ?.RecordingFilePath;
-                    }
-
                     // Защита от "пустых" исходящих звонков:
                     // Если исходящий звонок НЕ был принят, пользователь сам завершил его,
                     // и с момента начала вызова прошло <= 5 секунд, то пропускаем загрузку записи,
@@ -6922,10 +7776,18 @@ namespace Softphone
                         }
                     }
                     // SIP only: ensure in-flight RTP finalize / orphan PCM recovery before waiting for WAV.
-                    bool expectRecording = wasAnswered || !string.IsNullOrEmpty(job.RecordingFilePath);
-                    string? pathToWait = !string.IsNullOrEmpty(job.RecordingFilePath)
-                        ? job.RecordingFilePath
-                        : call?.RecordingFilePath;
+                    bool expectRecording = enableRecordingUpload && (wasAnswered || !string.IsNullOrEmpty(job.RecordingFilePath));
+                    string? localPathCandidate = CallWindowHelpers.ResolveLocalClientRecordingPath(call);
+                    if (string.IsNullOrEmpty(localPathCandidate)
+                        && CallWindowHelpers.IsLocalClientRecordingPath(job.RecordingFilePath))
+                        localPathCandidate = job.RecordingFilePath;
+                    if (string.IsNullOrEmpty(localPathCandidate)
+                        && CallWindowHelpers.IsLocalClientRecordingPath(call?.RecordingFilePath))
+                        localPathCandidate = call!.RecordingFilePath;
+
+                    string? pathToWait = localPathCandidate
+                        ?? (!CallWindowHelpers.IsPbxDownloadedRecordingPath(job.RecordingFilePath) ? job.RecordingFilePath : null)
+                        ?? (!CallWindowHelpers.IsPbxDownloadedRecordingPath(call?.RecordingFilePath) ? call?.RecordingFilePath : null);
 
                     bool zeroRtpDeadMedia = call?.Transport == CallTransport.Sip
                         && call.InboundRtpPackets == 0
@@ -6938,18 +7800,7 @@ namespace Softphone
                         expectRecording = false;
                         finalRecordingPath = null;
                         pathToWait = null;
-                    }
-                    else if (call != null
-                        && expectRecording
-                        && (string.IsNullOrEmpty(finalRecordingPath) || !File.Exists(finalRecordingPath)))
-                    {
-                        var pbxRecording = await TryDownloadPbxRecordingForCallAsync(call).ConfigureAwait(false);
-                        if (!string.IsNullOrEmpty(pbxRecording) && File.Exists(pbxRecording))
-                        {
-                            finalRecordingPath = pbxRecording;
-                            pathToWait = pbxRecording;
-                            Log($"[MainWindow] AmoCRM: using PBX server recording: {pbxRecording}");
-                        }
+                        localPathCandidate = null;
                     }
 
                     if (expectRecording && call?.Transport == CallTransport.Sip)
@@ -6965,67 +7816,94 @@ namespace Softphone
                         }
 
                         call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId) ?? call;
-                        if (string.IsNullOrEmpty(pathToWait) && !string.IsNullOrEmpty(call?.RecordingFilePath))
-                            pathToWait = call.RecordingFilePath;
+                        localPathCandidate = CallWindowHelpers.ResolveLocalClientRecordingPath(call) ?? localPathCandidate;
+                        if (string.IsNullOrEmpty(pathToWait))
+                            pathToWait = localPathCandidate ?? call?.RecordingFilePath;
                         if (!string.IsNullOrEmpty(pathToWait) && CallWindowHelpers.IsRecordingWavPlausible(pathToWait, out _))
                             finalRecordingPath = pathToWait;
                     }
 
-                    // Ждём появления файла записи до 5 минут (колл-центр: конвертация идёт по одной, предыдущий успеет)
-                    if (expectRecording && !string.IsNullOrEmpty(pathToWait)
-                        && !CallWindowHelpers.IsRecordingWavPlausible(finalRecordingPath, out _))
-                    {
-                        const int maxWaitSeconds = 300; // 5 минут
-                        // Для отвеченных звонков ждем минимум 60 секунд (даже если звонок был коротким),
-                        // так как конвертация записи может занять время, особенно для звонков с роботом
-                        int minWaitSeconds = wasAnswered ? 60 : 30;
-                        int waitSeconds = Math.Max(minWaitSeconds, Math.Min(maxWaitSeconds, Math.Max(durationSeconds, 30)));
-                        Log($"[MainWindow] AmoCRM queue: waiting for recording file (up to {waitSeconds}s, wasAnswered={wasAnswered}, duration={durationSeconds}s): {pathToWait}");
-                        long lastStableSize = -1;
-                        int stableObservations = 0;
-                        for (int i = 0; i < waitSeconds; i++)
-                        {
-                            await Task.Delay(1000).ConfigureAwait(false);
+                    // Recording upload source = Local: client WAV first; Miko PBX download only as fallback (main line).
+                    // Secondary connection (line 2): local client recording only — no PBX CDR download.
+                    bool preferLocalForAmo = call != null
+                        && CallStatisticsService.GetEffectiveConnectionSlot(call) == CallConnectionSlot.Secondary;
 
-                            if (CallWindowHelpers.ObserveRecordingWavStability(pathToWait, ref lastStableSize, ref stableObservations))
-                            {
-                                finalRecordingPath = pathToWait;
-                                Log($"[MainWindow] AmoCRM queue: job path file ready after {i + 1}s ({lastStableSize / 1024} KB, stable)");
-                                break;
-                            }
-
-                            var histPath = FindMatchingCallFromHistory();
-                            if (CallWindowHelpers.ObserveRecordingWavStability(histPath, ref lastStableSize, ref stableObservations))
-                            {
-                                finalRecordingPath = histPath;
-                                pathToWait = histPath;
-                                Log($"[MainWindow] AmoCRM queue: file ready from history after {i + 1}s: {histPath} ({lastStableSize / 1024} KB, stable)");
-                                break;
-                            }
-                        }
-                        if (!CallWindowHelpers.IsRecordingWavPlausible(finalRecordingPath, out _))
-                            Log($"[MainWindow] AmoCRM queue: file still not ready after {waitSeconds}s, sending without recording");
-                    }
-                    else if (expectRecording && string.IsNullOrEmpty(pathToWait))
+                    if (expectRecording)
                     {
-                        const int historyPathWaitSeconds = 90;
-                        Log($"[MainWindow] AmoCRM queue: answered call without recording path yet, polling history (up to {historyPathWaitSeconds}s)");
-                        for (int i = 0; i < historyPathWaitSeconds; i++)
+                        string? localWait = localPathCandidate ?? pathToWait;
+                        if (CallWindowHelpers.IsPbxDownloadedRecordingPath(localWait))
+                            localWait = localPathCandidate;
+
+                        if (!string.IsNullOrEmpty(localWait))
                         {
-                            await Task.Delay(1000).ConfigureAwait(false);
-                            var histPath = FindMatchingCallFromHistory();
+                            const int maxWaitSeconds = 300;
+                            int minWaitSeconds = wasAnswered ? 60 : 30;
+                            int waitSeconds = Math.Max(minWaitSeconds, Math.Min(maxWaitSeconds, Math.Max(durationSeconds, 30)));
+                            string localRole = preferLocalForAmo ? "secondary connection (local only)" : "local recording (primary)";
+                            Log($"[MainWindow] AmoCRM: waiting for local file ({localRole}, up to {waitSeconds}s): {localWait}");
                             long lastStableSize = -1;
                             int stableObservations = 0;
-                            if (CallWindowHelpers.ObserveRecordingWavStability(histPath, ref lastStableSize, ref stableObservations))
+                            for (int i = 0; i < waitSeconds; i++)
                             {
-                                finalRecordingPath = histPath;
-                                pathToWait = histPath;
-                                Log($"[MainWindow] AmoCRM queue: recording path from history after {i + 1}s: {histPath} ({lastStableSize / 1024} KB, stable)");
-                                break;
+                                await Task.Delay(1000).ConfigureAwait(false);
+
+                                if (CallWindowHelpers.ObserveRecordingWavStability(localWait, ref lastStableSize, ref stableObservations))
+                                {
+                                    finalRecordingPath = localWait;
+                                    Log($"[MainWindow] AmoCRM: using local client recording ({localRole}) after {i + 1}s ({lastStableSize / 1024} KB)");
+                                    break;
+                                }
+
+                                var scanned = CallWindowHelpers.ResolveLocalClientRecordingPath(
+                                    _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId));
+                                if (CallWindowHelpers.ObserveRecordingWavStability(scanned, ref lastStableSize, ref stableObservations))
+                                {
+                                    finalRecordingPath = scanned;
+                                    localWait = scanned;
+                                    Log($"[MainWindow] AmoCRM: local recording from scan after {i + 1}s: {scanned}");
+                                    break;
+                                }
+                            }
+
+                            if (!CallWindowHelpers.IsRecordingUsableForUpload(finalRecordingPath))
+                                Log($"[MainWindow] AmoCRM: local recording not ready after {waitSeconds}s");
+                        }
+                        else
+                        {
+                            const int historyPathWaitSeconds = 90;
+                            Log($"[MainWindow] AmoCRM: no local path yet, polling history (up to {historyPathWaitSeconds}s)");
+                            for (int i = 0; i < historyPathWaitSeconds; i++)
+                            {
+                                await Task.Delay(1000).ConfigureAwait(false);
+                                var histPath = CallWindowHelpers.ResolveLocalClientRecordingPath(
+                                    _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId));
+                                long lastStableSize = -1;
+                                int stableObservations = 0;
+                                if (CallWindowHelpers.ObserveRecordingWavStability(histPath, ref lastStableSize, ref stableObservations))
+                                {
+                                    finalRecordingPath = histPath;
+                                    Log($"[MainWindow] AmoCRM: local recording from history after {i + 1}s: {histPath}");
+                                    break;
+                                }
                             }
                         }
                     }
-                    
+
+                    if (call != null && expectRecording && !preferLocalForAmo
+                        && !CallWindowHelpers.IsRecordingUsableForUpload(finalRecordingPath))
+                    {
+                        var (pbxRecording, cdrDuration) = await TryDownloadPbxRecordingForCallAsync(call).ConfigureAwait(false);
+                        if (CallWindowHelpers.IsPbxRecordingAcceptableForUpload(call, pbxRecording, cdrDuration, out var pbxRejectReason))
+                        {
+                            finalRecordingPath = pbxRecording;
+                            Log($"[MainWindow] AmoCRM: using Miko PBX recording (local unavailable): {pbxRecording}");
+                        }
+                        else if (!string.IsNullOrEmpty(pbxRecording))
+                        {
+                            Log($"[MainWindow] AmoCRM: Miko PBX recording rejected ({pbxRejectReason ?? "unknown"})");
+                        }
+                    }
+
                     // КРИТИЧНО: Перечитываем историю после ожидания файла, чтобы получить актуальные данные
                     // (WasAnswered и AnswerTime могут быть обновлены после первого чтения)
                     call = _callHistoryService.GetCallForAmoCrmUpload(job.PhoneNumber, job.CallTime, job.SessionId);
@@ -7049,11 +7927,6 @@ namespace Softphone
                         }
                         endedBy = call.EndedBy;
                         Log($"[MainWindow] AmoCrmWorkerAsync: After re-reading history - call?.WasAnswered={call.WasAnswered}, call?.AnswerTime.HasValue={call.AnswerTime.HasValue}, final wasAnswered={wasAnswered}, duration={durationSeconds}s");
-
-                        if (!string.IsNullOrEmpty(call.RecordingFilePath))
-                        {
-                            finalRecordingPath = call.RecordingFilePath;
-                        }
                     }
 
                     TimeSpan? ringbackSpan = null;
@@ -7085,23 +7958,7 @@ namespace Softphone
                             wasAnswered: true,
                             endedBy: endedBy,
                             duration: TimeSpan.FromSeconds(Math.Max(durationSeconds, 1)),
-                            recordingFilePath: finalRecordingPath);
-                    }
-
-                    bool enableLeadSelection = false;
-                    try
-                    {
-                        string settingsPath = AppDataHelper.GetSettingsFilePath();
-                        if (File.Exists(settingsPath))
-                        {
-                            string json = File.ReadAllText(settingsPath);
-                            var settings = JsonConvert.DeserializeObject<AppSettings>(json);
-                            enableLeadSelection = settings?.EnableAmoCrmLeadSelection ?? false;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"[MainWindow] Error loading lead selection setting: {ex.Message}");
+                            recordingFilePath: CallWindowHelpers.ResolveLocalClientRecordingPath(call) ?? localPathCandidate);
                     }
 
                     // КРИТИЧНО: Проверяем статус загрузки в истории звонков перед обработкой
@@ -7115,6 +7972,9 @@ namespace Softphone
                     
                     // Используем leadId из браузера, если он был передан, иначе используем автоматический поиск
                     Log($"[MainWindow] AmoCrmWorkerAsync: Processing job with leadId={job.AmoCrmLeadId?.ToString() ?? "null"}, phone={job.PhoneNumber}");
+                    if (!enableRecordingUpload)
+                        finalRecordingPath = null;
+
                     string? callFromSubtitleForAmo = await ResolveCallFromSubtitleForAmoAsync(call, job.PhoneNumber, job.CallTime).ConfigureAwait(false);
                     ProcessCallResult result;
                     if (job.AmoCrmLeadId.HasValue)
@@ -7141,16 +8001,25 @@ namespace Softphone
                     // Обновляем статус загрузки в истории звонков
                     if (call != null)
                     {
-                        _callHistoryService.UpdateAmoCrmUploadStatus(job.PhoneNumber, call.CallTime, result.UploadStatus, result.Reason);
+                        bool uploadSucceeded = result.Success
+                            || result.UploadStatus == AmoCrmUploadStatus.Uploaded;
+
+                        AmoCrmUploadedRecordingSource? uploadSource = null;
+                        if (uploadSucceeded && CallWindowHelpers.IsRecordingUsableForUpload(finalRecordingPath))
+                            uploadSource = CallWindowHelpers.DetectRecordingUploadSource(finalRecordingPath);
+
+                        _callHistoryService.UpdateAmoCrmUploadStatus(
+                            job.PhoneNumber,
+                            call.CallTime,
+                            result.UploadStatus,
+                            result.Reason,
+                            uploadSource);
                         
                         try
                         {
                             Dispatcher.Invoke(RefreshVisibleDashboards);
                         }
                         catch { /* window may be closing */ }
-                        
-                        bool uploadSucceeded = result.Success
-                            || result.UploadStatus == AmoCrmUploadStatus.Uploaded;
 
                         if (uploadSucceeded)
                         {
@@ -7189,10 +8058,7 @@ namespace Softphone
 
                                         if (mbResult == MessageBoxResult.OK && call != null)
                                         {
-                                            // Открываем Call Details для этого звонка
-                                            var detailsWindow = new CallDetailsWindow(call);
-                                            CenterNonOwnedWindowOverThis(detailsWindow);
-                                            detailsWindow.Show();
+                                            ShowCallDetailsWindow(call);
                                         }
                                     });
                                 }
@@ -7230,9 +8096,103 @@ namespace Softphone
             public string DedupKey { get; set; } = "";
             public string? SessionId { get; set; }
             public long? AmoCrmLeadId { get; set; }
+            /// <summary>Explicit lead from Kommo browser click-to-call (skips manual selection dialog).</summary>
+            public long? AmoCrmBrowserLeadId { get; set; }
         }
 
         // ===== Callspire PBX Gateway integration =====
+
+        /// <summary>
+        /// Exchange extension + SIP password for a PBX Gateway JWT (no browser).
+        /// </summary>
+        private static async Task<string?> TryWinappGatewayAuthAsync(
+            System.Net.Http.HttpClient http,
+            string baseUrl,
+            string username,
+            string password)
+        {
+            if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(username) || string.IsNullOrEmpty(password))
+                return null;
+            try
+            {
+                var body = new { username = username.Trim(), password };
+                var content = new System.Net.Http.StringContent(
+                    Newtonsoft.Json.JsonConvert.SerializeObject(body),
+                    System.Text.Encoding.UTF8,
+                    "application/json");
+                var resp = await http.PostAsync($"{baseUrl.TrimEnd('/')}/winapp-auth", content).ConfigureAwait(false);
+                string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    Log($"[Provision] winapp-auth HTTP {(int)resp.StatusCode}: {json}");
+                    return null;
+                }
+                var tokenNode = Newtonsoft.Json.Linq.JObject.Parse(json)["token"];
+                var token = tokenNode?.Type == Newtonsoft.Json.Linq.JTokenType.String
+                    ? tokenNode.ToString()
+                    : null;
+                return string.IsNullOrWhiteSpace(token) ? null : token;
+            }
+            catch (Exception ex)
+            {
+                Log($"[Provision] winapp-auth error: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static bool ProvisionJsonBool(Newtonsoft.Json.Linq.JToken? token)
+        {
+            if (token == null)
+                return false;
+            return token.Type switch
+            {
+                Newtonsoft.Json.Linq.JTokenType.Boolean => (bool)token,
+                Newtonsoft.Json.Linq.JTokenType.Integer => (int)token != 0,
+                Newtonsoft.Json.Linq.JTokenType.String => bool.TryParse((string)token!, out bool parsed) && parsed,
+                _ => false,
+            };
+        }
+
+        private static bool ShouldConfigureGatewayKommoFromHints(Newtonsoft.Json.Linq.JObject? kommoHints)
+        {
+            if (kommoHints == null)
+                return false;
+            if (ProvisionJsonBool(kommoHints["configure_gateway"]))
+                return true;
+            if (ProvisionJsonBool(kommoHints["upload_enabled"]))
+                return true;
+            return kommoHints["kommo_user_id"]?.Type == Newtonsoft.Json.Linq.JTokenType.Integer
+                && (int)kommoHints["kommo_user_id"]! > 0;
+        }
+
+        private async Task<bool> TryApplyGatewayKommoFromStatusAsync(AppSettings settings)
+        {
+            if (_mikoPbxCdrService == null)
+                return false;
+
+            try
+            {
+                var status = await _mikoPbxCdrService.GetKommoStatusAsync().ConfigureAwait(false);
+                _cachedKommoGatewayStatus = status;
+                if (status == null || status.Excluded)
+                    return false;
+
+                bool mapped = status.UploadEnabled
+                    || (status.KommoUserId.HasValue && status.KommoUserId.Value > 0);
+                if (!mapped)
+                    return false;
+
+                AppDataHelper.ApplyProvisionGatewayKommo(settings, status.Subdomain);
+                AppDataHelper.SaveSettings(settings);
+                Log($"[Provision] Gateway Kommo enabled from status API (user={status.KommoUserName ?? status.KommoUserId?.ToString() ?? "?"})");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log($"[Provision] Gateway Kommo status check failed: {ex.Message}");
+                return false;
+            }
+        }
 
         /// <summary>
         /// Redeems a one-time provisioning token issued by the admin panel
@@ -7325,6 +8285,7 @@ namespace Softphone
                     // WebSocket we just wrote — flip the switch so the user is
                     // online immediately without opening Settings.
                     settings.UseWebRtcAudio = true;
+                    settings.MainConnectionTransport = "WebRtc";
                 }
 
                 // Wire up PBX Gateway (same JWT service) so the
@@ -7338,28 +8299,92 @@ namespace Softphone
                     settings.EnableMikoPbxCdr = true;
                 }
 
-                string updated = Newtonsoft.Json.JsonConvert.SerializeObject(settings, Newtonsoft.Json.Formatting.Indented);
-                System.IO.File.WriteAllText(settingsPath, updated);
+                var kommoHints = payload["kommo"] as Newtonsoft.Json.Linq.JObject;
+                bool configureGatewayKommo = ShouldConfigureGatewayKommoFromHints(kommoHints);
+                string? kommoUserName = (string?)kommoHints?["kommo_user_name"];
+                string? kommoSubdomain = (string?)kommoHints?["subdomain"];
+                if (configureGatewayKommo)
+                {
+                    AppDataHelper.ApplyProvisionGatewayKommo(settings, kommoSubdomain);
+                    Log($"[Provision] Gateway Kommo auto-config from redeem (user={kommoUserName ?? "?"})");
+                }
+                else if (kommoHints != null)
+                {
+                    Log(
+                        $"[Provision] Kommo hints: configure_gateway={ProvisionJsonBool(kommoHints["configure_gateway"])}, " +
+                        $"upload_enabled={ProvisionJsonBool(kommoHints["upload_enabled"])}, " +
+                        $"authorized={ProvisionJsonBool(kommoHints["authorized"])}, " +
+                        $"excluded={ProvisionJsonBool(kommoHints["excluded"])}, " +
+                        $"kommo_user_id={kommoHints["kommo_user_id"]?.ToString() ?? "null"}");
+                }
+
+                string? gatewayJwt = await TryWinappGatewayAuthAsync(http, cdrUrl, sipUser, sipPassword).ConfigureAwait(false);
+                if (!string.IsNullOrEmpty(gatewayJwt))
+                {
+                    settings.MikoPbxCdrTokenEncrypted = TokenEncryption.Encrypt(gatewayJwt);
+                    Log("[Provision] PBX Gateway JWT obtained via winapp-auth");
+                }
+
+                AppDataHelper.SaveSettings(settings);
                 Log($"[Provision] settings.json updated for ext={extension}, server={sipServer}");
 
-                await Dispatcher.InvokeAsync(() =>
+                string kommoLine = configureGatewayKommo
+                    ? $"\nKommo: shared gateway ({kommoUserName ?? "mapped user"})."
+                    : "";
+                string gatewayAuthLine = string.IsNullOrEmpty(gatewayJwt)
+                    ? "\n\nOpen Settings → PBX Gateway → Authorize to finish gateway login."
+                    : "\n\nGateway login completed automatically.";
+                string successMessage =
+                    $"Callspire was configured automatically for extension {extension}.\n\n" +
+                    $"SIP server: {(string.IsNullOrEmpty(sipServer) ? "(existing)" : sipServer)}\n" +
+                    $"User: {sipUser}{kommoLine}{gatewayAuthLine}";
+
+                // WebView2/WPF must init on the UI thread — protocol handler runs on a pool thread.
+                await Dispatcher.InvokeAsync(async () =>
                 {
+                    try { InitializeMikoPbxCdrService(settings); }
+                    catch (Exception ex) { Log($"[Provision] CDR re-init: {ex.Message}"); }
+
+                    if (!configureGatewayKommo && !string.IsNullOrEmpty(gatewayJwt))
+                    {
+                        if (await TryApplyGatewayKommoFromStatusAsync(settings).ConfigureAwait(true))
+                        {
+                            configureGatewayKommo = true;
+                            kommoUserName = GetCachedKommoGatewayStatus()?.KommoUserName;
+                            successMessage =
+                                $"Callspire was configured automatically for extension {extension}.\n\n" +
+                                $"SIP server: {(string.IsNullOrEmpty(sipServer) ? "(existing)" : sipServer)}\n" +
+                                $"User: {sipUser}\nKommo: shared gateway ({kommoUserName ?? "mapped user"}).\n{gatewayAuthLine}";
+                            InitializeAmoCrmService(AppDataHelper.LoadSettingsOrNew());
+                        }
+                    }
+
+                    try
+                    {
+                        if (MainStatusTextBlock != null)
+                        {
+                            MainStatusTextBlock.Text = "Connecting...";
+                            if (MainStatusIndicator != null)
+                                MainStatusIndicator.Background = (Brush)FindResource("TextSecondaryBrush");
+                        }
+                        // Same as MainWindow_Loaded: pull TURN from gateway before WebRTC init.
+                        await EnsureGatewayTurnSyncedBeforeConnectAsync();
+                        await ReconnectFromSettingsAsync();
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[Provision] reconnect after setup: {ex.Message}");
+                    }
+
+                    if (string.IsNullOrEmpty(gatewayJwt))
+                        WindowForegroundHelper.RequestForCdrAuthCallback();
+
                     MessageBox.Show(
-                        $"Callspire was configured automatically for extension {extension}.\n\n" +
-                        $"SIP server: {(string.IsNullOrEmpty(sipServer) ? "(existing)" : sipServer)}\n" +
-                        $"User: {sipUser}\n\n" +
-                        "The softphone will reconnect now. Open Settings if you need to change anything.",
+                        successMessage + "\n\nThe softphone is ready.",
                         "Callspire — setup complete",
                         MessageBoxButton.OK,
                         MessageBoxImage.Information);
-                });
-
-                // Re-initialize both SIP and CDR services so the user is on-line
-                // immediately without manually restarting the app.
-                try { InitializeMikoPbxCdrService(settings); } catch (Exception ex) { Log($"[Provision] CDR re-init: {ex.Message}"); }
-                try { await RestartSipRegistrationAsync().ConfigureAwait(false); }
-                catch (Exception ex) { Log($"[Provision] SIP re-register: {ex.Message}"); }
-                WindowForegroundHelper.RequestForCdrAuthCallback();
+                }).Task.Unwrap().ConfigureAwait(true);
             }
             catch (Exception ex)
             {
@@ -7372,35 +8397,6 @@ namespace Softphone
                         MessageBoxButton.OK,
                         MessageBoxImage.Warning);
                 });
-            }
-        }
-
-        /// <summary>
-        /// Kicks a SIP re-registration after <c>settings.json</c> changed.
-        /// Safe to call from the UI thread. Reads the fresh settings from
-        /// disk so we pick up whatever <c>HandleProvisionTokenAsync</c> just
-        /// wrote, then reuses <c>ConnectWithSettings</c> (the same codepath
-        /// startup uses) so behaviour stays identical.
-        /// </summary>
-        private async Task RestartSipRegistrationAsync()
-        {
-            try
-            {
-                string settingsPath = AppDataHelper.GetSettingsFilePath();
-                if (!System.IO.File.Exists(settingsPath))
-                    return;
-                var settings = Newtonsoft.Json.JsonConvert.DeserializeObject<AppSettings>(
-                    System.IO.File.ReadAllText(settingsPath));
-                if (settings == null) return;
-
-                try { _sipService?.Dispose(); } catch { }
-                _sipService = null;
-
-                await ConnectWithSettings(settings).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                Log($"[Provision] SIP re-register error: {ex.Message}");
             }
         }
 
@@ -7470,6 +8466,7 @@ namespace Softphone
                 _mikoPbxExtension = settings.MikoPbxExtension;
 
                 Log($"[PBX Gateway] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
+                LogOriginateExtensionMismatchIfAny(settings);
 
                 _ = LoadCallerIdsAsync(settings);
                 // Also start the SIP auth-failure warning poll — piggybacking on
@@ -7552,10 +8549,13 @@ namespace Softphone
 
         private System.Threading.Timer? _sipAuthFailureTimer;
         private int _lastSipAuthFailureCount = 0;
+        private int _sipAuthFailureTransientErrors = 0;
+        private int _sipAuthFailurePollBackoffMinutes = 1;
         // TimeSpan.Zero = first tick fires immediately, so the user sees the
         // banner right after startup without waiting a full minute.
         private static readonly TimeSpan _sipAuthFailurePollFirst = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan _sipAuthFailurePollInterval = TimeSpan.FromMinutes(1);
+        private static readonly TimeSpan _sipAuthFailurePollMaxInterval = TimeSpan.FromMinutes(10);
 
         private void StartSipAuthFailurePolling()
         {
@@ -7581,6 +8581,18 @@ namespace Softphone
             var svc = _mikoPbxCdrService;
             if (svc == null) return;
             var stats = await svc.GetSipAuthFailuresAsync().ConfigureAwait(false);
+            if (stats.TransientServerError)
+            {
+                _sipAuthFailureTransientErrors++;
+                if (_sipAuthFailureTransientErrors == 1)
+                    Log("[SipAuthWarn] Gateway temporarily unavailable (HTTP 502/503), backing off polling");
+                ScheduleSipAuthFailurePollBackoff();
+                return;
+            }
+
+            _sipAuthFailureTransientErrors = 0;
+            _sipAuthFailurePollBackoffMinutes = 1;
+
             if (!stats.Supported)
             {
                 // REST disabled on the proxy — quietly give up, no point polling.
@@ -7595,6 +8607,22 @@ namespace Softphone
                 if (count <= 0) { HideSipAuthFailureBanner(); return; }
                 ShowSipAuthFailureBanner(count);
             });
+        }
+
+        private void ScheduleSipAuthFailurePollBackoff()
+        {
+            try
+            {
+                _sipAuthFailurePollBackoffMinutes = Math.Min(
+                    _sipAuthFailurePollBackoffMinutes * 2,
+                    (int)_sipAuthFailurePollMaxInterval.TotalMinutes);
+                var next = TimeSpan.FromMinutes(_sipAuthFailurePollBackoffMinutes);
+                _sipAuthFailureTimer?.Change(next, next);
+            }
+            catch (Exception ex)
+            {
+                Log($"[SipAuthWarn] backoff reschedule error: {ex.Message}");
+            }
         }
 
         private void ShowSipAuthFailureBanner(int count)
@@ -7622,6 +8650,10 @@ namespace Softphone
 
         public MikoPbxCdrService? GetMikoPbxCdrService() => _mikoPbxCdrService;
 
+        /// <summary>Downloads Miko PBX recording for a call (cached under Recordings/PBX when found).</summary>
+        public Task<(string? path, int? cdrDurationSec)> DownloadPbxRecordingForCallAsync(CallHistoryItem call) =>
+            TryDownloadPbxRecordingForCallAsync(call);
+
         /// <summary>PBX Gateway CDR extension: line-2 SIP username for Connection2, main MikoPBX ext otherwise.</summary>
         public string? GetPbxCdrExtensionForCall(CallHistoryItem? call)
         {
@@ -7632,62 +8664,113 @@ namespace Softphone
             return _mikoPbxExtension;
         }
 
-        private async Task<string?> TryDownloadPbxRecordingForCallAsync(CallHistoryItem call)
+        private static readonly int[] PbxCdrRetryDelaysSeconds = { 0, 5, 15, 30 };
+
+        private async Task<(string? path, int? cdrDurationSec)> TryDownloadPbxRecordingForCallAsync(CallHistoryItem call)
         {
             if (_mikoPbxCdrService == null)
-                return null;
+                return (null, null);
 
             var ext = GetPbxCdrExtensionForCall(call);
             if (string.IsNullOrWhiteSpace(ext))
-                return null;
+                return (null, null);
 
             try
             {
-                var records = await _mikoPbxCdrService.GetCdrAsync(
-                    call.CallTime.AddHours(-2),
-                    call.CallTime.AddHours(2),
-                    dst: call.PhoneNumber,
-                    limit: 50,
-                    extensionOverride: ext).ConfigureAwait(false);
-
-                CdrRecord? best = null;
-                double bestDiff = double.MaxValue;
-                foreach (var r in records)
+                for (int attempt = 0; attempt < PbxCdrRetryDelaysSeconds.Length; attempt++)
                 {
-                    if (string.IsNullOrEmpty(r.Recording) || string.IsNullOrEmpty(r.LinkedId))
-                        continue;
-                    if (!DateTime.TryParse(r.Start, out var recTime))
-                        continue;
-                    double diff = Math.Abs((recTime - call.CallTime).TotalSeconds);
-                    if (diff < bestDiff)
+                    if (attempt > 0)
                     {
-                        bestDiff = diff;
-                        best = r;
+                        int delay = PbxCdrRetryDelaysSeconds[attempt];
+                        Log($"[MainWindow] PBX CDR lookup retry {attempt}/{PbxCdrRetryDelaysSeconds.Length - 1} in {delay}s for {call.PhoneNumber}");
+                        await Task.Delay(TimeSpan.FromSeconds(delay)).ConfigureAwait(false);
                     }
+
+                    var (downloaded, cdrDuration) = await TryDownloadPbxRecordingOnceAsync(call, ext).ConfigureAwait(false);
+                    if (!string.IsNullOrEmpty(downloaded))
+                        return (downloaded, cdrDuration);
                 }
 
-                if (best == null)
-                {
+                if (!HasLocalRecordingForCall(call))
                     Log($"[MainWindow] PBX: no CDR row with recording for {call.PhoneNumber} (ext={ext})");
-                    return null;
-                }
-
-                string destFolder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Callspire", "Recordings", "PBX");
-                string? downloaded = await _mikoPbxCdrService.DownloadRecordingAsync(best.LinkedId, destFolder).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(downloaded) || !File.Exists(downloaded) || new FileInfo(downloaded).Length == 0)
-                    return null;
-
-                Log($"[MainWindow] PBX recording downloaded for {call.PhoneNumber} (ext={ext}): {downloaded}");
-                _callHistoryService.UpdateRecordingFilePath(call.PhoneNumber, call.CallTime, downloaded);
-                return downloaded;
+                return (null, null);
             }
             catch (Exception ex)
             {
-                Log($"[MainWindow] PBX recording download failed (ext={ext}): {ex.Message}");
-                return null;
+                if (!HasLocalRecordingForCall(call))
+                    Log($"[MainWindow] PBX recording download failed (ext={ext}): {ex.Message}");
+                return (null, null);
             }
+        }
+
+        private async Task<(string? path, int? cdrDurationSec)> TryDownloadPbxRecordingOnceAsync(CallHistoryItem call, string ext)
+        {
+            var records = await _mikoPbxCdrService!.GetCdrAsync(
+                call.CallTime.AddHours(-2),
+                call.CallTime.AddHours(2),
+                dst: call.PhoneNumber,
+                limit: 50,
+                extensionOverride: ext).ConfigureAwait(false);
+
+            const double maxStartDiffSeconds = 120;
+            bool wasAnswered = call.WasAnswered || call.AnswerTime.HasValue;
+            int? callDurationSec = call.Duration.HasValue && call.Duration.Value.TotalSeconds > 0
+                ? (int)Math.Round(call.Duration.Value.TotalSeconds)
+                : null;
+
+            CdrRecord? best = null;
+            double bestDiff = double.MaxValue;
+            foreach (var r in records)
+            {
+                if (string.IsNullOrEmpty(r.Recording) || string.IsNullOrEmpty(r.LinkedId))
+                    continue;
+                if (!DateTime.TryParse(r.Start, out var recTime))
+                    continue;
+
+                double diff = Math.Abs((recTime - call.CallTime).TotalSeconds);
+                if (diff > maxStartDiffSeconds)
+                    continue;
+
+                if (wasAnswered
+                    && !string.IsNullOrEmpty(r.Disposition)
+                    && !r.Disposition.Equals("ANSWERED", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (wasAnswered && callDurationSec.HasValue && r.Duration > 0)
+                {
+                    int durDiff = Math.Abs(r.Duration - callDurationSec.Value);
+                    int tolerance = Math.Max(30, callDurationSec.Value / 2);
+                    if (durDiff > tolerance)
+                        continue;
+                }
+
+                if (diff < bestDiff)
+                {
+                    bestDiff = diff;
+                    best = r;
+                }
+            }
+
+            if (best == null)
+                return (null, null);
+
+            Log($"[MainWindow] PBX CDR matched linkedId={best.LinkedId}, start={best.Start}, duration={best.Duration}s, diff={bestDiff:F0}s");
+
+            string destFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Callspire", "Recordings", "PBX");
+            string? downloaded = await _mikoPbxCdrService.DownloadRecordingAsync(best.LinkedId, destFolder).ConfigureAwait(false);
+            if (string.IsNullOrEmpty(downloaded) || !File.Exists(downloaded) || new FileInfo(downloaded).Length == 0)
+                return (null, null);
+
+            Log($"[MainWindow] PBX recording downloaded for {call.PhoneNumber} (ext={ext}): {downloaded}");
+            return (downloaded, best.Duration > 0 ? best.Duration : null);
+        }
+
+        private static bool HasLocalRecordingForCall(CallHistoryItem call)
+        {
+            var local = CallWindowHelpers.ResolveLocalClientRecordingPath(call);
+            return !string.IsNullOrEmpty(local) && File.Exists(local) && new FileInfo(local).Length > 0;
         }
 
         /// <summary>

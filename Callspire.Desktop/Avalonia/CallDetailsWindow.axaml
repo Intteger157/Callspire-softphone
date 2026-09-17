@@ -24,8 +24,8 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
-            <!-- Title Bar -->
-            <Border Grid.Row="0"
+            <!-- Title Bar (custom chrome; hidden on macOS/Linux) -->
+            <Border Grid.Row="0" Name="CustomTitleBar"
                     Background="{DynamicResource BackgroundMediumBrush}"
                     CornerRadius="8,8,0,0">
                 <Grid PointerPressed="TitleBar_PointerPressed">
@@ -241,6 +241,35 @@
                                        TextTrimming="CharacterEllipsis"
                                        Margin="0,8,0,0"/>
                         </StackPanel>
+                    </Border>
+
+                    <!-- Kommo section -->
+                    <Border Name="KommoSection" IsVisible="False"
+                            Background="{DynamicResource BackgroundMediumBrush}"
+                            BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
+                            CornerRadius="8" Padding="16,14">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <StackPanel Grid.Column="0" Spacing="4">
+                                <TextBlock Text="Kommo" FontSize="15" FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <TextBlock Name="KommoStatusTextBlock" FontSize="13"
+                                           Foreground="{DynamicResource TextPrimaryBrush}"/>
+                                <TextBlock Name="KommoReasonTextBlock" FontSize="12" TextWrapping="Wrap"
+                                           Foreground="{DynamicResource TextSecondaryBrush}"/>
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                                <Button Name="KommoOpenLeadButton" Content="Open lead" IsVisible="False"
+                                        Background="{DynamicResource BackgroundLightBrush}"
+                                        Foreground="{DynamicResource TextPrimaryBrush}"
+                                        BorderThickness="0" Padding="12,6" CornerRadius="8" Cursor="Hand"
+                                        Click="KommoOpenLead_Click"/>
+                                <Button Name="KommoRetryButton" Content="Retry upload"
+                                        Background="{DynamicResource AccentBlueBrush}"
+                                        Foreground="White" BorderThickness="0"
+                                        Padding="12,6" CornerRadius="8" Cursor="Hand"
+                                        Click="KommoRetry_Click"/>
+                            </StackPanel>
+                        </Grid>
                     </Border>
 
                     <!-- Technical log section -->

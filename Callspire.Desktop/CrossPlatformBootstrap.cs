@@ -63,8 +63,13 @@ namespace Softphone
                 RegisterPortAudioHooks();
             }
 
-            // ── Tone generator (NAudio WaveOutEvent — cross-platform) ─────────
-            TonePlayerFactory.Create = () => new ToneGenerator();
+            // ── Tone generator ───────────────────────────────────────────────
+            // Windows: NAudio WaveOutEvent (winmm). macOS/Linux: PortAudio-backed player —
+            // WaveOutEvent P/Invokes winmm.dll and is not available there.
+            if (OperatingSystem.IsWindows())
+                TonePlayerFactory.Create = () => new ToneGenerator();
+            else
+                TonePlayerFactory.Create = () => new PortAudioTonePlayer();
 
             // ── Theme ─────────────────────────────────────────────────────────
             try { ThemeService.Initialize(); } catch { }
@@ -110,13 +115,14 @@ namespace Softphone
 
         private static void RegisterPortAudioHooks()
         {
-            // On macOS / Linux ringtone playback goes through PortAudio.
-            // RingtoneControl.StopHook is a no-op until a real PortAudio
-            // ringtone service is wired up (Phase 7 / cross-platform audio).
-            RingtoneControl.StopHook              = () => AppLog.Log("[CrossPlatformBootstrap] RingtoneControl.Stop (PortAudio stub)");
-            RingbackToneControl.StopHook          = () => AppLog.Log("[CrossPlatformBootstrap] RingbackToneControl.Stop (PortAudio stub)");
-            MicrophoneControl.OptimizeForVoIPHook = () => AppLog.Log("[CrossPlatformBootstrap] MicrophoneControl.OptimizeForVoIP (PortAudio stub)");
-            MicrophoneControl.SetMuteHook         = mute => AppLog.Log($"[CrossPlatformBootstrap] MicrophoneControl.SetMute({mute}) (PortAudio stub)");
+            // On macOS / Linux ringtone + ringback playback goes through PortAudio
+            // (PortAudioTonePlayer). Microphone mute is applied per call by
+            // SipService.SetMute / WebRtcService.SetMuteAsync — there is no
+            // system-wide mic mute API to mirror the Windows CoreAudio behaviour.
+            RingtoneControl.StopHook              = () => PortAudioTonePlayer.Shared.Stop();
+            RingbackToneControl.StopHook          = () => { /* per-call ITonePlayer instances stop themselves */ };
+            MicrophoneControl.OptimizeForVoIPHook = () => { };
+            MicrophoneControl.SetMuteHook         = _ => { };
         }
     }
 }

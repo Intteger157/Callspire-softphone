@@ -1,6 +1,7 @@
 #if WINDOWS
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Windows;
 using System.Windows.Threading;
 using System.Threading.Tasks;
@@ -32,6 +33,9 @@ namespace Softphone
 
             // Platform audio backend: WASAPI/WinMM on Windows, PortAudio elsewhere.
             Softphone.Audio.AudioDeviceFactory.Default = new DesktopAudioDeviceFactory();
+
+            // Manual Kommo lead picker (local mode) — AmoCrmService is UI-agnostic and calls this hook.
+            LeadSelectionWindow.RegisterAsLeadSelectionUi();
 
             // Desktop (NAudio-based) implementations of Core audio hooks.
             Softphone.Audio.TonePlayerFactory.Create = () => new ToneGenerator();
@@ -410,6 +414,12 @@ namespace Softphone
         {
             try
             {
+                if (IsBenignUnobservedTaskException(e.Exception))
+                {
+                    e.SetObserved();
+                    return;
+                }
+
                 Debug.WriteLine($"[App] Unobserved task exception: {e.Exception.Message}");
                 Debug.WriteLine($"[App] Exception type: {e.Exception.GetType().Name}");
                 if (e.Exception.StackTrace != null)
@@ -445,6 +455,30 @@ namespace Softphone
                 // Игнорируем ошибки логирования
                 e.SetObserved();
             }
+        }
+
+        private static bool IsBenignUnobservedTaskException(Exception ex)
+        {
+            if (ex is AggregateException agg)
+                return agg.Flatten().InnerExceptions.All(IsBenignUnobservedTaskException);
+
+            if (ex is OperationCanceledException or ObjectDisposedException)
+                return true;
+
+            if (ex is IOException io)
+            {
+                if (io.HResult == unchecked((int)0x800703E3))
+                    return true;
+
+                string msg = io.Message;
+                if (msg.Contains("aborted", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("I/O operation", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("cancelled", StringComparison.OrdinalIgnoreCase)
+                    || msg.Contains("canceled", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+
+            return false;
         }
     }
 }

@@ -70,5 +70,10 @@ namespace Softphone
             // Пока просто пробрасываем дальше
             _baseSink.GotAudioRtp(remoteEndPoint, ssrc, seqnum, timestamp, payloadID, marker, payload);
         }
+
+        public void GotEncodedMediaFrame(EncodedAudioFrame encodedMediaFrame)
+        {
+            _baseSink.GotEncodedMediaFrame(encodedMediaFrame);
+        }
     }
 }

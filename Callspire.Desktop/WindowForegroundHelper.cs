@@ -430,7 +430,15 @@ namespace Softphone
 
                     if (owner.IsLoaded)
 
-                        dialog.Owner = owner;
+                    {
+
+                        // Win10: owned dialog + topmost owner can tear WindowChrome apart (AmoCRM click-to-call).
+
+                        if (NativeWindowAppearanceManager.IsWindows11OrGreater() || !owner.Topmost)
+
+                            dialog.Owner = owner;
+
+                    }
 
                 }
 
@@ -470,7 +478,11 @@ namespace Softphone
 
                 ForceBringToFront(dialog);
 
-                ToggleTopmost(dialog);
+                // Win10: toggling topmost during layout splits custom chrome from client area.
+
+                if (NativeWindowAppearanceManager.IsWindows11OrGreater())
+
+                    ToggleTopmost(dialog);
 
             }
 
@@ -638,7 +650,9 @@ namespace Softphone
 
 
 
-            dialog.ShowInTaskbar = true;
+            // Transient pickers/alerts should not spawn a second taskbar thumbnail (Win10 Alt+Tab clutter).
+
+            dialog.ShowInTaskbar = dialog is MainWindow or CallWindow;
 
             dialog.ShowActivated = true;
 

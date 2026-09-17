@@ -2,458 +2,327 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
-using SIPSorceryMedia.Abstractions;
 using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+using PortAudioSharp;
+using SIPSorcery.Media;
+using SIPSorceryMedia.Abstractions;
+using Softphone.Audio;
 
 namespace Softphone
 {
     /// <summary>
-    /// Адаптер PortAudio для IAudioSink
-    /// Использует PortAudioNet для воспроизведения аудио с низкой задержкой
+    /// PortAudio speaker output for SIPSorcery (<see cref="IAudioSink"/>), macOS / Linux / Windows.
+    /// Built on PortAudioSharp2: an output stream in callback mode pulls 16-bit mono PCM from an
+    /// internal ring buffer that <see cref="GotAudioSample"/> fills. Incoming PCM at a different
+    /// rate (e.g. 8 kHz G.711 into a 16 kHz stream) is resampled linearly.
     /// </summary>
     public class PortAudioSink : IAudioSink, IDisposable
     {
         private readonly int _deviceIndex;
         private readonly int _sampleRate;
         private readonly int _channels;
-        
-        private IntPtr _stream = IntPtr.Zero;
-        private bool _isStarted = false;
-        private bool _isPaused = false;
-        private bool _isDisposed = false;
-        
-        private readonly object _lockObject = new object();
-        
+        private readonly AudioEncoder? _audioEncoder;
+
+        private readonly object _lock = new();
+        private readonly PcmRingBuffer _ring;
+        private IDisposable? _runtime;
+        private PortAudioSharp.Stream? _stream;
+        private PortAudioSharp.Stream.Callback? _callback; // keep delegate alive
+        private int _streamChannels = 1;
+        private bool _isStarted;
+        private bool _isPaused;
+        private bool _isDisposed;
+
         private AudioFormat? _currentFormat;
-        private readonly List<AudioFormat> _supportedFormats = new List<AudioFormat>();
-        
+        private readonly List<AudioFormat> _supportedFormats = new();
+
         public event SourceErrorDelegate? OnAudioSinkError;
 
         /// <summary>Optional AEC: playback frames are fed as the far-end reference signal.</summary>
-        public Softphone.Audio.IEchoCanceller? EchoCanceller { get; set; }
+        public IEchoCanceller? EchoCanceller { get; set; }
 
-        public PortAudioSink(int deviceIndex = -1, int sampleRate = 16000, int channels = 1)
+        public int SampleRate => _sampleRate;
+
+        /// <summary>Milliseconds of audio currently buffered and not yet played.</summary>
+        public int QueuedMilliseconds => (int)(_ring.Count * 1000L / Math.Max(1, _sampleRate));
+
+        public PortAudioSink(int deviceIndex = -1, int sampleRate = 16000, int channels = 1, AudioEncoder? audioEncoder = null)
         {
             _deviceIndex = deviceIndex;
-            _sampleRate = sampleRate;
-            _channels = channels;
-            
+            _sampleRate = sampleRate <= 0 ? 16000 : sampleRate;
+            _channels = Math.Max(1, channels);
+            _audioEncoder = audioEncoder;
+            // ~1 s of headroom; jitter target is ~60-100 ms.
+            _ring = new PcmRingBuffer(_sampleRate);
             InitializeSupportedFormats();
         }
 
         private void InitializeSupportedFormats()
         {
-            // Поддерживаемые форматы для VoIP
             try
             {
                 _supportedFormats.Add(new AudioFormat(AudioCodecsEnum.PCMU, _sampleRate, _channels));
                 _supportedFormats.Add(new AudioFormat(AudioCodecsEnum.PCMA, _sampleRate, _channels));
                 _supportedFormats.Add(new AudioFormat(AudioCodecsEnum.G722, _sampleRate, _channels));
             }
-            catch (Exception ex)
+            catch
             {
-                System.Diagnostics.Debug.WriteLine($"Error initializing sink formats: {ex.Message}");
-                try
-                {
-                    _supportedFormats.Clear();
-                    _supportedFormats.Add(new AudioFormat(AudioCodecsEnum.PCMU, _sampleRate, _channels));
-                }
-                catch
-                {
-                    // Если даже PCMU не работает, оставляем список пустым
-                }
+                _supportedFormats.Clear();
+                try { _supportedFormats.Add(new AudioFormat(AudioCodecsEnum.PCMU, _sampleRate, _channels)); } catch { }
             }
         }
 
         public void RestrictFormats(Func<AudioFormat, bool> filter)
         {
-            lock (_lockObject)
-            {
-                _supportedFormats.RemoveAll(f => !filter(f));
-            }
+            lock (_lock) _supportedFormats.RemoveAll(f => !filter(f));
         }
 
         public void SetAudioSinkFormat(AudioFormat audioFormat)
         {
-            lock (_lockObject)
+            lock (_lock)
             {
-                // Проверяем, что формат имеет допустимый ID (<= 127)
                 try
                 {
-                    var formatIdProperty = audioFormat.GetType().GetProperty("FormatID");
-                    if (formatIdProperty != null)
+                    if (audioFormat.FormatID > 127)
                     {
-                        var formatId = Convert.ToInt32(formatIdProperty.GetValue(audioFormat));
-                        if (formatId > 127)
-                        {
-                            _currentFormat = new AudioFormat(AudioCodecsEnum.PCMU, _sampleRate, _channels);
-                            return;
-                        }
+                        _currentFormat = new AudioFormat(AudioCodecsEnum.PCMU, _sampleRate, _channels);
+                        return;
                     }
                 }
-                catch
-                {
-                    _currentFormat = new AudioFormat(AudioCodecsEnum.PCMU, _sampleRate, _channels);
-                    return;
-                }
-                
+                catch { }
                 _currentFormat = audioFormat;
             }
         }
 
         public Task StartAudioSink()
         {
-            if (_isDisposed)
-                throw new ObjectDisposedException(nameof(PortAudioSink));
+            if (_isDisposed) throw new ObjectDisposedException(nameof(PortAudioSink));
 
-            lock (_lockObject)
+            lock (_lock)
             {
-                if (_isStarted)
-                    return Task.CompletedTask;
-
+                if (_isStarted) return Task.CompletedTask;
                 try
                 {
-                    // Используем reflection для вызова методов PortAudioNet
-                    Type? portAudioType = Type.GetType("PortAudioSharp.PortAudio, PortAudioNet");
-                    if (portAudioType == null)
-                    {
-                        portAudioType = Type.GetType("PortAudio.PortAudio, PortAudioNet");
-                    }
-                    if (portAudioType == null)
-                    {
-                        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-                        foreach (var assembly in assemblies)
-                        {
-                            if (assembly.FullName?.Contains("PortAudioNet") == true)
-                            {
-                                portAudioType = assembly.GetType("PortAudioSharp.PortAudio") 
-                                             ?? assembly.GetType("PortAudio.PortAudio");
-                                if (portAudioType != null) break;
-                            }
-                        }
-                    }
-                    
-                    if (portAudioType == null)
-                    {
-                        OnAudioSinkError?.Invoke("PortAudioNet assembly not found");
-                        return Task.CompletedTask;
-                    }
+                    _runtime ??= PortAudioRuntime.Acquire();
 
-                    // Инициализируем PortAudio
-                    var initializeMethod = portAudioType.GetMethod("Pa_Initialize");
-                    if (initializeMethod == null)
-                    {
-                        OnAudioSinkError?.Invoke("Pa_Initialize method not found");
-                        return Task.CompletedTask;
-                    }
-
-                    var initResult = initializeMethod.Invoke(null, null);
-                    if (initResult == null || !IsSuccess(initResult))
-                    {
-                        OnAudioSinkError?.Invoke($"Failed to initialize PortAudio: {initResult}");
-                        return Task.CompletedTask;
-                    }
-
-                    // Получаем устройство по умолчанию для вывода
-                    int outputDevice = _deviceIndex;
-                    if (outputDevice < 0)
-                    {
-                        var getDefaultOutputMethod = portAudioType.GetMethod("Pa_GetDefaultOutputDevice");
-                        if (getDefaultOutputMethod != null)
-                        {
-                            var defaultDevice = getDefaultOutputMethod.Invoke(null, null);
-                            if (defaultDevice != null)
-                            {
-                                outputDevice = Convert.ToInt32(defaultDevice);
-                            }
-                        }
-                    }
-
-                    if (outputDevice < 0)
+                    var outParams = PortAudioRuntime.MakeParams(_deviceIndex, input: false, _channels, out int device);
+                    if (outParams == null)
                     {
                         OnAudioSinkError?.Invoke("No output device available");
                         return Task.CompletedTask;
                     }
+                    _streamChannels = outParams.Value.channelCount;
 
-                    // Настраиваем параметры потока для вывода
-                    var streamParamsType = Type.GetType("PortAudioSharp.PaStreamParameters, PortAudioNet");
-                    if (streamParamsType == null)
-                    {
-                        OnAudioSinkError?.Invoke("PaStreamParameters type not found");
-                        return Task.CompletedTask;
-                    }
-
-                    var outputParams = Activator.CreateInstance(streamParamsType);
-                    if (outputParams != null)
-                    {
-                        SetProperty(outputParams, "device", outputDevice);
-                        SetProperty(outputParams, "channelCount", _channels);
-                    }
-                    else
-                    {
-                        OnAudioSinkError?.Invoke("Failed to create stream parameters");
-                        return Task.CompletedTask;
-                    }
-                    
-                    var sampleFormatType = Type.GetType("PortAudioSharp.PaSampleFormat, PortAudioNet");
-                    if (sampleFormatType != null)
-                    {
-                        var paInt16 = Enum.Parse(sampleFormatType, "paInt16");
-                        SetProperty(outputParams, "sampleFormat", paInt16);
-                    }
-
-                    // Открываем поток для вывода
-                    var openStreamMethod = portAudioType.GetMethod("Pa_OpenStream", new[] { typeof(IntPtr).MakeByRefType(), typeof(IntPtr), streamParamsType.MakeByRefType(), typeof(double), typeof(int), typeof(int), typeof(IntPtr), typeof(IntPtr) });
-                    if (openStreamMethod == null)
-                    {
-                        OnAudioSinkError?.Invoke("Pa_OpenStream method not found");
-                        return Task.CompletedTask;
-                    }
-
-                    var openParams = new object[] { IntPtr.Zero, IntPtr.Zero, outputParams, (double)_sampleRate, 0, 0, IntPtr.Zero, IntPtr.Zero };
-                    var openResult = openStreamMethod.Invoke(null, openParams);
-                    
-                    if (openResult == null || !IsSuccess(openResult))
-                    {
-                        OnAudioSinkError?.Invoke($"Failed to open output stream: {openResult}");
-                        return Task.CompletedTask;
-                    }
-
-                    _stream = (IntPtr)openParams[0];
-
-                    // Запускаем поток
-                    var startStreamMethod = portAudioType.GetMethod("Pa_StartStream");
-                    if (startStreamMethod == null)
-                    {
-                        OnAudioSinkError?.Invoke("Pa_StartStream method not found");
-                        return Task.CompletedTask;
-                    }
-
-                    var startResult = startStreamMethod.Invoke(null, new object[] { _stream });
-                    if (startResult == null || !IsSuccess(startResult))
-                    {
-                        OnAudioSinkError?.Invoke($"Failed to start output stream: {startResult}");
-                        return Task.CompletedTask;
-                    }
+                    _callback = OutputCallback;
+                    uint framesPerBuffer = (uint)(_sampleRate / 50); // 20 ms
+                    _stream = new PortAudioSharp.Stream(null, outParams, _sampleRate, framesPerBuffer, StreamFlags.ClipOff, _callback, IntPtr.Zero);
+                    _stream.Start();
 
                     _isStarted = true;
                     _isPaused = false;
+                    AppLog.Log($"[PortAudioSink] started (device={device}, rate={_sampleRate}, ch={_streamChannels})");
                 }
                 catch (Exception ex)
                 {
                     OnAudioSinkError?.Invoke($"Error starting audio sink: {ex.Message}");
-                    return Task.CompletedTask;
+                    AppLog.Log($"[PortAudioSink] start failed: {ex}");
+                    try { _stream?.Dispose(); } catch { }
+                    _stream = null;
                 }
             }
-            
             return Task.CompletedTask;
         }
 
-        public Task PauseAudioSink()
+        private StreamCallbackResult OutputCallback(IntPtr input, IntPtr output, uint frameCount, ref StreamCallbackTimeInfo timeInfo, StreamCallbackFlags statusFlags, IntPtr userData)
         {
-            lock (_lockObject)
+            if (output == IntPtr.Zero) return StreamCallbackResult.Continue;
+            int frames = (int)frameCount;
+            try
             {
-                _isPaused = true;
+                unsafe
+                {
+                    short* dst = (short*)output;
+                    if (_isPaused)
+                    {
+                        new Span<short>(dst, frames * _streamChannels).Clear();
+                        return StreamCallbackResult.Continue;
+                    }
+
+                    if (_streamChannels == 1)
+                    {
+                        int got = _ring.Read(new Span<short>(dst, frames));
+                        if (got < frames) new Span<short>(dst + got, frames - got).Clear();
+                    }
+                    else
+                    {
+                        Span<short> mono = frames <= 2048 ? stackalloc short[frames] : new short[frames];
+                        int got = _ring.Read(mono);
+                        if (got < frames) mono.Slice(got).Clear();
+                        for (int i = 0; i < frames; i++)
+                            for (int c = 0; c < _streamChannels; c++)
+                                dst[i * _streamChannels + c] = mono[i];
+                    }
+                }
             }
-            return Task.CompletedTask;
+            catch
+            {
+                // never throw across the native boundary
+            }
+            return StreamCallbackResult.Continue;
         }
 
-        public Task ResumeAudioSink()
-        {
-            lock (_lockObject)
-            {
-                _isPaused = false;
-            }
-            return Task.CompletedTask;
-        }
+        public Task PauseAudioSink() { lock (_lock) { _isPaused = true; _ring.Clear(); } return Task.CompletedTask; }
+        public Task ResumeAudioSink() { lock (_lock) _isPaused = false; return Task.CompletedTask; }
 
         public Task CloseAudioSink()
         {
-            lock (_lockObject)
+            lock (_lock)
             {
-                if (!_isStarted || _stream == IntPtr.Zero)
-                    return Task.CompletedTask;
-
+                if (!_isStarted && _stream == null) return Task.CompletedTask;
                 try
                 {
-                    Type? portAudioType = Type.GetType("PortAudioSharp.PortAudio, PortAudioNet");
-                    if (portAudioType == null)
+                    if (_stream != null)
                     {
-                        portAudioType = Type.GetType("PortAudio.PortAudio, PortAudioNet");
+                        try { _stream.Abort(); } catch { }
+                        try { _stream.Dispose(); } catch { }
                     }
-                    if (portAudioType == null)
-                    {
-                        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-                        foreach (var assembly in assemblies)
-                        {
-                            if (assembly.FullName?.Contains("PortAudioNet") == true)
-                            {
-                                portAudioType = assembly.GetType("PortAudioSharp.PortAudio") 
-                                             ?? assembly.GetType("PortAudio.PortAudio");
-                                if (portAudioType != null) break;
-                            }
-                        }
-                    }
-
-                    if (portAudioType != null)
-                    {
-                        var stopStreamMethod = portAudioType.GetMethod("Pa_StopStream");
-                        if (stopStreamMethod != null)
-                        {
-                            stopStreamMethod.Invoke(null, new object[] { _stream });
-                        }
-
-                        var closeStreamMethod = portAudioType.GetMethod("Pa_CloseStream");
-                        if (closeStreamMethod != null)
-                        {
-                            closeStreamMethod.Invoke(null, new object[] { _stream });
-                        }
-
-                        var terminateMethod = portAudioType.GetMethod("Pa_Terminate");
-                        if (terminateMethod != null)
-                        {
-                            terminateMethod.Invoke(null, null);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"Error closing audio sink: {ex.Message}");
                 }
                 finally
                 {
-                    _stream = IntPtr.Zero;
+                    _stream = null;
+                    _callback = null;
                     _isStarted = false;
                     _isPaused = false;
+                    _ring.Clear();
+                    try { _runtime?.Dispose(); } catch { }
+                    _runtime = null;
                 }
             }
-            
             return Task.CompletedTask;
         }
 
         public List<AudioFormat> GetAudioSinkFormats()
         {
-            lock (_lockObject)
-            {
-                // Фильтруем форматы с ID > 127
-                return _supportedFormats.Where(f =>
-                {
-                    try
-                    {
-                        var formatIdProperty = f.GetType().GetProperty("FormatID");
-                        if (formatIdProperty != null)
-                        {
-                            var formatId = Convert.ToInt32(formatIdProperty.GetValue(f));
-                            return formatId <= 127;
-                        }
-                    }
-                    catch
-                    {
-                        return false;
-                    }
-                    return true;
-                }).ToList();
-            }
+            lock (_lock)
+                return _supportedFormats.Where(f => { try { return f.FormatID <= 127; } catch { return false; } }).ToList();
         }
 
         public void GotAudioRtp(IPEndPoint remoteEndPoint, uint ssrc, uint seqnum, uint timestamp, int payloadID, bool marker, byte[] payload)
         {
-            // Этот метод вызывается для RTP пакетов, но мы используем OnAudioSinkRawSample
-            // Обычно VoIPMediaSession обрабатывает RTP и вызывает OnAudioSinkRawSample
+            // Legacy RTP path; SIPSorcery 10+ prefers GotEncodedMediaFrame.
         }
 
-        public void GotAudioSample(AudioSamplingRatesEnum samplingRate, uint durationMilliseconds, short[] sample)
+        public void GotEncodedMediaFrame(EncodedAudioFrame encodedMediaFrame)
         {
-            if (_isPaused || _isDisposed || !_isStarted || _stream == IntPtr.Zero)
-                return;
-
-            // AEC: динамик — это far-end reference для эхоподавителя
-            try { EchoCanceller?.ProcessRender(sample, sample.Length); } catch { }
-
+            if (_isPaused || _isDisposed || !_isStarted || _audioEncoder == null) return;
+            var payload = encodedMediaFrame.EncodedAudio;
+            if (payload == null || payload.Length == 0) return;
             try
             {
-                // Записываем данные в поток PortAudio
-                Type? portAudioType = Type.GetType("PortAudioSharp.PortAudio, PortAudioNet");
-                if (portAudioType == null)
+                var pcm = _audioEncoder.DecodeAudio(payload, encodedMediaFrame.AudioFormat);
+                if (pcm != null && pcm.Length > 0)
                 {
-                    portAudioType = Type.GetType("PortAudio.PortAudio, PortAudioNet");
-                }
-                if (portAudioType == null)
-                {
-                    var assemblies = AppDomain.CurrentDomain.GetAssemblies();
-                    foreach (var assembly in assemblies)
-                    {
-                        if (assembly.FullName?.Contains("PortAudioNet") == true)
-                        {
-                            portAudioType = assembly.GetType("PortAudioSharp.PortAudio") 
-                                         ?? assembly.GetType("PortAudio.PortAudio");
-                            if (portAudioType != null) break;
-                        }
-                    }
-                }
-
-                if (portAudioType != null)
-                {
-                    var writeStreamMethod = portAudioType.GetMethod("Pa_WriteStream");
-                    if (writeStreamMethod != null)
-                    {
-                        writeStreamMethod.Invoke(null, new object[] { _stream, sample, sample.Length });
-                    }
+                    var rate = encodedMediaFrame.AudioFormat.ClockRate == 16000 ? AudioSamplingRatesEnum.Rate16KHz : AudioSamplingRatesEnum.Rate8KHz;
+                    GotAudioSample(rate, encodedMediaFrame.DurationMilliSeconds, pcm);
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"Error writing to PortAudio stream: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Error decoding encoded audio frame: {ex.Message}");
             }
         }
 
-        private bool IsSuccess(object? result)
+        public void GotAudioSample(AudioSamplingRatesEnum samplingRate, uint durationMilliseconds, short[] sample)
         {
-            if (result == null) return false;
-            
-            var resultType = result.GetType();
-            if (resultType.IsEnum)
+            if (_isPaused || _isDisposed || !_isStarted || sample == null || sample.Length == 0) return;
+
+            // AEC: speaker output is the far-end reference for the echo canceller.
+            try { EchoCanceller?.ProcessRender(sample, sample.Length); } catch { }
+
+            int inRate = samplingRate == AudioSamplingRatesEnum.Rate16KHz ? 16000 : 8000;
+            if (inRate == _sampleRate)
             {
-                var noError = Enum.Parse(resultType, "paNoError");
-                return result.Equals(noError);
+                _ring.Write(sample);
+                return;
             }
-            
-            return Convert.ToInt32(result) == 0;
+
+            _ring.Write(Resample(sample, inRate, _sampleRate));
         }
 
-        private void SetProperty(object obj, string propertyName, object value)
+        internal static short[] Resample(short[] src, int inRate, int outRate)
         {
-            var prop = obj.GetType().GetProperty(propertyName);
-            if (prop != null && prop.CanWrite)
+            if (inRate == outRate || src.Length == 0) return src;
+            int outLen = (int)((long)src.Length * outRate / inRate);
+            var dst = new short[outLen];
+            double step = (double)inRate / outRate;
+            for (int i = 0; i < outLen; i++)
             {
-                prop.SetValue(obj, value);
+                double pos = i * step;
+                int i0 = (int)pos;
+                int i1 = Math.Min(i0 + 1, src.Length - 1);
+                double frac = pos - i0;
+                dst[i] = (short)(src[i0] + (src[i1] - src[i0]) * frac);
             }
+            return dst;
         }
 
         public void Dispose()
         {
-            if (_isDisposed)
-                return;
-
-            try
-            {
-                var t = CloseAudioSink();
-                if (!t.IsCompleted && !t.Wait(1000))
-                {
-                    _ = Task.Run(async () =>
-                    {
-                        try { await t; } catch { }
-                    });
-                }
-            }
-            catch
-            {
-                // ignore
-            }
+            if (_isDisposed) return;
             _isDisposed = true;
+            try { CloseAudioSink(); } catch { }
+        }
+    }
+
+    /// <summary>Lock-free-ish single-producer/single-consumer ring buffer of 16-bit samples.</summary>
+    internal sealed class PcmRingBuffer
+    {
+        private readonly short[] _buf;
+        private readonly object _gate = new();
+        private int _head; // read position
+        private int _tail; // write position
+        private int _count;
+
+        public PcmRingBuffer(int capacity) { _buf = new short[Math.Max(1024, capacity)]; }
+
+        public int Count { get { lock (_gate) return _count; } }
+
+        public void Clear() { lock (_gate) { _head = _tail = _count = 0; } }
+
+        public void Write(ReadOnlySpan<short> data)
+        {
+            lock (_gate)
+            {
+                // Drop oldest audio if the consumer stalled (keeps latency bounded).
+                int overflow = _count + data.Length - _buf.Length;
+                if (overflow > 0)
+                {
+                    _head = (_head + overflow) % _buf.Length;
+                    _count -= overflow;
+                }
+                foreach (var s in data)
+                {
+                    _buf[_tail] = s;
+                    _tail = (_tail + 1) % _buf.Length;
+                }
+                _count += data.Length;
+            }
+        }
+
+        public int Read(Span<short> dst)
+        {
+            lock (_gate)
+            {
+                int n = Math.Min(dst.Length, _count);
+                for (int i = 0; i < n; i++)
+                {
+                    dst[i] = _buf[_head];
+                    _head = (_head + 1) % _buf.Length;
+                }
+                _count -= n;
+                return n;
+            }
         }
     }
 }
-

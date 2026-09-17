@@ -36,6 +36,9 @@ namespace Softphone
         /// <summary>True when /api/kommo/status reports enabled on PBX Gateway.</summary>
         private bool _gatewayKommoModuleActive;
         private bool _suppressKommoSourceUiEvents;
+        private bool _suppressKommoRecordingUploadSourceUiEvents;
+        /// <summary>Blocks Kommo checkbox save handlers while LoadIntegrationsSettings assigns UI from disk.</summary>
+        private bool _suppressIntegrationsSettingsLoad;
 
         /// <summary>
         /// Получает или создает общий экземпляр WebRTC сервиса
@@ -298,8 +301,6 @@ namespace Softphone
             if (!string.IsNullOrWhiteSpace(portText) && int.TryParse(portText, out var p) && p >= 1 && p <= 65535)
                 port = p;
 
-            string transport = GetTurnTransportFromUi(isMain: true);
-
             // NOTE: System.Uri does not parse "turn:host:3478?transport=udp" correctly
             // (unknown scheme -> "host" becomes path, Host is empty). Parse manually.
             var parsed = ParseTurnLike(input);
@@ -309,7 +310,18 @@ namespace Softphone
                 return null;
             }
 
-            bool tls = GetTurnTlsFromUi(isMain: true) || parsed.Scheme == "turns" || port == 5349;
+            // TLS/transport come from UI controls only — do not re-derive from a stale
+            // turns: prefix left in the host field after a previous save/load cycle.
+            bool tls = GetTurnTlsFromUi(isMain: true);
+            string transport = GetTurnTransportFromUi(isMain: true);
+            if (tls)
+            {
+                if (port == 3478)
+                    port = 5349;
+                if (transport == "udp")
+                    transport = "tcp";
+            }
+
             string scheme = tls ? "turns" : "turn";
             string built = $"{scheme}:{parsed.Host}:{port}?transport={transport}";
             MainWindow.Log($"[SettingsWindow][TURN] BuildTurnUriFromUi: input='{input}', built='{built}', tls={tls}, transport={transport}");
@@ -326,92 +338,13 @@ namespace Softphone
 
         private static TurnLikeParsed ParseTurnLike(string? input)
         {
-            if (string.IsNullOrWhiteSpace(input))
-                return new TurnLikeParsed();
-
-            string raw = input.Trim();
-            string scheme = "";
-            if (raw.StartsWith("turns:", StringComparison.OrdinalIgnoreCase))
-            {
-                scheme = "turns";
-                raw = raw.Substring("turns:".Length);
-            }
-            else if (raw.StartsWith("turn:", StringComparison.OrdinalIgnoreCase))
-            {
-                scheme = "turn";
-                raw = raw.Substring("turn:".Length);
-            }
-
-            // Strip leading slashes if user typed turns://host...
-            raw = raw.TrimStart('/');
-
-            // Split query
-            string query = "";
-            int qIdx = raw.IndexOf("?", StringComparison.Ordinal);
-            if (qIdx >= 0)
-            {
-                query = raw.Substring(qIdx + 1);
-                raw = raw.Substring(0, qIdx);
-            }
-
-            // Trim any path
-            int slashIdx = raw.IndexOf("/", StringComparison.Ordinal);
-            if (slashIdx >= 0) raw = raw.Substring(0, slashIdx);
-
-            // Drop userinfo if present
-            int atIdx = raw.LastIndexOf("@", StringComparison.Ordinal);
-            if (atIdx >= 0) raw = raw.Substring(atIdx + 1);
-
-            raw = raw.Trim();
-
-            // Parse transport=...
-            string? transport = null;
-            try
-            {
-                foreach (var part in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
-                {
-                    var kv = part.Split('=', 2);
-                    if (kv.Length == 2 && kv[0].Equals("transport", StringComparison.OrdinalIgnoreCase))
-                    {
-                        var v = kv[1].Trim().ToLowerInvariant();
-                        if (v == "udp" || v == "tcp") transport = v;
-                        break;
-                    }
-                }
-            }
-            catch { }
-
-            // Parse host[:port] (handle IPv6 in [::1]:3478)
-            string host = raw;
-            int? port = null;
-            if (host.StartsWith("[", StringComparison.Ordinal))
-            {
-                int close = host.IndexOf("]", StringComparison.Ordinal);
-                if (close > 0)
-                {
-                    string inside = host.Substring(1, close - 1);
-                    string rest = host.Substring(close + 1);
-                    host = inside;
-                    if (rest.StartsWith(":", StringComparison.Ordinal) && int.TryParse(rest.Substring(1), out var p))
-                        port = p;
-                }
-            }
-            else
-            {
-                int colon = host.LastIndexOf(":", StringComparison.Ordinal);
-                if (colon > 0 && colon < host.Length - 1 && int.TryParse(host.Substring(colon + 1), out var p))
-                {
-                    port = p;
-                    host = host.Substring(0, colon);
-                }
-            }
-
+            var parsed = TurnUriHelper.ParseTurnLike(input);
             return new TurnLikeParsed
             {
-                Scheme = scheme,
-                Host = host.Trim(),
-                Port = port,
-                Transport = transport
+                Scheme = parsed.Scheme,
+                Host = parsed.Host,
+                Port = parsed.Port,
+                Transport = parsed.Transport
             };
         }
 
@@ -554,23 +487,17 @@ namespace Softphone
             var portBox = MainTurnPortTextBox;
             if (portBox != null) portBox.Text = port.ToString();
 
-            // Transport query
-            string transport = parsed.Transport ?? "udp";
+            // Transport query (prefer stored value; legacy turns+udp configs default to tcp)
+            string transport = parsed.Transport
+                ?? (parsed.Scheme == "turns" ? "tcp" : "udp");
 
             var combo = MainTurnTransportComboBox;
             if (combo != null)
-            {
-                // turns: implies TLS-over-TCP
-                bool tcp = transport == "tcp" || parsed.Scheme == "turns";
-                combo.SelectedIndex = tcp ? 1 : 0;
-            }
+                combo.SelectedIndex = transport == "tcp" ? 1 : 0;
 
-            // TLS scheme
             var tlsCb = MainTurnTlsCheckBox;
             if (tlsCb != null)
-            {
                 tlsCb.IsChecked = parsed.Scheme == "turns";
-            }
         }
 
         private void SettingsWindow_Loaded(object sender, RoutedEventArgs e)
@@ -1052,15 +979,36 @@ namespace Softphone
 
                     if (settings != null)
                     {
-                        // Загружаем настройки Kommo
+                        _suppressIntegrationsSettingsLoad = true;
+                        try
+                        {
+                        // Lead/recording toggles first — integration IsChecked fires SaveAmoCrmIntegrationToggle.
+                        if (EnableAmoCrmLeadSelectionCheckBox != null)
+                        {
+                            EnableAmoCrmLeadSelectionCheckBox.IsChecked = settings.EnableAmoCrmLeadSelection;
+                        }
+                        if (EnableAmoCrmRecordingUploadCheckBox != null)
+                        {
+                            EnableAmoCrmRecordingUploadCheckBox.IsChecked = settings.EnableAmoCrmRecordingUpload;
+                        }
                         if (EnableAmoCrmIntegrationCheckBox != null)
                         {
                             EnableAmoCrmIntegrationCheckBox.IsChecked = settings.EnableAmoCrmIntegration;
                             UpdateAmoCrmSettingsVisibility(settings.EnableAmoCrmIntegration);
                         }
-                        if (EnableAmoCrmLeadSelectionCheckBox != null)
+                        }
+                        finally
                         {
-                            EnableAmoCrmLeadSelectionCheckBox.IsChecked = settings.EnableAmoCrmLeadSelection;
+                            _suppressIntegrationsSettingsLoad = false;
+                        }
+                        SetKommoRecordingUploadSourceUi(
+                            settings.AmoCrmRecordingUploadSource?.Trim().ToLowerInvariant() ?? "local",
+                            persist: false);
+                        if (!string.IsNullOrWhiteSpace(settings.AmoCrmConnectionSource))
+                        {
+                            SetKommoConnectionSourceUi(
+                                settings.AmoCrmConnectionSource.Trim().ToLowerInvariant(),
+                                persistAndReinit: false);
                         }
                         
                         if (AmoCrmSubdomainTextBox != null && !string.IsNullOrEmpty(settings.AmoCrmSubdomain))
@@ -1389,9 +1337,16 @@ namespace Softphone
                     isEnabled && _gatewayKommoModuleActive ? Visibility.Visible : Visibility.Collapsed;
             }
 
+            UpdateAmoCrmRecordingUploadSourcePanelVisibility(isEnabled);
+
             if (AmoCrmLeadSelectionGrid != null)
             {
                 AmoCrmLeadSelectionGrid.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
+            }
+
+            if (AmoCrmRecordingUploadGrid != null)
+            {
+                AmoCrmRecordingUploadGrid.Visibility = isEnabled ? Visibility.Visible : Visibility.Collapsed;
             }
 
             if (!isEnabled)
@@ -1492,6 +1447,122 @@ namespace Softphone
             SetKommoConnectionSourceUi(source, persistAndReinit: true);
         }
 
+        private bool IsMikoPbxGatewayConfigured()
+        {
+            var settings = AppDataHelper.LoadSettingsOrNew();
+            return settings.EnableMikoPbxCdr
+                && !string.IsNullOrWhiteSpace(settings.MikoPbxCdrServiceUrl)
+                && !string.IsNullOrEmpty(settings.MikoPbxCdrTokenEncrypted);
+        }
+
+        private void UpdateAmoCrmRecordingUploadSourcePanelVisibility(bool integrationEnabled)
+        {
+            if (AmoCrmRecordingUploadSourcePanel == null)
+                return;
+            AmoCrmRecordingUploadSourcePanel.Visibility =
+                integrationEnabled && _gatewayKommoModuleActive && IsMikoPbxGatewayConfigured()
+                    ? Visibility.Visible
+                    : Visibility.Collapsed;
+        }
+
+        private string GetSelectedKommoRecordingUploadSource()
+        {
+            if (AmoCrmRecordingUploadSourceGatewayButton?.Tag is string g && g == "gateway_selected")
+                return "gateway";
+            if (AmoCrmRecordingUploadSourceLocalButton?.Tag is string l && l == "local_selected")
+                return "local";
+            return AppDataHelper.LoadSettingsOrNew().AmoCrmRecordingUploadSource?.Trim().ToLowerInvariant() ?? "local";
+        }
+
+        private void SetKommoRecordingUploadSourceUi(string source, bool persist)
+        {
+            source = (source ?? "").Trim().ToLowerInvariant();
+            if (source is not ("gateway" or "local"))
+                source = "local";
+
+            _suppressKommoRecordingUploadSourceUiEvents = true;
+            try
+            {
+                var accentBlueBrush = (Brush)FindResource("AccentBlueBrush");
+                var textPrimaryBrush = (Brush)FindResource("TextPrimaryBrush");
+                bool isGateway = source == "gateway";
+
+                if (AmoCrmRecordingUploadSourceGatewayButton != null)
+                {
+                    AmoCrmRecordingUploadSourceGatewayButton.Tag = isGateway ? "gateway_selected" : "gateway";
+                    AmoCrmRecordingUploadSourceGatewayButton.Background = isGateway ? accentBlueBrush : Brushes.Transparent;
+                    AmoCrmRecordingUploadSourceGatewayButton.Foreground = isGateway ? Brushes.White : textPrimaryBrush;
+                }
+
+                if (AmoCrmRecordingUploadSourceLocalButton != null)
+                {
+                    AmoCrmRecordingUploadSourceLocalButton.Tag = isGateway ? "local" : "local_selected";
+                    AmoCrmRecordingUploadSourceLocalButton.Background = isGateway ? Brushes.Transparent : accentBlueBrush;
+                    AmoCrmRecordingUploadSourceLocalButton.Foreground = isGateway ? textPrimaryBrush : Brushes.White;
+                }
+            }
+            finally
+            {
+                _suppressKommoRecordingUploadSourceUiEvents = false;
+            }
+
+            if (!persist)
+                return;
+
+            var settings = AppDataHelper.LoadSettingsOrNew();
+            settings.AmoCrmRecordingUploadSource = source;
+            AppDataHelper.SaveSettings(settings);
+        }
+
+        private void AmoCrmRecordingUploadSourceButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (_suppressKommoRecordingUploadSourceUiEvents)
+                return;
+            if (sender is not Button button || button.Tag is not string tag)
+                return;
+            string source = tag.StartsWith("gateway", StringComparison.Ordinal) ? "gateway" : "local";
+            string previousSource = GetSelectedKommoRecordingUploadSource();
+            SetKommoRecordingUploadSourceUi(source, persist: true);
+
+            if (source == "local" && !previousSource.Equals("local", StringComparison.Ordinal))
+                NotifyIfCallRecordingDisabledForLocalUpload();
+        }
+
+        private bool IsCallRecordingEnabledInSettings()
+        {
+            if (EnableCallRecordingCheckBox != null)
+                return EnableCallRecordingCheckBox.IsChecked == true;
+
+            return AppDataHelper.LoadSettingsOrNew().EnableCallRecording;
+        }
+
+        private void NotifyIfCallRecordingDisabledForLocalUpload()
+        {
+            if (IsCallRecordingEnabledInSettings())
+                return;
+
+            CustomMessageBox.Show(
+                "Call recording is turned off in settings.\n\nEnable Call Recording on the General tab to record calls on this computer and upload them to Kommo.",
+                "Call Recording Disabled",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information,
+                this);
+        }
+
+        private void PersistKommoRecordingUploadSourceFromUi(AppSettings settings)
+        {
+            if (_gatewayKommoModuleActive && IsMikoPbxGatewayConfigured())
+            {
+                string source = GetSelectedKommoRecordingUploadSource();
+                if (source is "gateway" or "local")
+                    settings.AmoCrmRecordingUploadSource = source;
+            }
+            else
+            {
+                settings.AmoCrmRecordingUploadSource = "local";
+            }
+        }
+
         private static bool ComputeKommoGatewayModuleActive(KommoGatewayStatus? status, bool currentActive)
         {
             if (status == null)
@@ -1516,6 +1587,8 @@ namespace Softphone
                 AmoCrmConnectionSourcePanel.Visibility =
                     integrationEnabled && _gatewayKommoModuleActive ? Visibility.Visible : Visibility.Collapsed;
             }
+
+            UpdateAmoCrmRecordingUploadSourcePanelVisibility(integrationEnabled);
 
             if (_gatewayKommoModuleActive)
             {
@@ -1613,12 +1686,42 @@ namespace Softphone
             // Сохраняем состояние и отключаем сервис, но НЕ стираем токен и домен
             SaveAmoCrmIntegrationToggle();
         }
-        
+
+        private void EnableAmoCrmLeadSelectionCheckBox_Changed(object sender, RoutedEventArgs e)
+        {
+            SaveAmoCrmLeadSelectionToggle();
+        }
+
+        /// <summary>Persist Manual selection lead toggle immediately (gateway + local post-call dialog).</summary>
+        private void SaveAmoCrmLeadSelectionToggle()
+        {
+            if (_suppressIntegrationsSettingsLoad)
+                return;
+
+            try
+            {
+                if (EnableAmoCrmLeadSelectionCheckBox == null)
+                    return;
+
+                var settings = AppDataHelper.LoadSettingsOrNew();
+                settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                AppDataHelper.SaveSettings(settings);
+                MainWindow.Log($"[SettingsWindow] Manual lead selection saved: {settings.EnableAmoCrmLeadSelection}");
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] SaveAmoCrmLeadSelectionToggle error: {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// Сохраняет состояние переключателя Kommo интеграции
         /// </summary>
         private void SaveAmoCrmIntegrationToggle()
         {
+            if (_suppressIntegrationsSettingsLoad)
+                return;
+
             try
             {
                 string settingsPath = AppDataHelper.GetSettingsFilePath();
@@ -1638,10 +1741,11 @@ namespace Softphone
                 // Сохраняем состояние интеграции
                 settings.EnableAmoCrmIntegration = EnableAmoCrmIntegrationCheckBox?.IsChecked ?? false;
                 PersistKommoConnectionSourceFromUi(settings);
-                // ВАЖНО: не сбрасываем настройку выбора лида, если чекбокс ещё не создан (другая вкладка / ранний вызов)
-                if (EnableAmoCrmLeadSelectionCheckBox != null)
+                PersistKommoRecordingUploadSourceFromUi(settings);
+                // Manual lead selection is saved only via SaveAmoCrmLeadSelectionToggle (avoid stale checkbox on load).
+                if (EnableAmoCrmRecordingUploadCheckBox != null)
                 {
-                    settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                    settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
                 }
                 // ...удалено: ShowFirstLeadAfterCallCheckBox/ShowFirstLeadAfterCall...
                 
@@ -2143,6 +2247,10 @@ namespace Softphone
                 {
                     settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
                 }
+                if (EnableAmoCrmRecordingUploadCheckBox != null)
+                {
+                    settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
+                }
                 
                 // Сохраняем настройки Kommo
                 settings.AmoCrmSubdomain = AmoCrmSubdomainTextBox?.Text?.Trim();
@@ -2167,6 +2275,7 @@ namespace Softphone
                 }
                 settings.AmoCrmAuthMode = isOAuth ? "oauth" : "manual";
                 PersistKommoConnectionSourceFromUi(settings);
+                PersistKommoRecordingUploadSourceFromUi(settings);
                 
                 if (isOAuth)
                 {
@@ -2386,6 +2495,10 @@ namespace Softphone
                 {
                     settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
                 }
+                if (EnableAmoCrmRecordingUploadCheckBox != null)
+                {
+                    settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
+                }
                 
                 // Сохраняем настройки
                 string clearedSettingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
@@ -2544,6 +2657,10 @@ namespace Softphone
                 if (EnableAmoCrmLeadSelectionCheckBox != null)
                 {
                     settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
+                if (EnableAmoCrmRecordingUploadCheckBox != null)
+                {
+                    settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
                 }
 
                 string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
@@ -3186,6 +3303,10 @@ namespace Softphone
                 {
                     settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
                 }
+                if (EnableAmoCrmRecordingUploadCheckBox != null)
+                {
+                    settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
+                }
                 
                 System.Diagnostics.Debug.WriteLine($"SaveGeneralSettings: Saving UseWebRtcAudio={settings.UseWebRtcAudio}, WebRtcWsUri='{settings.WebRtcWsUri}'");
 
@@ -3257,6 +3378,10 @@ namespace Softphone
                     if (EnableAmoCrmLeadSelectionCheckBox != null)
                     {
                         settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                    }
+                    if (EnableAmoCrmRecordingUploadCheckBox != null)
+                    {
+                        settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
                     }
                     string settingsJson = JsonConvert.SerializeObject(settings, Formatting.Indented);
                     File.WriteAllText(AppDataHelper.GetSettingsFilePath(), settingsJson);
@@ -3698,13 +3823,19 @@ namespace Softphone
                         UpdateMainWebRtcStatusText();
 
                         // Per-connection TURN (main). Fallback to legacy WebRtcTurn* for migration.
+                        string? storedTurnUri = settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri;
+                        ApplyTurnUiFromStoredUri(isMain: true, storedUri: storedTurnUri);
                         if (MainTurnUriTextBox != null)
-                            MainTurnUriTextBox.Text = settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri ?? "";
+                        {
+                            var parsedTurn = ParseTurnLike(storedTurnUri);
+                            MainTurnUriTextBox.Text = !string.IsNullOrWhiteSpace(parsedTurn.Host)
+                                ? parsedTurn.Host
+                                : (storedTurnUri ?? "");
+                        }
                         if (MainTurnUsernameTextBox != null)
                             MainTurnUsernameTextBox.Text = settings.MainWebRtcTurnUsername ?? settings.WebRtcTurnUsername ?? "";
                         if (MainTurnPasswordBox != null)
                             MainTurnPasswordBox.Password = TurnPasswordProvider.GetMainTurnPassword(settings) ?? "";
-                        ApplyTurnUiFromStoredUri(isMain: true, storedUri: settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri);
                         // Run an explicit status refresh after fields are fully populated from disk.
                         ScheduleTurnStatusCheck(isMain: true);
 
@@ -4065,6 +4196,13 @@ namespace Softphone
                     settings.SipPassword = null;
                     if (!string.IsNullOrEmpty(rtcUser))
                         settings.SipUsername = rtcUser;
+
+                    settings.MainWebRtcTurnUri = BuildTurnUriFromUi(isMain: true);
+                    settings.MainWebRtcTurnUsername = MainTurnUsernameTextBox?.Text?.Trim();
+                    TurnPasswordProvider.SetMainTurnPassword(settings, MainTurnPasswordBox?.Password);
+                    settings.WebRtcTurnUri = null;
+                    settings.WebRtcTurnUsername = null;
+                    settings.WebRtcTurnPassword = null;
                 }
                 else
                 {
@@ -4085,12 +4223,16 @@ namespace Softphone
 
                 settings.MainConnectionName = MainConnectionNameTextBox?.Text?.Trim();
 
-                // TURN is saved via the dedicated TURN button in Turn settings.
+                // TURN is also saved by the dedicated TURN button; include here when saving WebRTC connection.
                 
                 // Сохраняем настройку выбора лида AmoCRM
                 if (EnableAmoCrmLeadSelectionCheckBox != null)
                 {
                     settings.EnableAmoCrmLeadSelection = EnableAmoCrmLeadSelectionCheckBox.IsChecked ?? false;
+                }
+                if (EnableAmoCrmRecordingUploadCheckBox != null)
+                {
+                    settings.EnableAmoCrmRecordingUpload = EnableAmoCrmRecordingUploadCheckBox.IsChecked ?? true;
                 }
 
                 string json = JsonConvert.SerializeObject(settings, Formatting.Indented);
@@ -5051,6 +5193,8 @@ namespace Softphone
                 }
 
                 CheckMikoPbxCdrConnectionStatus();
+                if (EnableAmoCrmIntegrationCheckBox?.IsChecked == true)
+                    UpdateAmoCrmRecordingUploadSourcePanelVisibility(true);
             }
             catch (Exception ex)
             {
@@ -5128,6 +5272,47 @@ namespace Softphone
         public void RefreshMikoGatewayConnectionStatus()
         {
             CheckMikoPbxCdrConnectionStatus();
+        }
+
+        /// <summary>Reload main-connection TURN fields after gateway pull sync.</summary>
+        public void RefreshTurnFieldsFromSettings()
+        {
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.Invoke(RefreshTurnFieldsFromSettings);
+                return;
+            }
+
+            try
+            {
+                string settingsPath = AppDataHelper.GetSettingsFilePath();
+                if (!File.Exists(settingsPath))
+                    return;
+
+                string json = File.ReadAllText(settingsPath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json);
+                if (settings == null)
+                    return;
+
+                string? storedTurnUri = settings.MainWebRtcTurnUri ?? settings.WebRtcTurnUri;
+                ApplyTurnUiFromStoredUri(isMain: true, storedUri: storedTurnUri);
+                if (MainTurnUriTextBox != null)
+                {
+                    var parsedTurn = ParseTurnLike(storedTurnUri);
+                    MainTurnUriTextBox.Text = !string.IsNullOrWhiteSpace(parsedTurn.Host)
+                        ? parsedTurn.Host
+                        : (storedTurnUri ?? "");
+                }
+                if (MainTurnUsernameTextBox != null)
+                    MainTurnUsernameTextBox.Text = settings.MainWebRtcTurnUsername ?? settings.WebRtcTurnUsername ?? "";
+                if (MainTurnPasswordBox != null)
+                    MainTurnPasswordBox.Password = TurnPasswordProvider.GetMainTurnPassword(settings) ?? "";
+                ScheduleTurnStatusCheck(isMain: true);
+            }
+            catch (Exception ex)
+            {
+                MainWindow.Log($"[SettingsWindow] RefreshTurnFieldsFromSettings error: {ex.Message}");
+            }
         }
 
         public void UpdateMikoPbxCdrStatus(string statusText, bool isConnected)

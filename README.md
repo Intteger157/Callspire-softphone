@@ -121,10 +121,13 @@ dotnet publish Callspire.Desktop/Callspire.Desktop.csproj \
     -f net8.0-windows10.0.17763 -c Release -r win-x64 --no-self-contained \
     -o publish/windows
 
-# macOS x64
-dotnet publish Callspire.Desktop/Callspire.Desktop.csproj \
-    -f net8.0 -c Release -r osx-x64 --no-self-contained \
-    -o publish/macos
+# macOS — .app bundle (self-contained; Info.plist with callspire:// scheme + microphone usage)
+Callspire.Desktop/macOS/package-app.sh --arch arm64            # or x64 | universal
+Callspire.Desktop/macOS/package-app.sh --arch universal --dmg \
+    --sign "Developer ID Application: Your Name (TEAMID)" \
+    --notarize-profile callspire-notary                         # signed + notarized .dmg
+# → publish/macos/Callspire.app  (+ Callspire-<version>-<arch>.dmg)
+# Checklist for certificates/notarytool is in the script header.
 
 # Linux x64
 dotnet publish Callspire.Desktop/Callspire.Desktop.csproj \

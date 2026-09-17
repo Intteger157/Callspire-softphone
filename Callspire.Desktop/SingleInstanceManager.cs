@@ -1,9 +1,11 @@
 #if WINDOWS
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -18,7 +20,11 @@ namespace Softphone
         private const string MutexName = "CallspireSoftphone_SingleInstance_Mutex";
         private const string PipeName = "CallspireSoftphone_SingleInstance_Pipe";
         private const int MaxPipeServerInstances = 10;
-        private static readonly TimeSpan DefaultForwardTimeout = TimeSpan.FromSeconds(45);
+        private static readonly TimeSpan DefaultForwardTimeout = TimeSpan.FromSeconds(60);
+        private static readonly string PendingProtocolQueuePath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Callspire",
+            "pending_protocol.queue");
 
         private static Mutex? _mutex;
         private static bool _isFirstInstance;
@@ -64,6 +70,8 @@ namespace Softphone
         {
             _registeredMainWindow = mainWindow;
             while (_pendingMessages.TryDequeue(out var queued))
+                DeliverMessage(queued);
+            foreach (var queued in DequeuePendingProtocolFromDisk())
                 DeliverMessage(queued);
         }
 
@@ -111,12 +119,18 @@ namespace Softphone
                 attempt++;
             }
 
+            if (TryEnqueuePendingProtocolToDisk(message))
+            {
+                Log("[SingleInstance] Pipe forward timed out — message queued on disk for primary pickup");
+                return true;
+            }
+
             Log("[SingleInstance] Failed to forward protocol message — primary instance did not accept pipe connection in time");
             return false;
         }
 
         public static bool SendMessageToExistingInstance(string message)
-            => WaitAndForwardToExistingInstance(message, TimeSpan.FromSeconds(8));
+            => WaitAndForwardToExistingInstance(message, DefaultForwardTimeout);
 
         private static void ServerLoop()
         {
@@ -223,6 +237,45 @@ namespace Softphone
             catch
             {
                 // ignore
+            }
+        }
+
+        private static bool TryEnqueuePendingProtocolToDisk(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            try
+            {
+                string dir = Path.GetDirectoryName(PendingProtocolQueuePath)!;
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(PendingProtocolQueuePath, message + Environment.NewLine);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SingleInstanceManager] Failed to queue protocol message: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static List<string> DequeuePendingProtocolFromDisk()
+        {
+            try
+            {
+                if (!File.Exists(PendingProtocolQueuePath))
+                    return new List<string>();
+
+                var lines = File.ReadAllLines(PendingProtocolQueuePath)
+                    .Where(line => !string.IsNullOrWhiteSpace(line))
+                    .ToList();
+                File.Delete(PendingProtocolQueuePath);
+                return lines;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SingleInstanceManager] Failed to read pending protocol queue: {ex.Message}");
+                return new List<string>();
             }
         }
 

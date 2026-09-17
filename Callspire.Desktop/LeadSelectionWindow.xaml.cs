@@ -22,17 +22,45 @@ namespace Softphone
         private string? _callLog;
         private DateTime? _callTime;
 
-        public class LeadInfo
+        /// <summary>Kept for source compatibility; the shared type lives in <see cref="KommoLeadInfo"/>.</summary>
+        public class LeadInfo : KommoLeadInfo { }
+
+        /// <summary>
+        /// Registers this WPF window as the manual lead picker used by <see cref="AmoCrmService"/>
+        /// (<see cref="KommoLeadSelectionUi.Handler"/>). Called once at WPF startup.
+        /// </summary>
+        public static void RegisterAsLeadSelectionUi()
         {
-            public long Id { get; set; }
-            public string Name { get; set; } = string.Empty;
-            public string Description { get; set; } = string.Empty;
-            // ID ответственного пользователя в AmoCRM (responsible_user_id).
-            // Может быть null, если мы его не запрашивали или не передавали.
-            public long? ResponsibleUserId { get; set; }
+            KommoLeadSelectionUi.Handler = request =>
+            {
+                var tcs = new System.Threading.Tasks.TaskCompletionSource<KommoLeadSelectionResult?>();
+                Application.Current.Dispatcher.InvokeAsync(() =>
+                {
+                    try
+                    {
+                        var window = new LeadSelectionWindow(request.Leads.ToList(), request.Subdomain, false,
+                            request.PhoneNumber, request.AudioFilePath, request.IsIncoming, request.DurationSeconds,
+                            request.WasAnswered, request.CallLog, request.CallTime)
+                        {
+                            Owner = Application.Current.MainWindow
+                        };
+                        bool? result = window.ShowDialog();
+                        if (result == true && window.SelectedLeadId.HasValue)
+                            tcs.TrySetResult(new KommoLeadSelectionResult
+                            {
+                                LeadId = window.SelectedLeadId.Value,
+                                RecordingUploadedInDialog = window.RecordingUploadedInDialog
+                            });
+                        else
+                            tcs.TrySetResult(null);
+                    }
+                    catch (Exception ex) { tcs.TrySetException(ex); }
+                });
+                return tcs.Task;
+            };
         }
 
-        public LeadSelectionWindow(List<LeadInfo> leads, string? amoCrmSubdomain = null, bool showFirstLeadOnly = false, 
+        public LeadSelectionWindow(List<KommoLeadInfo> leads, string? amoCrmSubdomain = null, bool showFirstLeadOnly = false, 
             string? phoneNumber = null, string? audioFilePath = null, bool isIncoming = false, int durationSeconds = 0, 
             bool wasAnswered = false, string? callLog = null, DateTime? callTime = null)
         {
@@ -68,7 +96,7 @@ namespace Softphone
             // В режиме "show first lead only" показываем только первый лид
             if (_showFirstLeadOnly && leads.Count > 0)
             {
-                var firstLead = new List<LeadInfo> { leads[0] };
+                var firstLead = new List<KommoLeadInfo> { leads[0] };
                 LeadsListBox.ItemsSource = firstLead;
                 
                 // Скрываем кнопку "Select" - она не нужна в этом режиме
@@ -95,7 +123,7 @@ namespace Softphone
 
         private void SelectButton_Click(object sender, RoutedEventArgs e)
         {
-            if (LeadsListBox.SelectedItem is LeadInfo selectedLead)
+            if (LeadsListBox.SelectedItem is KommoLeadInfo selectedLead)
             {
                 SelectedLeadId = selectedLead.Id;
                 MainWindow.Log($"[LeadSelectionWindow] User selected lead ID: {selectedLead.Id}");
@@ -106,7 +134,7 @@ namespace Softphone
 
         private async void UploadRecordButton_Click(object sender, RoutedEventArgs e)
         {
-            if (LeadsListBox.SelectedItem is LeadInfo selectedLead)
+            if (LeadsListBox.SelectedItem is KommoLeadInfo selectedLead)
             {
                 if (string.IsNullOrEmpty(_phoneNumber) || string.IsNullOrEmpty(_audioFilePath))
                 {

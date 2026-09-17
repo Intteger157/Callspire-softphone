@@ -118,6 +118,22 @@ namespace Softphone
         }
 
         /// <summary>
+        /// Enable shared gateway Kommo after admin provisioning (mapped Kommo user in PBX Gateway).
+        /// </summary>
+        public static void ApplyProvisionGatewayKommo(AppSettings settings, string? subdomain = null)
+        {
+            if (settings == null)
+                throw new ArgumentNullException(nameof(settings));
+
+            settings.EnableAmoCrmIntegration = true;
+            settings.EnableAmoCrmRecordingUpload = true;
+            settings.AmoCrmConnectionSource = "gateway";
+            settings.AmoCrmRecordingUploadSource = "gateway";
+            if (!string.IsNullOrWhiteSpace(subdomain))
+                settings.AmoCrmSubdomain = subdomain.Trim();
+        }
+
+        /// <summary>
         /// Получает путь к файлу истории звонков: %LOCALAPPDATA%\Callspire\call_history.json
         /// </summary>
         public static string GetCallHistoryFilePath()

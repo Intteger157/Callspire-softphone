@@ -45,12 +45,36 @@ namespace Softphone
 #endif
 
             // Avalonia path: subscribe to platform color values changed (cross-platform).
+            HookAvaloniaPlatformSettings();
+        }
+
+        private static bool _avaloniaHooked;
+
+        /// <summary>
+        /// Must be called once the Avalonia <c>Application</c> exists (e.g. from
+        /// <c>OnFrameworkInitializationCompleted</c>) and <b>before</b> the first window is shown.
+        /// <see cref="Initialize"/> may run earlier from the bootstrap, when
+        /// <c>Application.Current</c> is still null — this call completes the Avalonia side.
+        /// </summary>
+        public static void EnsureAvaloniaInitialized()
+        {
+            Initialize();
+            try { ApplyFromSettings(); } catch { }
+            HookAvaloniaPlatformSettings();
+        }
+
+        private static void HookAvaloniaPlatformSettings()
+        {
             try
             {
-                var platformSettings = global::Avalonia.Application.Current
-                    ?.PlatformSettings;
-                if (platformSettings != null)
+                lock (_lock)
+                {
+                    if (_avaloniaHooked) return;
+                    var platformSettings = global::Avalonia.Application.Current?.PlatformSettings;
+                    if (platformSettings == null) return;
                     platformSettings.ColorValuesChanged += OnAvaloniaPlatformColorValuesChanged;
+                    _avaloniaHooked = true;
+                }
             }
             catch { }
         }

@@ -1979,6 +1979,74 @@
                                     </Border>
                                 </StackPanel>
 
+                                <!-- Recording upload source (Gateway vs Local desktop) -->
+                                <StackPanel Name="AmoCrmRecordingUploadSourcePanel" Visibility="Collapsed" Margin="0,0,0,16">
+                                    <TextBlock Text="Recording upload source:"
+                                              Foreground="{DynamicResource TextSecondaryBrush}"
+                                              FontSize="13"
+                                              Margin="0,0,0,8"/>
+                                    <Border Background="{DynamicResource BackgroundMediumBrush}"
+                                            BorderBrush="{DynamicResource BorderBrush}"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="2"
+                                            HorizontalAlignment="Left">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Button Name="AmoCrmRecordingUploadSourceGatewayButton"
+                                                   Grid.Column="0"
+                                                   Content="PBX Gateway"
+                                                   Tag="gateway"
+                                                   Padding="16,8"
+                                                   FontSize="13"
+                                                   Background="Transparent"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   BorderThickness="0"
+                                                   Cursor="Hand"
+                                                   Click="AmoCrmRecordingUploadSourceButton_Click"/>
+                                            <Button Name="AmoCrmRecordingUploadSourceLocalButton"
+                                                   Grid.Column="1"
+                                                   Content="Local (desktop)"
+                                                   Tag="local"
+                                                   Padding="16,8"
+                                                   FontSize="13"
+                                                   Background="Transparent"
+                                                   Foreground="{DynamicResource TextPrimaryBrush}"
+                                                   BorderThickness="0"
+                                                   Cursor="Hand"
+                                                   Click="AmoCrmRecordingUploadSourceButton_Click"/>
+                                        </Grid>
+                                    </Border>
+                                </StackPanel>
+
+                                <!-- Recording upload toggle (visible when integration is enabled) -->
+                                <Grid Margin="0,16,0,16" Name="AmoCrmRecordingUploadGrid" Visibility="Collapsed">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox Grid.Column="0" Name="EnableAmoCrmRecordingUploadCheckBox"
+                                             Style="{DynamicResource ToggleSwitchStyle}"
+                                             VerticalAlignment="Center"
+                                             Margin="0,0,12,0"
+                                             IsChecked="True"/>
+                                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBlock Text="Upload call recordings"
+                                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                                  FontSize="14"
+                                                  FontWeight="SemiBold"
+                                                  Margin="0,0,0,4"/>
+                                        <TextBlock Text="When off, contact names and call notes are still synced; audio files are not sent to Kommo"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  FontSize="12"
+                                                  TextWrapping="Wrap"
+                                                  Margin="0,0,0,4"/>
+                                    </StackPanel>
+                                </Grid>
+
                                 <!-- Lead Selection Toggle (visible when integration is enabled) -->
                                 <Grid Margin="0,16,0,16" Name="AmoCrmLeadSelectionGrid" Visibility="Collapsed">
                                     <Grid.ColumnDefinitions>
@@ -1988,14 +2056,16 @@
                                     <CheckBox Grid.Column="0" Name="EnableAmoCrmLeadSelectionCheckBox" 
                                              Style="{DynamicResource ToggleSwitchStyle}"
                                              VerticalAlignment="Center"
-                                             Margin="0,0,12,0"/>
+                                             Margin="0,0,12,0"
+                                             Checked="EnableAmoCrmLeadSelectionCheckBox_Changed"
+                                             Unchecked="EnableAmoCrmLeadSelectionCheckBox_Changed"/>
                                     <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                         <TextBlock Text="Manual selection lead" 
                                                   Foreground="{DynamicResource TextPrimaryBrush}"
                                                   FontSize="14"
                                                   FontWeight="SemiBold"
                                                   Margin="0,0,0,4"/>
-                                        <TextBlock Text="Used for manual selection of the lead to upload recordings to" 
+                                        <TextBlock Text="After each call, choose which open deal receives the recording (works with PBX Gateway upload too)" 
                                                   Foreground="{DynamicResource TextSecondaryBrush}"
                                                   FontSize="12"
                                                   Margin="0,0,0,4"/>

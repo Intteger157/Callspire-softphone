@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Authentication;
+using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -291,6 +292,13 @@ namespace Softphone
                 }
                 if (!resp.IsSuccessStatusCode)
                 {
+                    if (resp.StatusCode is HttpStatusCode.BadGateway
+                        or HttpStatusCode.ServiceUnavailable
+                        or HttpStatusCode.GatewayTimeout)
+                    {
+                        return new SipAuthFailureStats { Supported = true, TransientServerError = true };
+                    }
+
                     AppLog.Log($"[PBX Gateway] GetSipAuthFailuresAsync HTTP {(int)resp.StatusCode}");
                     return new SipAuthFailureStats { Supported = false };
                 }
@@ -318,15 +326,42 @@ namespace Softphone
         /// </summary>
         public async Task<OriginateResult> OriginateCallAsync(string destination, string callerId, string? ringExtension = null)
         {
+            AppLog.Log($"[PBX Gateway] Originate: dst={destination}, callerId={callerId}, ringExt={(string.IsNullOrWhiteSpace(ringExtension) ? "<jwt>" : ringExtension)}");
+
+            string? lastError = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    int delayMs = attempt switch { 1 => 2000, 2 => 5000, _ => 10000 };
+                    AppLog.Log($"[PBX Gateway] OriginateCallAsync retry {attempt}/3 in {delayMs}ms ({lastError})");
+                    await Task.Delay(delayMs).ConfigureAwait(false);
+                }
+
+                var result = await OriginateCallOnceAsync(destination, callerId, ringExtension).ConfigureAwait(false);
+                if (result.Success)
+                    return result;
+
+                lastError = result.Error;
+                if (!IsTransientGatewayError(lastError))
+                    break;
+            }
+
+            AppLog.Log($"[PBX Gateway] OriginateCallAsync error: {lastError}");
+            return new OriginateResult { Success = false, Error = lastError ?? "Originate failed" };
+        }
+
+        private async Task<OriginateResult> OriginateCallOnceAsync(string destination, string callerId, string? ringExtension)
+        {
             try
             {
                 string url = $"{_baseUrl}/api/originate";
-                AppLog.Log($"[PBX Gateway] Originate: dst={destination}, callerId={callerId}, ringExt={(string.IsNullOrWhiteSpace(ringExtension) ? "<jwt>" : ringExtension)}");
-
-                var body = new { destination, callerid = callerId };
+                object body = string.IsNullOrWhiteSpace(ringExtension)
+                    ? new { destination, callerid = callerId }
+                    : new { destination, callerid = callerId, ring_extension = ringExtension.Trim() };
                 var content = new StringContent(
                     JsonConvert.SerializeObject(body),
-                    System.Text.Encoding.UTF8,
+                    Encoding.UTF8,
                     "application/json");
 
                 var resp = await _http.PostAsync(url, content).ConfigureAwait(false);
@@ -334,8 +369,16 @@ namespace Softphone
 
                 if (!resp.IsSuccessStatusCode)
                 {
+                    string? detail = TryExtractApiErrorDetail(json);
+                    string error = detail ?? json;
+                    if (string.IsNullOrWhiteSpace(error))
+                        error = $"HTTP {(int)resp.StatusCode}";
+
+                    if (IsTransientGatewayError(error) || IsTransientHttpStatusCode((int)resp.StatusCode))
+                        return new OriginateResult { Success = false, Error = error };
+
                     AppLog.Log($"[PBX Gateway] Originate failed ({resp.StatusCode}): {json}");
-                    return new OriginateResult { Success = false, Error = json };
+                    return new OriginateResult { Success = false, Error = error };
                 }
 
                 var result = JsonConvert.DeserializeObject<OriginateResult>(json) ?? new OriginateResult();
@@ -344,8 +387,65 @@ namespace Softphone
             }
             catch (Exception ex)
             {
-                AppLog.Log($"[PBX Gateway] OriginateCallAsync error: {ex.Message}");
-                return new OriginateResult { Success = false, Error = ex.Message };
+                string detail = FormatGatewayException(ex);
+                return new OriginateResult { Success = false, Error = detail };
+            }
+        }
+
+        /// <summary>
+        /// Pull desktop softphone TURN defaults from PBX Gateway (GET /api/v1/softphone-app-settings).
+        /// </summary>
+        public async Task<(SoftphoneAppSettings? Settings, string? Error)> GetSoftphoneAppSettingsAsync()
+        {
+            string? lastError = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    int delayMs = attempt switch { 1 => 2000, 2 => 5000, _ => 10000 };
+                    AppLog.Log($"[PBX Gateway] GetSoftphoneAppSettingsAsync retry {attempt}/3 in {delayMs}ms ({lastError})");
+                    await Task.Delay(delayMs).ConfigureAwait(false);
+                }
+
+                var (settings, error) = await GetSoftphoneAppSettingsOnceAsync().ConfigureAwait(false);
+                if (settings != null)
+                    return (settings, null);
+
+                lastError = error;
+                if (!IsTransientGatewayError(error))
+                    break;
+            }
+
+            return (null, lastError);
+        }
+
+        private async Task<(SoftphoneAppSettings? Settings, string? Error)> GetSoftphoneAppSettingsOnceAsync()
+        {
+            try
+            {
+                string url = $"{_baseUrl}/api/v1/softphone-app-settings";
+                var resp = await _http.GetAsync(url).ConfigureAwait(false);
+                string body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    string? detail = TryExtractApiErrorDetail(body);
+                    string error = detail ?? $"HTTP {(int)resp.StatusCode}";
+                    if (IsTransientGatewayError(error) || IsTransientHttpStatusCode((int)resp.StatusCode))
+                        return (null, error);
+                    AppLog.Log($"[PBX Gateway] GetSoftphoneAppSettingsAsync error: {error}");
+                    return (null, error);
+                }
+
+                var settings = JsonConvert.DeserializeObject<SoftphoneAppSettings>(body) ?? new SoftphoneAppSettings();
+                return (settings, null);
+            }
+            catch (Exception ex)
+            {
+                string detail = FormatGatewayException(ex);
+                if (IsTransientGatewayError(detail))
+                    return (null, detail);
+                AppLog.Log($"[PBX Gateway] GetSoftphoneAppSettingsAsync error: {detail}");
+                return (null, detail);
             }
         }
 
@@ -456,6 +556,157 @@ namespace Softphone
             }
         }
 
+        public Task<(KommoProcessCallJobStatus? Job, string? Error)> SubmitKommoProcessCallAsync(KommoProcessCallRequest request)
+        {
+            return PostKommoProcessCallWithTransientRetryAsync(
+                $"{_baseUrl}/api/kommo/process-call",
+                request,
+                "SubmitKommoProcessCallAsync");
+        }
+
+        public async Task<KommoProcessCallJobStatus?> GetKommoProcessCallStatusAsync(string jobId)
+        {
+            try
+            {
+                var resp = await _http.GetAsync($"{_baseUrl}/api/kommo/process-call/{Uri.EscapeDataString(jobId)}").ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                    return null;
+                string json = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                return JsonConvert.DeserializeObject<KommoProcessCallJobStatus>(json);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Log($"[PBX Gateway] GetKommoProcessCallStatusAsync error: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<bool> UploadKommoProcessCallRecordingAsync(string jobId, string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(jobId) || string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath))
+                return false;
+            try
+            {
+                using var form = new MultipartFormDataContent();
+                await using var stream = File.OpenRead(filePath);
+                var fileContent = new StreamContent(stream);
+                fileContent.Headers.ContentType = new MediaTypeHeaderValue(
+                    filePath.EndsWith(".wav", StringComparison.OrdinalIgnoreCase) ? "audio/wav" : "audio/mpeg");
+                form.Add(fileContent, "file", Path.GetFileName(filePath));
+
+                var resp = await _http.PutAsync(
+                    $"{_baseUrl}/api/kommo/process-call/{Uri.EscapeDataString(jobId)}/recording",
+                    form).ConfigureAwait(false);
+                return resp.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Log($"[PBX Gateway] UploadKommoProcessCallRecordingAsync error: {ex.Message}");
+                return false;
+            }
+        }
+
+        public Task<(KommoProcessCallJobStatus? Job, string? Error)> RetryKommoProcessCallAsync(KommoProcessCallRetryRequest request)
+        {
+            return PostKommoProcessCallWithTransientRetryAsync(
+                $"{_baseUrl}/api/kommo/process-call/retry",
+                request,
+                "RetryKommoProcessCallAsync");
+        }
+
+        private async Task<(KommoProcessCallJobStatus? Job, string? Error)> PostKommoProcessCallWithTransientRetryAsync<T>(
+            string url,
+            T request,
+            string operationName)
+        {
+            string? lastError = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    int delayMs = attempt switch { 1 => 2000, 2 => 5000, _ => 10000 };
+                    AppLog.Log($"[PBX Gateway] {operationName} retry {attempt}/3 in {delayMs}ms ({lastError})");
+                    await Task.Delay(delayMs).ConfigureAwait(false);
+                }
+
+                var (job, error) = await PostKommoProcessCallOnceAsync(url, request, operationName).ConfigureAwait(false);
+                if (job != null)
+                    return (job, null);
+
+                lastError = error;
+                if (!IsTransientGatewayError(error))
+                    break;
+            }
+
+            return (null, lastError);
+        }
+
+        private async Task<(KommoProcessCallJobStatus? Job, string? Error)> PostKommoProcessCallOnceAsync<T>(
+            string url,
+            T request,
+            string operationName)
+        {
+            try
+            {
+                string json = JsonConvert.SerializeObject(request);
+                var content = new StringContent(json, Encoding.UTF8, "application/json");
+                var resp = await _http.PostAsync(url, content).ConfigureAwait(false);
+                string body = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    string? detail = TryExtractApiErrorDetail(body);
+                    string error = detail ?? $"HTTP {(int)resp.StatusCode}";
+                    if (IsTransientGatewayError(error) || IsTransientHttpStatusCode((int)resp.StatusCode))
+                        return (null, error);
+                    AppLog.Log($"[PBX Gateway] {operationName} error: {error}");
+                    return (null, error);
+                }
+
+                var job = JsonConvert.DeserializeObject<KommoProcessCallJobStatus>(body);
+                return (job, null);
+            }
+            catch (Exception ex)
+            {
+                string detail = FormatGatewayException(ex);
+                if (IsTransientGatewayError(detail))
+                    return (null, detail);
+
+                AppLog.Log($"[PBX Gateway] {operationName} error: {detail}");
+                return (null, detail);
+            }
+        }
+
+        private static string FormatGatewayException(Exception ex)
+        {
+            string message = ex.Message;
+            if (ex.InnerException != null)
+                message += $" ({ex.InnerException.Message})";
+            return message;
+        }
+
+        private static bool IsTransientHttpStatusCode(int statusCode)
+            => statusCode is 408 or 429 or 502 or 503 or 504;
+
+        private static bool IsTransientGatewayError(string? message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("SSL connection", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("Unable to read data from the transport connection", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("An existing connection was forcibly closed", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("connection attempt failed", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("No such host is known", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("actively refused", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("HTTP 502", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("HTTP 503", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("HTTP 504", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("HTTP 408", StringComparison.OrdinalIgnoreCase)
+                   || message.Contains("HTTP 429", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static string? TryExtractApiErrorDetail(string json)
         {
             if (string.IsNullOrWhiteSpace(json))
@@ -486,6 +737,7 @@ namespace Softphone
     public class SipAuthFailureStats
     {
         public bool Supported { get; set; }
+        public bool TransientServerError { get; set; }
         public int FailuresForExtension { get; set; }
         public int TotalFailuresAllPeers { get; set; }
     }
@@ -515,6 +767,25 @@ namespace Softphone
 
         [JsonProperty("error")]
         public string? Error { get; set; }
+
+        /// <summary>Extension AMI actually rang (echoed by gateway when ring_extension support is deployed).</summary>
+        [JsonProperty("ring_extension")]
+        public string? RingExtension { get; set; }
+    }
+
+    public class SoftphoneAppSettings
+    {
+        [JsonProperty("turn_uri")]
+        public string TurnUri { get; set; } = "";
+
+        [JsonProperty("turn_username")]
+        public string TurnUsername { get; set; } = "";
+
+        [JsonProperty("turn_password")]
+        public string TurnPassword { get; set; } = "";
+
+        [JsonProperty("config_revision")]
+        public string ConfigRevision { get; set; } = "";
     }
 
     public class KommoGatewayStatus
@@ -547,6 +818,16 @@ namespace Softphone
         /// <summary>True when gateway Kommo should be offered to this client (enabled and not excluded).</summary>
         [JsonProperty("offer_gateway")]
         public bool OfferGateway { get; set; }
+
+        /// <summary>True when admin mapped a Kommo user for this extension (shared gateway uploads).</summary>
+        [JsonProperty("upload_enabled")]
+        public bool UploadEnabled { get; set; }
+
+        [JsonProperty("kommo_user_id")]
+        public long? KommoUserId { get; set; }
+
+        [JsonProperty("kommo_user_name")]
+        public string? KommoUserName { get; set; }
     }
 
     public class KommoGatewaySession
@@ -571,6 +852,88 @@ namespace Softphone
 
         [JsonProperty("kommo_user_id_source")]
         public string? KommoUserIdSource { get; set; }
+    }
+
+    public class KommoProcessCallRequest
+    {
+        [JsonProperty("phone")]
+        public string Phone { get; set; } = "";
+
+        [JsonProperty("call_time")]
+        public string CallTime { get; set; } = "";
+
+        [JsonProperty("session_id")]
+        public string? SessionId { get; set; }
+
+        [JsonProperty("is_incoming")]
+        public bool IsIncoming { get; set; }
+
+        [JsonProperty("duration_seconds")]
+        public int DurationSeconds { get; set; }
+
+        [JsonProperty("was_answered")]
+        public bool WasAnswered { get; set; }
+
+        [JsonProperty("lead_id")]
+        public long? LeadId { get; set; }
+
+        [JsonProperty("client_recording_enabled")]
+        public bool ClientRecordingEnabled { get; set; }
+
+        [JsonProperty("connection_slot")]
+        public string ConnectionSlot { get; set; } = "main";
+
+        [JsonProperty("call_from_label")]
+        public string? CallFromLabel { get; set; }
+
+        [JsonProperty("call_log")]
+        public string? CallLog { get; set; }
+
+        [JsonProperty("enable_recording_upload")]
+        public bool EnableRecordingUpload { get; set; } = true;
+
+        [JsonProperty("answer_time")]
+        public string? AnswerTime { get; set; }
+
+        [JsonProperty("call_end_time")]
+        public string? CallEndTime { get; set; }
+    }
+
+    public class KommoProcessCallRetryRequest : KommoProcessCallRequest
+    {
+        [JsonProperty("job_id")]
+        public string? JobId { get; set; }
+    }
+
+    public class KommoProcessCallJobStatus
+    {
+        [JsonProperty("id")]
+        public string Id { get; set; } = "";
+
+        [JsonProperty("status")]
+        public string Status { get; set; } = "";
+
+        [JsonProperty("lead_id")]
+        public long? LeadId { get; set; }
+
+        [JsonProperty("upload_source")]
+        public string? UploadSource { get; set; }
+
+        [JsonProperty("reason")]
+        public string? Reason { get; set; }
+
+        [JsonProperty("created_at")]
+        public string? CreatedAt { get; set; }
+
+        [JsonProperty("updated_at")]
+        public string? UpdatedAt { get; set; }
+
+        /// <summary>Optional PBX CDR truth returned after gateway CDR match (desktop status sync).</summary>
+        [JsonProperty("pbx_was_answered")]
+        public bool? PbxWasAnswered { get; set; }
+
+        [JsonProperty("pbx_duration_seconds")]
+        public int? PbxDurationSeconds { get; set; }
     }
 
     public class CdrRecord

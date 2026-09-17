@@ -435,6 +435,7 @@
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
                                         <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" MinWidth="148"/>
@@ -481,36 +482,68 @@
                                                Margin="0,0,12,0" VerticalAlignment="Top"/>
                                     <TextBlock Grid.Row="2" Grid.Column="1" Name="AmoCrmUploadStatusTextBlock"
                                                Foreground="{DynamicResource TextPrimaryBrush}"
-                                               Margin="0,0,0,0"
+                                               Margin="0,0,0,6"
                                                TextWrapping="Wrap"/>
+
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Name="AmoCrmUploadedRecordingSourceLabel" Text="Uploaded recording:"
+                                               Foreground="{DynamicResource TextSecondaryBrush}"
+                                               Margin="0,0,12,0" VerticalAlignment="Center"
+                                               Visibility="Collapsed"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="1" Name="AmoCrmUploadedRecordingSourceTextBlock"
+                                               Foreground="{DynamicResource TextPrimaryBrush}"
+                                               Margin="0,0,0,6"
+                                               TextWrapping="Wrap"
+                                               Visibility="Collapsed"/>
                                 </Grid>
                             </Border>
 
-                            <Border Margin="0,8,0,0"
+                            <Border Name="AmoCrmManualUploadBorder"
+                                    Margin="0,8,0,0"
                                     CornerRadius="8"
                                     Padding="12"
                                     Background="{DynamicResource BackgroundLightBrush}"
                                     BorderThickness="2"
-                                    BorderBrush="{DynamicResource AccentGreenBrush}">
+                                    BorderBrush="{DynamicResource AccentGreenBrush}"
+                                    Visibility="Collapsed">
                                 <StackPanel>
-                                    <TextBlock Text="Send result to AmoCRM"
+                                    <TextBlock Text="Send result to CRM"
                                               FontSize="14" FontWeight="SemiBold"
                                               Foreground="{DynamicResource TextPrimaryBrush}"
-                                              Margin="0,0,0,4"/>
-                                    <TextBlock Text="Uploads the recording to the lead you pick (downloads from PBX when configured), or adds a missed-call note when there is no recording and the call was not answered."
-                                              Foreground="{DynamicResource TextSecondaryBrush}"
-                                              FontSize="11"
-                                              TextWrapping="Wrap"
                                               Margin="0,0,0,8"/>
+                                    <Grid Margin="0,0,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0"
+                                                  Text="Recording:"
+                                                  Foreground="{DynamicResource TextSecondaryBrush}"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,10,0"/>
+                                        <TextBlock Grid.Column="1"
+                                                  Name="CrmRecordingFileTextBlock"
+                                                  Foreground="{DynamicResource TextPrimaryBrush}"
+                                                  VerticalAlignment="Center"
+                                                  TextTrimming="CharacterEllipsis"
+                                                  Text="Loading..."/>
+                                        <Button Grid.Column="2"
+                                                Name="PlayCrmRecordingButton"
+                                                Content="Play"
+                                                Click="PlayCrmRecordingButton_Click"
+                                                Style="{DynamicResource ModernButtonStyle}"
+                                                Padding="10,5"
+                                                Margin="10,0,0,0"
+                                                IsEnabled="False"/>
+                                    </Grid>
                                     <Button Name="UploadCallResultButton"
-                                            Content="Upload call result"
+                                            Content="Upload local recording"
                                             Click="UploadCallResultButton_Click"
                                             HorizontalAlignment="Left"
                                             MinWidth="220"
                                             FontSize="13"
                                             FontWeight="SemiBold"
                                             Padding="16,9"
-                                            Visibility="Collapsed"
                                             Style="{DynamicResource AmoUploadPrimaryButtonStyle}"/>
                                 </StackPanel>
                             </Border>

@@ -1,7 +1,7 @@
 <Project>
   <!-- Single source of app version for all projects in the solution -->
   <PropertyGroup>
-    <AppVersion>1.1.32</AppVersion>
+    <AppVersion>1.1.46</AppVersion>
     <Version>$(AppVersion)</Version>
     <AssemblyVersion>$(AppVersion).0</AssemblyVersion>
     <FileVersion>$(AppVersion).0</FileVersion>

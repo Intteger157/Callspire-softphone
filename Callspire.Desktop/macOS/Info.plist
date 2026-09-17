@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Placeholders __VERSION__ / __BUILD__ are substituted by macOS/package-app.sh -->
+    <key>CFBundleName</key>
+    <string>Callspire</string>
+    <key>CFBundleDisplayName</key>
+    <string>Callspire</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.callspire.softphone</string>
+    <key>CFBundleExecutable</key>
+    <string>Callspire</string>
+    <key>CFBundleIconFile</key>
+    <string>Callspire.icns</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.business</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- Required for WebRTC (WKWebView getUserMedia) and SIP microphone capture. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Callspire needs access to your microphone to make and receive calls.</string>
+    <!-- WKWebView may probe the camera capability when enumerating media devices. -->
+    <key>NSCameraUsageDescription</key>
+    <string>Callspire does not use the camera; this permission is only requested by the web engine if you enable video.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Callspire connects to your PBX and PBX Gateway on the local network.</string>
+
+    <!-- Click-to-call: callspire://call?number=... and tel: links. -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.callspire.softphone.url</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>callspire</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.callspire.softphone.tel</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>tel</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+        </dict>
+    </array>
+
+    <!-- Allow the WebRTC engine to load the loopback asset server (http://127.0.0.1) and TURN/WSS. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
+</dict>
+</plist>

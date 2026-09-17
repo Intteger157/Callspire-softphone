@@ -37,6 +37,18 @@ namespace Softphone
         private readonly bool _openedAsOutgoingCall;
         private DateTime _incomingCallStartTime; // Время начала входящего звонка для истории
         private bool _wasAnswered = false; // Флаг, был ли звонок принят
+
+        private static void ObserveTaskFault(Task? task, string context)
+        {
+            if (task == null) return;
+            task.ContinueWith(t =>
+            {
+                if (t.IsFaulted && t.Exception != null)
+                    MainWindow.Log($"[CallWindow] {context}: {t.Exception.GetBaseException().Message}");
+            }, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+        }
+
+        private static void FireAndForget(Task task, string context) => ObserveTaskFault(task, context);
         
         // Детальная информация о звонке
         private DateTime? _ringbackStartTime = null; // Время начала гудков
@@ -98,6 +110,7 @@ namespace Softphone
 
         /// <summary>PBX Originate: WebRTC leg to PBX is not the same as remote party answering.</summary>
         private bool _isOriginateCall = false;
+        private bool _sipOriginateAnswered;
         private bool _originateRemoteAnswered = false;
 
         // AmoCRM lead ID found during call (for optimization - search happens in parallel with conversation)
@@ -709,6 +722,8 @@ namespace Softphone
                 {
                     StartRingbackUiTimer();
                 }
+                // Local ringback until remote answers or PBX early media arrives (WebRTC playback may still be establishing).
+                RingbackToneService.Instance.Play();
 
                 MainWindow.Log($"{logPrefix} Originate: PBX media connected; waiting for remote party answer (AnswerTime not set yet)");
                 _technicalDetails.Add($"{timestamp} PBX Originate media connected (ICE); waiting for remote answer");
@@ -785,6 +800,7 @@ namespace Softphone
                 _ringbackEndTime = _answerTime;
             }
 
+            try { RingbackToneService.Instance.Stop(); } catch { }
             StopRingbackUiTimer();
             _callStartTime = DateTime.Now;
             StartCallTimer();
@@ -928,22 +944,7 @@ namespace Softphone
                     await WebRtcHangupAsync();
 
                     // Fallback: close if call_ended never arrives.
-                    _ = System.Threading.Tasks.Task.Delay(3000).ContinueWith(_ =>
-                    {
-                        Dispatcher.Invoke(() =>
-                        {
-                            try
-                            {
-                                if (!_isClosing && IsLoaded)
-                                {
-                                    MainWindow.Log($"{logPrefix} Media watchdog fallback close (no call_ended received)");
-                                    _isClosing = true;
-                                    Close();
-                                }
-                            }
-                            catch { }
-                        });
-                    });
+                    ScheduleCloseCallWindow(3000);
                 }
                 catch (Exception ex)
                 {
@@ -1244,31 +1245,9 @@ namespace Softphone
                 // Отправляем детальную информацию перед закрытием
                 SendCallDetails();
                 
-                // КРИТИЧНО: Не закрываем окно сразу - ждем события call_ended
-                // Окно закроется автоматически при получении события call_ended
-                // Если событие не придет через 3 секунды, закрываем принудительно
-                _ = System.Threading.Tasks.Task.Delay(3000).ContinueWith(_ =>
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        try
-                        {
-                            // КРИТИЧНО: Проверяем, не закрыто ли уже окно через call_ended
-                            // Если окно еще открыто, закрываем принудительно
-                            if (!_isClosing && IsLoaded)
-                            {
-                                MainWindow.Log($"{GetTransportLogPrefix()} Hangup timeout - closing window forcefully");
-                                _isClosing = true;
-                                Close();
-                            }
-                        }
-                        catch (Exception timeoutEx)
-                        {
-                            // Окно уже закрыто или произошла ошибка
-                            MainWindow.Log($"{GetTransportLogPrefix()} Hangup timeout handler error: {timeoutEx.Message}");
-                        }
-                    });
-                });
+                // Ждём call_ended от JS; если не пришёл — закрываем принудительно.
+                // (_isClosing уже true — нельзя проверять ! _isClosing, иначе окно зависает на "Hanging up...")
+                ScheduleCloseCallWindow(3000);
                 return;
             }
             
@@ -2031,10 +2010,18 @@ namespace Softphone
             {
                 try
                 {
-                    // Передаем sessionId для правильного завершения сессии
                     var sessionId = _callContext?.WebRtcSessionId;
-                    _ = (_webRtcService ?? WebRtcService.Main).HangupAsync(sessionId);
-                    MainWindow.Log($"[CallWindow] OnClosed: Hangup called for WebRTC call (sessionId: {sessionId ?? "null"})");
+                    if (string.IsNullOrEmpty(sessionId))
+                    {
+                        MainWindow.Log("[CallWindow] OnClosed: Hangup skipped — no WebRTC sessionId");
+                    }
+                    else
+                    {
+                        FireAndForget(
+                            (_webRtcService ?? WebRtcService.Main).HangupAsync(sessionId),
+                            "OnClosed HangupAsync");
+                        MainWindow.Log($"[CallWindow] OnClosed: Hangup called for WebRTC call (sessionId: {sessionId})");
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -2232,16 +2219,71 @@ namespace Softphone
         /// Возвращает ID лида AmoCRM: сначала из браузера (если звонок инициирован из AmoCRM),
         /// затем найденный во время звонка (если был выполнен поиск)
         /// </summary>
-        /// <summary>
-        /// Returns the outbound CallerID (P-Asserted-Identity) if PBX sent one.
-        /// </summary>
+        /// <summary>Returns the outbound CallerID (P-Asserted-Identity) if PBX sent one.</summary>
         public string? GetOutboundCallerId() => _outboundCallerId;
+
+        public bool HasWebRtcSession() =>
+            !string.IsNullOrEmpty(_callContext?.WebRtcSessionId);
+
+        /// <summary>Context for a PBX Originate callback timeout (no inbound INVITE within the wait window).</summary>
+        public readonly struct OriginateCallbackTimeoutContext
+        {
+            public bool IsWebRtc { get; init; }
+            public bool WebRtcReadyWhenOriginateSent { get; init; }
+            public bool WebRtcReadyAtTimeout { get; init; }
+            public string? GatewayExtension { get; init; }
+        }
+
+        /// <summary>
+        /// PBX Originate did not callback with an INVITE before the wait window expired.
+        /// </summary>
+        public void ShowOriginateCallbackTimeout(OriginateCallbackTimeoutContext context)
+        {
+            if (_wasAnswered || (_callTimer?.IsEnabled ?? false) || _isClosing)
+                return;
+
+            string message;
+            if (context.IsWebRtc)
+            {
+                if (!context.WebRtcReadyWhenOriginateSent || !context.WebRtcReadyAtTimeout)
+                {
+                    message =
+                        "Could not connect: WebRTC was still connecting when the call started. " +
+                        "Wait until the main window shows Connected, then try again.";
+                }
+                else
+                {
+                    message =
+                        "Could not connect: PBX did not reach this softphone. " +
+                        "Wait a few seconds and try again. If it keeps failing, restart Callspire.";
+                }
+            }
+            else
+            {
+                string extHint = string.IsNullOrWhiteSpace(context.GatewayExtension)
+                    ? "your PBX extension"
+                    : $"extension {context.GatewayExtension}";
+                message =
+                    $"Could not connect: PBX did not call back within 20 seconds. " +
+                    $"Check that SIP is registered on {extHint}.";
+            }
+
+            CallStatusTextBlock.Text = message;
+            CallStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentRedBrush");
+            MainWindow.Log(
+                $"[CallWindow][Originate] UI timeout: isWebRtc={context.IsWebRtc}, " +
+                $"readyAtSend={context.WebRtcReadyWhenOriginateSent}, readyAtTimeout={context.WebRtcReadyAtTimeout}, " +
+                $"gatewayExt={context.GatewayExtension ?? ""}, message={message}");
+        }
 
         /// <summary>True if this window was opened for an outbound call (does not change when the callee answers).</summary>
         public bool OpenedAsOutgoingCall => _openedAsOutgoingCall;
 
         /// <summary>Dialed / remote party number shown in this window.</summary>
         public string CallRemoteNumber => _phoneNumber;
+
+        /// <summary>Lead id passed from Kommo browser click-to-call (not from in-call search).</summary>
+        public long? GetAmoCrmBrowserLeadId() => _callContext.AmoCrmLeadId;
 
         public long? GetAmoCrmLeadId()
         {
@@ -2262,9 +2304,41 @@ namespace Softphone
             StartOutboundConnectingTimeout(OriginateConnectingTimeoutMs);
         }
 
+        /// <summary>True after PBX Originate callback was auto-answered on the native SIP leg.</summary>
+        public bool IsSipOriginateAnswered => _sipOriginateAnswered;
+
+        /// <summary>
+        /// PBX Originate callback on SIP: auto-answer succeeded — switch outgoing window to active call UI.
+        /// </summary>
+        public void NotifyOriginateSipAnswered()
+        {
+            if (_sipOriginateAnswered)
+                return;
+
+            _sipOriginateAnswered = true;
+            _isIncomingCall = false;
+            _wasAnswered = true;
+            _callStartTime = DateTime.Now;
+
+            ShowCallControls();
+            StartCallTimer();
+
+            CallStatusTextBlock.Text = "Connected";
+            CallTimerTextBlock.Text = "00:00:00";
+            CallStatusTextBlock.Foreground = (System.Windows.Media.Brush)FindResource("AccentGreenBrush");
+
+            CallWindowHelpers.UpdateAnswerTime(ref _answerTime, ref _wasAnswered);
+            CallWindowHelpers.UpdateRingbackEndTime(_ringbackStartTime, ref _ringbackEndTime);
+
+            MainWindow.Log($"[CallWindow][Originate] SIP callback answered for {_phoneNumber}");
+            SendCallDetails();
+        }
+
         private void StartOutboundConnectingTimeout(int delayMs)
         {
-            if (!_useWebRtc || _isIncomingCall)
+            if (_isIncomingCall)
+                return;
+            if (!_useWebRtc && !_isOriginateCall)
                 return;
 
             _connectingTimeoutCts?.Cancel();
@@ -2624,8 +2698,18 @@ namespace Softphone
                             _technicalDetails.Add(progressDetail);
                             MainWindow.Log($"{logPrefix} Call in progress...");
                             CallStatusTextBlock.Text = "Calling";
-                            // IMPORTANT: don't touch CallTimerTextBlock here; "ringing" UI timer may already be running
-                            // and call_progress can arrive repeatedly causing flicker.
+                            // Originate callback (180 Ringing) may not emit a separate "ringing" JS event when originator=remote.
+                            if (_isOriginateCall && !_wasAnswered && !(_callTimer?.IsEnabled ?? false))
+                            {
+                                if (!_ringbackStartTime.HasValue)
+                                {
+                                    _ringbackStartTime = DateTime.Now;
+                                    SendCallDetails();
+                                }
+                                RingbackToneService.Instance.Play();
+                                StartRingbackUiTimer();
+                                MainWindow.Log($"{logPrefix} Originate: local ringback started on call_progress (180 Ringing)");
+                            }
                             break;
                             
                         case "ringing":
@@ -3052,7 +3136,7 @@ namespace Softphone
                                     try { RingbackToneService.Instance.Stop(); } catch { }
                                     StopRingbackUiTimer();
                                     _endedBy = CallEndedBy.LocalUser;
-                                    _ = WebRtcHangupAsync();
+                                    FireAndForget(WebRtcHangupAsync(), "ICE failure hangup");
                                 }
                             }
                             else if (_useWebRtc && iceState == "closed" &&
@@ -3102,6 +3186,9 @@ namespace Softphone
                                     MainWindow.Log($"{logPrefix} ✅ Remote audio started (non-silent samples detected); stopping ringback / finalizing if pending");
                                 }
                             }
+
+                            // PBX early media / callee voice — stop local ringback so it is not masked.
+                            try { RingbackToneService.Instance.Stop(); } catch { }
 
                             // If we did not get ICE connected yet, treat this as media-ready.
                             if (!_webRtcIceConnected)
@@ -3683,10 +3770,11 @@ namespace Softphone
                 
                 if (string.IsNullOrEmpty(sessionId))
                 {
-                    MainWindow.Log("[WebRTC CallWindow] ⚠️⚠️⚠️ WARNING: SessionId is NULL - hangup will terminate ALL sessions!");
+                    MainWindow.Log("[WebRTC CallWindow] Hangup skipped: no sessionId (no active WebRTC session)");
+                    return;
                 }
                 
-                MainWindow.Log($"[WebRTC CallWindow] Calling (_webRtcService ?? WebRtcService.Main).HangupAsync with sessionId: {sessionId ?? "null"}");
+                MainWindow.Log($"[WebRTC CallWindow] Calling (_webRtcService ?? WebRtcService.Main).HangupAsync with sessionId: {sessionId}");
                 await (_webRtcService ?? WebRtcService.Main).HangupAsync(sessionId);
                 MainWindow.Log($"[WebRTC CallWindow] ✅ Hangup command sent via WebRTC service (sessionId: {sessionId ?? "null"})");
                 

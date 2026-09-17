@@ -1002,6 +1002,15 @@ namespace Softphone
                             _registered = false;
                             _lastRegisteredUtc = DateTime.MinValue;
                             AppLog.Log($"[WebRtcService] OnEngineEvent: ws_disconnected - resetting registered state");
+                            // If ws_connected never arrived after the last initUA, the post-initUA watchdog already
+                            // schedules a reconnect — avoid duplicate immediate retries that flood the WebView/UI thread.
+                            if (!_wsConnectedAfterInitUa &&
+                                _lastInitUaSentUtc != DateTime.MinValue &&
+                                DateTime.UtcNow < _lastInitUaSentUtc + TimeSpan.FromSeconds(8))
+                            {
+                                AppLog.Log("[WebRtcService] AutoReconnect: suppressed (ws_disconnected before first ws_connected; watchdog will reconnect)");
+                                break;
+                            }
                             ScheduleReconnect("ws_disconnected", immediate: true);
                             break;
                         case "incoming":

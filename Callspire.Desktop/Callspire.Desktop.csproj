@@ -17,6 +17,8 @@
 
 		<!-- Nullable and runtime identifier -->
 		<Nullable>enable</Nullable>
+		<!-- PortAudio callback code writes directly into native buffers -->
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<UseCurrentRuntimeIdentifier>true</UseCurrentRuntimeIdentifier>
 
 		<ApplicationIcon Condition="$(TargetFramework.StartsWith('net8.0-windows'))">icon.ico</ApplicationIcon>
@@ -43,7 +45,6 @@
 
 	<!-- ── Windows-only packages ───────────────────────────────────────── -->
 	<ItemGroup Condition="'$(IsWindowsBuild)' == 'true'">
-		<PackageReference Include="SIPSorceryMedia.Windows" Version="8.0.7" />
 		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
 		<!-- WPF icon library — needed only while WPF windows coexist (Phase 5 bridge) -->
 		<PackageReference Include="FluentIcons.Wpf" Version="2.1.328" />
@@ -53,12 +54,16 @@
 	<ItemGroup>
 		<!-- NAudio: cross-platform WAV/PCM utilities; WASAPI classes guarded by #if WINDOWS -->
 		<PackageReference Include="NAudio" Version="2.2.1" />
-		<!-- PortAudio: macOS/Linux audio backend; also available on Windows as fallback -->
-		<PackageReference Include="PortAudioNet" Version="0.1.0" />
+		<!-- PortAudio: macOS/Linux audio backend; also available on Windows as fallback.
+		     PortAudioSharp2 bundles native libportaudio for osx-arm64/osx-x64/linux/win-x64. -->
+		<PackageReference Include="PortAudioSharp2" Version="1.0.6" />
 		<!-- Avalonia UI cross-platform shell -->
 		<PackageReference Include="Avalonia" Version="12.0.4" />
 		<PackageReference Include="Avalonia.Desktop" Version="12.0.4" />
 		<PackageReference Include="Avalonia.Themes.Fluent" Version="12.0.4" />
+		<!-- NativeWebView: WKWebView on macOS, WebView2 on Windows, WebKitGTK/WPE on Linux.
+		     Hosts WebRtcClient/phone.js for the Avalonia shell (AvaloniaWebRtcEngineHost). -->
+		<PackageReference Include="Avalonia.Controls.WebView" Version="12.0.1" />
 		<!-- FluentIcons for Avalonia windows (all platforms) -->
 		<PackageReference Include="FluentIcons.Avalonia" Version="2.1.328" />
 	</ItemGroup>
@@ -81,9 +86,11 @@
 		Using explicit build actions to avoid conflicts with UseWPF=true auto-globbing.
 	-->
 	<ItemGroup>
-		<AvaloniaResource Include="Avalonia\Themes\DarkTheme.axaml"/>
-		<AvaloniaResource Include="Avalonia\Themes\LightTheme.axaml"/>
-		<AvaloniaResource Include="Avalonia\Styles\CommonStyles.axaml"/>
+		<AvaloniaResource Include="Avalonia\Themes\DarkTheme.axaml" />
+		<AvaloniaResource Include="Avalonia\Themes\LightTheme.axaml" />
+		<AvaloniaResource Include="Avalonia\Styles\CommonStyles.axaml" />
+		<!-- App icon for Avalonia windows (PNG — ICO is not reliably decoded on macOS) -->
+		<AvaloniaResource Include="Assets\**\*.png" />
 	</ItemGroup>
 
 	<!--
@@ -96,8 +103,10 @@
 		Both are blocked by removing the items inside the _wpftmp build:
 	-->
 	<ItemGroup Condition="$(MSBuildProjectFile.EndsWith('_wpftmp.csproj'))">
-		<AvaloniaXaml Remove="Avalonia\**\*.axaml"/>
-		<Compile    Remove="Avalonia\**\*.cs"/>
+		<AvaloniaXaml Remove="Avalonia\**\*.axaml" />
+		<Compile Remove="Avalonia\**\*.cs" />
+		<!-- AvaloniaApp references Softphone.Avalonia.MainWindow, which is removed above -->
+		<Compile Remove="App.axaml.cs" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -126,9 +135,23 @@
 		</Content>
 	</ItemGroup>
 
-	<ItemGroup>
-		<!-- Optional ffmpeg/tools folder (see tools/README_FFMPEG.txt) -->
-		<Content Include="..\tools\**\*" Link="tools\%(RecursiveDir)%(Filename)%(Extension)">
+	<ItemGroup Condition="'$(IsWindowsBuild)' == 'true'">
+		<!-- Windows publish: Windows ffmpeg only -->
+		<Content Include="..\tools\Windows\**\*" Link="tools\Windows\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(IsWindowsBuild)' != 'true'">
+		<!-- macOS / Linux: platform ffmpeg folders -->
+		<Content Include="..\tools\MacOS\**\*" Link="tools\MacOS\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+		<Content Include="..\tools\Linux\**\*" Link="tools\Linux\%(RecursiveDir)%(Filename)%(Extension)">
 			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
 			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
 			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
@@ -144,5 +167,25 @@
 			<Link>webrtc_apm.dll</Link>
 		</Content>
 	</ItemGroup>
+
+	<!-- Production publish (Inno Setup): strip debug symbols and non-Windows tools -->
+	<PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(PublishDir)' != ''">
+		<DebugType>none</DebugType>
+		<DebugSymbols>false</DebugSymbols>
+		<CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
+	</PropertyGroup>
+
+	<Target Name="ExcludePdbFromPublish" BeforeTargets="CopyFilesToPublishDirectory" Condition="'$(PublishDir)' != ''">
+		<ItemGroup>
+			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(ResolvedFileToPublish.RelativePath)').EndsWith('.pdb'))" />
+			<ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="$([System.String]::Copy('%(ResolvedFileToPublish.DestinationSubPath)').EndsWith('.pdb'))" />
+		</ItemGroup>
+	</Target>
+
+	<Target Name="CleanupPublishDirForInnoSetup" AfterTargets="Publish" Condition="'$(PublishDir)' != '' And '$(IsWindowsBuild)' == 'true'">
+		<Exec Command="powershell -NoProfile -NonInteractive -Command &quot;if (Test-Path -LiteralPath '$(PublishDir)') { Get-ChildItem -LiteralPath '$(PublishDir)' -Filter '*.pdb' -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }&quot;" />
+		<RemoveDir Directories="$(PublishDir)tools\MacOS;$(PublishDir)tools\Linux" ContinueOnError="true" />
+		<Delete Files="$(PublishDir)tools\README_FFMPEG.txt" TreatErrorsAsWarnings="true" />
+	</Target>
 
 </Project>

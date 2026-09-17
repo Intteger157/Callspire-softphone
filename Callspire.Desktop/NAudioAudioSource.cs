@@ -31,6 +31,7 @@ namespace Softphone
         private readonly List<AudioFormat> _supportedFormats = new List<AudioFormat>();
         
         public event EncodedSampleDelegate? OnAudioSourceEncodedSample;
+        public event Action<EncodedAudioFrame>? OnAudioSourceEncodedFrameReady;
         public event RawAudioSampleDelegate? OnAudioSourceRawSample;
         public event SourceErrorDelegate? OnAudioSourceError;
 
@@ -348,7 +349,7 @@ namespace Softphone
 
         public bool HasEncodedAudioSubscribers()
         {
-            return OnAudioSourceEncodedSample != null;
+            return OnAudioSourceEncodedSample != null || OnAudioSourceEncodedFrameReady != null;
         }
 
         public bool IsAudioSourcePaused()

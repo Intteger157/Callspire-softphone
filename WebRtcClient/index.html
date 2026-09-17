@@ -64,19 +64,27 @@
             get: function () { return window.Soft('main'); }
         });
 
+        // Host bridge (top frame only):
+        //   WebView2 (WPF)            → window.chrome.webview.postMessage(str)
+        //   Avalonia NativeWebView    → invokeCSharpAction(str)   (WKWebView on macOS, WebKit on Linux, WebView2 on Windows)
+        window.__softphoneDesktopHost = true;
+        function postToHost(str) {
+            try {
+                if (window.chrome && window.chrome.webview) { window.chrome.webview.postMessage(str); return true; }
+                if (typeof window.invokeCSharpAction === 'function') { window.invokeCSharpAction(str); return true; }
+            } catch (e) { /* swallow */ }
+            return false;
+        }
+
         // Track which slots have loaded so the host can wait for readiness.
         window._slotReady = { main: false, secondary: false };
         function markSlotReady(slot) {
             window._slotReady[slot] = true;
-            try {
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage(JSON.stringify({
-                        type: 'slot_ready',
-                        slot: slot,
-                        ts: Date.now()
-                    }));
-                }
-            } catch (e) { /* swallow */ }
+            postToHost(JSON.stringify({
+                type: 'slot_ready',
+                slot: slot,
+                ts: Date.now()
+            }));
         }
         document.getElementById('slot-main').addEventListener('load', function () { markSlotReady('main'); });
         document.getElementById('slot-secondary').addEventListener('load', function () { markSlotReady('secondary'); });
@@ -89,9 +97,7 @@
             try {
                 var data = e && e.data;
                 if (!data || data.__toHost !== true || typeof data.payload !== 'string') return;
-                if (window.chrome && window.chrome.webview) {
-                    window.chrome.webview.postMessage(data.payload);
-                }
+                postToHost(data.payload);
             } catch (relayErr) {
                 try { console.warn('[SoftphoneRouter] Relay error:', relayErr); } catch (_) { /* swallow */ }
             }

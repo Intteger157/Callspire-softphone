@@ -1,8 +1,5 @@
 using System;
 using SIPSorcery.Media;
-#if WINDOWS
-using SIPSorceryMedia.Windows;
-#endif
 using Softphone.Audio;
 
 namespace Softphone
@@ -10,7 +7,7 @@ namespace Softphone
     /// <summary>
     /// Desktop audio backend selection (replaces the inline TRY1/TRY2 logic that lived
     /// in SipService.InitializeAudio):
-    ///   Windows:      WASAPI Communications mode (AEC/NS/AGC) → WinMM fallback.
+    ///   Windows:      WASAPI Communications mode (AEC/NS/AGC) → PortAudio fallback.
     ///   macOS/Linux:  PortAudio with SoftwareAec (via EchoCancellerFactory).
     /// </summary>
     public sealed class DesktopAudioDeviceFactory : IAudioDeviceFactory
@@ -27,7 +24,7 @@ namespace Softphone
             if (OperatingSystem.IsWindows())
                 return CreateWindowsSession(options, encoder);
 #endif
-            return CreatePortAudioSession(options);
+            return CreatePortAudioSession(options, encoder);
         }
 
 #if WINDOWS
@@ -54,34 +51,28 @@ namespace Softphone
             }
             catch (Exception wasapiEx)
             {
-                AppLog.Log($"[DesktopAudioDeviceFactory] WASAPI failed ({wasapiEx.Message}), falling back to WinMM");
-            }
-
-            // TRY 2: WinMM fallback (WindowsAudioEndPoint); inbound needs FilteringAudioSink.
-            try
-            {
-                var winMm = new WindowsAudioEndPoint(encoder,
-                    audioOutDeviceIndex: options.RenderDeviceIndex,
-                    audioInDeviceIndex: options.CaptureDeviceIndex);
-
-                var devices = new WinMmAudioDevices(winMm);
-                return new AudioDeviceSession(devices, devices,
-                    "WinMM + FilteringAudioSink",
-                    requiresInboundFiltering: true);
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"Failed to create audio endpoint: {ex.Message}", ex);
+                AppLog.Log($"[DesktopAudioDeviceFactory] WASAPI failed ({wasapiEx.GetType().Name}: {wasapiEx.Message}), falling back to PortAudio");
+                try
+                {
+                    return CreatePortAudioSession(options, encoder);
+                }
+                catch (Exception portAudioEx)
+                {
+                    throw new InvalidOperationException(
+                        $"WASAPI failed ({wasapiEx.Message}); PortAudio fallback also failed ({portAudioEx.Message}). " +
+                        "Check microphone/speaker devices and that no other app is holding them exclusively.",
+                        portAudioEx);
+                }
             }
         }
 #endif
 
-        private static AudioDeviceSession CreatePortAudioSession(AudioDeviceOptions options)
+        private static AudioDeviceSession CreatePortAudioSession(AudioDeviceOptions options, AudioEncoder encoder)
         {
             try
             {
                 var source = new PortAudioAudioSource(options.CaptureDeviceIndex, sampleRate: AEC_SAMPLE_RATE);
-                var sink = new PortAudioSink(options.RenderDeviceIndex, sampleRate: AEC_SAMPLE_RATE);
+                var sink = new PortAudioSink(options.RenderDeviceIndex, sampleRate: AEC_SAMPLE_RATE, audioEncoder: encoder);
 
                 if (options.EnableEchoCancellation)
                 {

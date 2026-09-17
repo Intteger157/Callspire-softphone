@@ -136,7 +136,10 @@
                               Foreground="{DynamicResource TextSecondaryBrush}"
                               FontSize="16"
                               FontWeight="SemiBold"
-                              HorizontalAlignment="Center"/>
+                              HorizontalAlignment="Center"
+                              TextAlignment="Center"
+                              TextWrapping="Wrap"
+                              MaxWidth="340"/>
                     <TextBlock Name="CallTimerTextBlock"
                               Text=""
                               Foreground="{DynamicResource AccentGreenBrush}"
