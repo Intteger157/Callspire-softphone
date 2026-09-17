@@ -122,8 +122,9 @@ namespace Softphone
             var themed = new global::Avalonia.Controls.ResourceDictionary();
             if (dark != null)  themed.ThemeDictionaries[ThemeVariant.Dark]  = dark;
             if (light != null) themed.ThemeDictionaries[ThemeVariant.Light] = light;
-            // Default (unspecified) variant falls back to Dark to preserve the historic look.
-            if (dark != null)  themed.ThemeDictionaries[ThemeVariant.Default] = dark;
+            // Default must be a separate instance — Avalonia allows only one parent per ResourceDictionary.
+            var darkDefault = TryLoadDictionary(darkUri);
+            if (darkDefault != null) themed.ThemeDictionaries[ThemeVariant.Default] = darkDefault;
             Resources.MergedDictionaries.Add(themed);
         }
 

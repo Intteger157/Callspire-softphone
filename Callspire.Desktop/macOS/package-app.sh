@@ -61,9 +61,10 @@ RES_DIR="$CONTENTS/Resources"
 
 publish_rid() {
   local rid="$1" dest="$2"
-  say "dotnet publish ($rid)"
+  say "dotnet restore + publish ($rid)"
+  dotnet restore "$PROJECT" -p:TargetFramework=net8.0 -r "$rid"
   dotnet publish "$PROJECT" -f net8.0 -c "$CONFIG" -r "$rid" \
-      --self-contained true \
+      --self-contained true --no-restore \
       -p:PublishSingleFile=false -p:PublishTrimmed=false \
       -p:UseAppHost=true -p:IncludeNativeLibrariesForSelfExtract=true \
       -o "$dest"
