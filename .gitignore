@@ -79,7 +79,7 @@ credentials.json
 # ── App user data (stored in %LOCALAPPDATA%\Callspire on Windows) ────────────
 settings.json
 call_history.json
-Callspire/
+/Callspire/
 
 # ── Native AEC (clone speexdsp locally; CMake output is generated) ─────────
 native-aec/speexdsp/
