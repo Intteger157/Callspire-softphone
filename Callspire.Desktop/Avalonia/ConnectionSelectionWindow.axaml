@@ -42,7 +42,7 @@
                     <Button Grid.Column="1"
                             Content="✕"
                             Click="CloseButton_Click"
-                            Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                            Theme="{StaticResource TitleBarCloseButtonStyle}"/>
                 </Grid>
             </Border>
 

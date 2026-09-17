@@ -65,7 +65,7 @@
                                     VerticalAlignment="Stretch"
                                     Click="MinimizeButton_Click" Cursor="Hand"/>
                             <Button Content="✕" Click="CloseButton_Click"
-                                    Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                                    Theme="{StaticResource TitleBarCloseButtonStyle}"/>
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -131,18 +131,18 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
-                        <Button Grid.Row="0" Grid.Column="0" Content="1" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="0" Grid.Column="1" Content="2" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="0" Grid.Column="2" Content="3" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="1" Grid.Column="0" Content="4" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="1" Grid.Column="1" Content="5" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="1" Grid.Column="2" Content="6" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="2" Grid.Column="0" Content="7" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="2" Grid.Column="1" Content="8" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="2" Grid.Column="2" Content="9" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="3" Grid.Column="0" Content="*" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="3" Grid.Column="1" Content="0" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
-                        <Button Grid.Row="3" Grid.Column="2" Content="#" Theme="{DynamicResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="0" Grid.Column="0" Content="1" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="0" Grid.Column="1" Content="2" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="0" Grid.Column="2" Content="3" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="1" Grid.Column="0" Content="4" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="1" Grid.Column="1" Content="5" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="1" Grid.Column="2" Content="6" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="2" Grid.Column="0" Content="7" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="2" Grid.Column="1" Content="8" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="2" Grid.Column="2" Content="9" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="3" Grid.Column="0" Content="*" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="3" Grid.Column="1" Content="0" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
+                        <Button Grid.Row="3" Grid.Column="2" Content="#" Theme="{StaticResource NumpadButtonStyle}" Click="DtmfButton_Click" Margin="6" Width="56" Height="56" FontSize="20"/>
                     </Grid>
 
                     <!-- Call Control Buttons -->
@@ -151,7 +151,7 @@
                                 Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                                 Margin="0,0,0,16">
 
-                        <Button Theme="{DynamicResource CallControlButton}"
+                        <Button Theme="{StaticResource CallControlButton}"
                                 Classes.controlActive="{Binding IsMuted}"
                                 ToolTip.Tip="Mute" Click="MuteButton_Click" Margin="8,0">
                             <Panel>
@@ -164,7 +164,7 @@
                             </Panel>
                         </Button>
 
-                        <Button Theme="{DynamicResource CallControlButton}"
+                        <Button Theme="{StaticResource CallControlButton}"
                                 Classes.controlActive="{Binding IsOnHold}"
                                 ToolTip.Tip="Hold" Click="HoldButton_Click" Margin="8,0">
                             <Panel>
@@ -177,7 +177,7 @@
                             </Panel>
                         </Button>
 
-                        <Button Theme="{DynamicResource CallControlButton}"
+                        <Button Theme="{StaticResource CallControlButton}"
                                 Classes.controlActive="{Binding IsKeypadVisible}"
                                 ToolTip.Tip="Toggle keypad" Click="KeypadToggleButton_Click" Margin="8,0">
                             <ic:SymbolIcon Symbol="Dialpad" Width="24" Height="24" IconVariant="Regular"
@@ -188,7 +188,7 @@
                     <!-- Hang Up -->
                     <Button Grid.Row="5"
                             IsVisible="{Binding ShowHangupButton}"
-                            Theme="{DynamicResource EndCallButton}"
+                            Theme="{StaticResource EndCallButton}"
                             Click="HangupButton_Click"
                             HorizontalAlignment="Center" VerticalAlignment="Bottom"
                             Margin="0,0,0,8">
@@ -200,11 +200,11 @@
                                 IsVisible="{Binding ShowIncomingButtons}"
                                 Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Bottom"
                                 Margin="0,0,0,8">
-                        <Button Theme="{DynamicResource NumpadCallButtonStyle}"
+                        <Button Theme="{StaticResource NumpadCallButtonStyle}"
                                 Click="AnswerButton_Click" Margin="0,0,28,0" ToolTip.Tip="Answer">
                             <ic:SymbolIcon Symbol="Call" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
                         </Button>
-                        <Button Theme="{DynamicResource EndCallButton}"
+                        <Button Theme="{StaticResource EndCallButton}"
                                 Click="RejectButton_Click" Margin="28,0,0,0" ToolTip.Tip="Reject">
                             <ic:SymbolIcon Symbol="CallEnd" Width="32" Height="32" IconVariant="Regular" Foreground="White"/>
                         </Button>

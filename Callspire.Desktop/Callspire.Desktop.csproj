@@ -47,7 +47,7 @@
 	<ItemGroup Condition="'$(IsWindowsBuild)' == 'true'">
 		<PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
 		<!-- WPF icon library — needed only while WPF windows coexist (Phase 5 bridge) -->
-		<PackageReference Include="FluentIcons.Wpf" Version="2.1.328" />
+		<PackageReference Include="FluentIcons.Wpf" Version="2.1.341" />
 	</ItemGroup>
 
 	<!-- ── Cross-platform packages (all TFMs) ─────────────────────────── -->
@@ -64,8 +64,11 @@
 		<!-- NativeWebView: WKWebView on macOS, WebView2 on Windows, WebKitGTK/WPE on Linux.
 		     Hosts WebRtcClient/phone.js for the Avalonia shell (AvaloniaWebRtcEngineHost). -->
 		<PackageReference Include="Avalonia.Controls.WebView" Version="12.0.1" />
-		<!-- FluentIcons for Avalonia windows (all platforms) -->
-		<PackageReference Include="FluentIcons.Avalonia" Version="2.1.328" />
+		<!-- FluentIcons for Avalonia windows (all platforms).
+		     Keep FluentIcons.Avalonia / .Resources.Avalonia / .Wpf on the same version:
+		     they pin FluentIcons.Common exactly (2.1.328 pulled Resources 2.0.328). -->
+		<PackageReference Include="FluentIcons.Avalonia" Version="2.1.341" />
+		<PackageReference Include="FluentIcons.Resources.Avalonia" Version="2.1.341" />
 	</ItemGroup>
 	
 	<!--

@@ -40,6 +40,10 @@ namespace Softphone
             try { ThemeService.EnsureAvaloniaInitialized(); }
             catch (Exception ex) { AppLog.Log($"[AvaloniaApp] Theme init: {ex.Message}"); }
 
+            // One-line diagnostics for the Mac smoke test: theme/style dictionaries + icon font.
+            AppLog.Log($"[AvaloniaApp] themes loaded: dark={_darkThemeLoaded}, light={_lightThemeLoaded}, common={_commonStylesLoaded}, " +
+                       $"fluentIcons={Softphone.Avalonia.PlatformUiHints.IconFontAvailable}");
+
             if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
             {
                 desktop.ShutdownMode = global::Avalonia.Controls.ShutdownMode.OnMainWindowClose;
@@ -113,10 +117,14 @@ namespace Softphone
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
+        private static bool _darkThemeLoaded, _lightThemeLoaded, _commonStylesLoaded;
+
         private void LoadThemeDictionaries(string darkUri, string lightUri)
         {
             var dark  = TryLoadDictionary(darkUri);
             var light = TryLoadDictionary(lightUri);
+            _darkThemeLoaded  = dark  != null;
+            _lightThemeLoaded = light != null;
             if (dark == null && light == null) return;
 
             var themed = new global::Avalonia.Controls.ResourceDictionary();
@@ -144,7 +152,17 @@ namespace Softphone
         private void LoadAvaloniaResource(string uri)
         {
             var dict = TryLoadDictionary(uri);
-            if (dict != null) Resources.MergedDictionaries.Add(dict);
+            _commonStylesLoaded = dict != null;
+            if (dict != null)
+            {
+                Resources.MergedDictionaries.Add(dict);
+                return;
+            }
+
+            // Without CommonStyles every Theme="{StaticResource ...}" button renders empty — fail loud.
+            var msg = $"[AvaloniaApp] FATAL: ControlThemes not loaded from '{uri}'. Buttons will render without content.";
+            AppLog.Log(msg);
+            System.Diagnostics.Debug.WriteLine(msg);
         }
     }
 

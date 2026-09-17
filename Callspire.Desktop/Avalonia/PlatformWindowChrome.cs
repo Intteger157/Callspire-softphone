@@ -75,10 +75,12 @@ namespace Softphone.Avalonia
             if (window.FindControl<Control>(CustomTitleBarName) is Control titleBar)
                 titleBar.IsVisible = false;
 
-            // Square off the surface so it fills the native frame.
+            // Square off the surface so it fills the native frame with no inset.
             if (window.FindControl<Border>(WindowSurfaceName) is Border surface)
             {
                 surface.CornerRadius = new CornerRadius(0);
+                surface.BorderThickness = new Thickness(0);
+                surface.Padding = new Thickness(0);
                 surface.ClipToBounds = false;
             }
         }

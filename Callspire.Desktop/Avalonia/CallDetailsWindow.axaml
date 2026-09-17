@@ -45,7 +45,7 @@
                                 Click="MinimizeButton_Click" Cursor="Hand"/>
                         <Button Content="✕"
                                 Click="CloseButton_Click"
-                                Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                                Theme="{StaticResource TitleBarCloseButtonStyle}"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -204,14 +204,14 @@
                             <!-- Playback controls -->
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8" Spacing="8">
                                 <Button Name="PlayPauseButton"
-                                        Theme="{DynamicResource CallControlButton}"
+                                        Theme="{StaticResource CallControlButton}"
                                         Click="PlayPauseButton_Click"
                                         ToolTip.Tip="Play / Pause">
                                     <ic:SymbolIcon Name="PlayIcon" Symbol="Play" Width="20" Height="20"
                                                    IconVariant="Regular" Foreground="{DynamicResource TextPrimaryBrush}"/>
                                 </Button>
                                 <Button Name="StopButton"
-                                        Theme="{DynamicResource CallControlButton}"
+                                        Theme="{StaticResource CallControlButton}"
                                         Click="StopPlaybackButton_Click"
                                         ToolTip.Tip="Stop">
                                     <ic:SymbolIcon Symbol="Stop" Width="20" Height="20"

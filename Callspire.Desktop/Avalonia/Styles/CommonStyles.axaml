@@ -17,7 +17,13 @@
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
                         CornerRadius="0">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -47,7 +53,13 @@
                         CornerRadius="8"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -70,16 +82,25 @@
         <Setter Property="Height"          Value="64"/>
         <Setter Property="FontSize"        Value="22"/>
         <Setter Property="FontWeight"      Value="SemiBold"/>
-        <Setter Property="Background"      Value="{DynamicResource BackgroundDarkBrush}"/>
+        <Setter Property="Background"      Value="{DynamicResource BackgroundLightBrush}"/>
         <Setter Property="Foreground"      Value="{DynamicResource TextPrimaryBrush}"/>
-        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="BorderBrush"     Value="{DynamicResource BorderBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
         <Setter Property="Cursor"          Value="Hand"/>
         <Setter Property="Template">
             <ControlTemplate>
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="32">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -109,7 +130,13 @@
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
                         CornerRadius="28">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -139,7 +166,13 @@
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
                         CornerRadius="30">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -166,7 +199,13 @@
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
                         CornerRadius="36">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -195,7 +234,13 @@
                         Background="{TemplateBinding Background}"
                         CornerRadius="4"
                         Padding="{TemplateBinding Padding}">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -223,7 +268,11 @@
                 <Border Name="bg"
                         Background="{TemplateBinding Background}"
                         CornerRadius="4">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"
                                       Margin="{TemplateBinding Padding}"/>
                 </Border>
             </ControlTemplate>
@@ -248,7 +297,13 @@
                         Height="{TemplateBinding Height}"
                         Background="{TemplateBinding Background}"
                         CornerRadius="4">
-                    <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    <ContentPresenter Name="PART_ContentPresenter"
+                                      Content="{TemplateBinding Content}"
+                                      ContentTemplate="{TemplateBinding ContentTemplate}"
+                                      Foreground="{TemplateBinding Foreground}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      HorizontalAlignment="Center" VerticalAlignment="Center"/>
                 </Border>
             </ControlTemplate>
         </Setter>

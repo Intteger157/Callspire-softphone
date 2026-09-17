@@ -4,6 +4,7 @@
         xmlns:ic="using:FluentIcons.Avalonia"
         xmlns:vm="using:Softphone.AppHost.ViewModels"
         xmlns:core="using:Softphone"
+        xmlns:av="using:Softphone.Avalonia"
         x:DataType="vm:MainViewModel"
         x:CompileBindings="True"
         Title="Callspire"
@@ -17,6 +18,18 @@
         TransparencyLevelHint="None">
 
     <Window.Styles>
+        <!-- FluentIcons fallback: when the icon font cannot be resolved (macOS .app), hide
+             SymbolIcon and show a plain Unicode glyph instead (see PlatformUiHints). -->
+        <Style Selector="ic|SymbolIcon.hasFallback">
+            <Setter Property="IsVisible" Value="{x:Static av:PlatformUiHints.IconFontAvailable}"/>
+        </Style>
+        <Style Selector="TextBlock.iconFallback">
+            <Setter Property="IsVisible" Value="{x:Static av:PlatformUiHints.UseTextNavFallback}"/>
+            <Setter Property="FontSize" Value="22"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
         <!-- History status colouring driven by view-model booleans -->
         <Style Selector="TextBlock.statusOk">
             <Setter Property="Foreground" Value="{DynamicResource AccentGreenBrush}"/>
@@ -141,7 +154,7 @@
                                 Cursor="Hand"/>
                         <Button Content="✕"
                                 Click="CloseButton_Click"
-                                Theme="{DynamicResource TitleBarCloseButtonStyle}"/>
+                                Theme="{StaticResource TitleBarCloseButtonStyle}"/>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -178,39 +191,54 @@
                         </Border>
 
                         <StackPanel Grid.Row="1">
-                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                            <Button Theme="{StaticResource SidebarButtonStyle}"
                                     Click="DialerButton_Click" Name="DialerButton"
                                     ToolTip.Tip="Dialer">
-                                <ic:SymbolIcon Symbol="Dialpad" Width="24" Height="24" IconVariant="Regular"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Panel>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Dialpad" Width="24" Height="24" IconVariant="Regular"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="⌨"/>
+                                </Panel>
                             </Button>
-                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                            <Button Theme="{StaticResource SidebarButtonStyle}"
                                     Click="HistoryButton_Click" Name="HistoryButton"
                                     ToolTip.Tip="History">
-                                <ic:SymbolIcon Symbol="History" Width="24" Height="24" IconVariant="Regular"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Panel>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="History" Width="24" Height="24" IconVariant="Regular"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="⏱"/>
+                                </Panel>
                             </Button>
-                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                            <Button Theme="{StaticResource SidebarButtonStyle}"
                                     Click="StatisticsButton_Click" Name="StatisticsButton"
                                     ToolTip.Tip="Statistics">
-                                <ic:SymbolIcon Symbol="ChartMultiple" Width="24" Height="24" IconVariant="Regular"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Panel>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="ChartMultiple" Width="24" Height="24" IconVariant="Regular"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="▦"/>
+                                </Panel>
                             </Button>
                         </StackPanel>
 
                         <StackPanel Grid.Row="2">
-                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                            <Button Theme="{StaticResource SidebarButtonStyle}"
                                     Click="SettingsButton_Click"
                                     ToolTip.Tip="Settings">
-                                <ic:SymbolIcon Symbol="Settings" Width="24" Height="24" IconVariant="Regular"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Panel>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Settings" Width="24" Height="24" IconVariant="Regular"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="⚙"/>
+                                </Panel>
                             </Button>
-                            <Button Theme="{DynamicResource SidebarButtonStyle}"
+                            <Button Theme="{StaticResource SidebarButtonStyle}"
                                     Click="ShowLogsButton_Click"
                                     Margin="0,0,0,16"
                                     ToolTip.Tip="Logs">
-                                <ic:SymbolIcon Symbol="DocumentText" Width="24" Height="24" IconVariant="Regular"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Panel>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="DocumentText" Width="24" Height="24" IconVariant="Regular"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="≡"/>
+                                </Panel>
                             </Button>
                         </StackPanel>
                     </Grid>
@@ -221,7 +249,8 @@
 
                     <!-- ── Dialer View ── -->
                     <Grid Name="DialerView" IsVisible="True"
-                          HorizontalAlignment="Center" VerticalAlignment="Center"
+                          HorizontalAlignment="Center" VerticalAlignment="Top"
+                          Margin="0,32,0,0"
                           MaxWidth="420" MinWidth="280">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto"/>
@@ -257,7 +286,7 @@
                                             VerticalAlignment="Center"
                                             ToolTip.Tip="Reconnect main connection"
                                             Click="MainRefreshButton_Click"
-                                            Theme="{DynamicResource StatusRefreshButtonStyle}">
+                                            Theme="{StaticResource StatusRefreshButtonStyle}">
                                         <ic:SymbolIcon Symbol="ArrowClockwise" Width="12" Height="12"/>
                                     </Button>
                                 </Grid>
@@ -286,7 +315,7 @@
                                             VerticalAlignment="Center"
                                             ToolTip.Tip="Reconnect secondary connection"
                                             Click="SecondaryRefreshButton_Click"
-                                            Theme="{DynamicResource StatusRefreshButtonStyle}">
+                                            Theme="{StaticResource StatusRefreshButtonStyle}">
                                         <ic:SymbolIcon Symbol="ArrowClockwise" Width="12" Height="12"/>
                                     </Button>
                                 </Grid>
@@ -339,11 +368,14 @@
                                      CaretBrush="{DynamicResource AccentBlueBrush}"
                                      KeyDown="PhoneNumberTextBox_KeyDown"/>
                             <Button Grid.Column="1"
-                                    Theme="{DynamicResource BackspaceButtonStyle}"
+                                    Theme="{StaticResource BackspaceButtonStyle}"
                                     Click="BackspaceButton_Click"
                                     Margin="8,0,0,0" VerticalAlignment="Center">
-                                <ic:SymbolIcon Symbol="Backspace" Width="20" Height="20" IconVariant="Regular"
-                                               Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                <Panel>
+                                    <ic:SymbolIcon Classes="hasFallback" Symbol="Backspace" Width="20" Height="20" IconVariant="Regular"
+                                                   Foreground="{DynamicResource TextSecondaryBrush}"/>
+                                    <TextBlock Classes="iconFallback" Text="⌫" FontSize="18"/>
+                                </Panel>
                             </Button>
                             <Border Grid.Column="0" Grid.ColumnSpan="2"
                                     BorderThickness="0,0,0,2"
@@ -380,31 +412,34 @@
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
 
-                                <Button Grid.Row="0" Grid.Column="0" Content="1" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="0" Grid.Column="1" Content="2" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="0" Grid.Column="2" Content="3" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="1" Grid.Column="0" Content="4" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="1" Grid.Column="1" Content="5" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="1" Grid.Column="2" Content="6" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="2" Grid.Column="0" Content="7" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="2" Grid.Column="1" Content="8" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="2" Grid.Column="2" Content="9" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="3" Grid.Column="0" Content="*" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="3" Grid.Column="1" Content="0" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
-                                <Button Grid.Row="3" Grid.Column="2" Content="#" Theme="{DynamicResource NumpadButtonStyle}" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="0" Grid.Column="0" Content="1" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="0" Grid.Column="1" Content="2" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="0" Grid.Column="2" Content="3" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="1" Grid.Column="0" Content="4" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="1" Grid.Column="1" Content="5" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="1" Grid.Column="2" Content="6" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="2" Grid.Column="0" Content="7" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="2" Grid.Column="1" Content="8" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="2" Grid.Column="2" Content="9" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="3" Grid.Column="0" Content="*" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="3" Grid.Column="1" Content="0" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
+                                <Button Grid.Row="3" Grid.Column="2" Content="#" Theme="{StaticResource NumpadButtonStyle}" Foreground="{DynamicResource TextPrimaryBrush}" MinWidth="64" MinHeight="64" Click="NumpadButton_Click" Margin="8,2"/>
                             </Grid>
 
                             <!-- Call buttons row -->
                             <Grid HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,4,0,0">
 
                                 <!-- Single call button -->
-                                <Button Theme="{DynamicResource NumpadCallButtonStyle}"
+                                <Button Theme="{StaticResource NumpadCallButtonStyle}"
                                         Click="CallButton_Click"
                                         HorizontalAlignment="Center"
                                         Margin="8,0"
                                         IsVisible="{Binding ShowSingleCallButton}"
                                         IsEnabled="{Binding CanCall}">
-                                    <ic:SymbolIcon Symbol="Call" Width="24" Height="24" IconVariant="Regular" Foreground="White"/>
+                                    <Panel>
+                                        <ic:SymbolIcon Classes="hasFallback" Symbol="Call" Width="24" Height="24" IconVariant="Regular" Foreground="White"/>
+                                        <TextBlock Classes="iconFallback" Text="☎" Foreground="White"/>
+                                    </Panel>
                                 </Button>
 
                                 <!-- Split call button (two lines) -->
@@ -543,7 +578,7 @@
                                                 </StackPanel>
                                                 <Button Grid.Column="3"
                                                         Width="36" Height="36"
-                                                        Theme="{DynamicResource NumpadCallButtonStyle}"
+                                                        Theme="{StaticResource NumpadCallButtonStyle}"
                                                         Background="{DynamicResource AccentGreenBrush}"
                                                         Margin="8,0,0,0" Padding="10"
                                                         Tag="{Binding PhoneNumber}"
