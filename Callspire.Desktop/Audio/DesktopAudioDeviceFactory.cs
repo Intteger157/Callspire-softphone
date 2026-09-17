@@ -12,9 +12,6 @@ namespace Softphone
     /// </summary>
     public sealed class DesktopAudioDeviceFactory : IAudioDeviceFactory
     {
-        private const int AEC_SAMPLE_RATE = 8000;
-        private const int AEC_FRAME_MS = 20;
-
         public AudioDeviceSession Create(AudioDeviceOptions options, AudioEncoder encoder)
         {
             if (encoder == null) throw new ArgumentNullException(nameof(encoder));
@@ -67,34 +64,8 @@ namespace Softphone
         }
 #endif
 
+        // PortAudio session construction lives in Callspire.AppHost (shared with the macOS sidecar).
         private static AudioDeviceSession CreatePortAudioSession(AudioDeviceOptions options, AudioEncoder encoder)
-        {
-            try
-            {
-                var source = new PortAudioAudioSource(options.CaptureDeviceIndex, sampleRate: AEC_SAMPLE_RATE);
-                var sink = new PortAudioSink(options.RenderDeviceIndex, sampleRate: AEC_SAMPLE_RATE, audioEncoder: encoder);
-
-                if (options.EnableEchoCancellation)
-                {
-                    // Non-Windows → EchoCancellerFactory returns SoftwareAec (never loads webrtc_apm.dll)
-                    var canceller = EchoCancellerFactory.Create(AEC_SAMPLE_RATE, 1, AEC_FRAME_MS);
-                    if (canceller != null)
-                    {
-                        source.EchoCanceller = canceller;
-                        sink.EchoCanceller = canceller;
-                    }
-                }
-
-                return new AudioDeviceSession(
-                    new PortAudioCaptureDevice(source),
-                    new PortAudioRenderDevice(sink),
-                    "PortAudio" + (source.EchoCanceller != null ? " + SoftwareAec" : ""),
-                    requiresInboundFiltering: false);
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"Failed to create PortAudio endpoint: {ex.Message}", ex);
-            }
-        }
+            => PortAudioDeviceFactory.CreateSession(options, encoder);
     }
 }

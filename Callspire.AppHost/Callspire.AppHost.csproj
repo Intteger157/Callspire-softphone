@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!--
+	  Callspire.AppHost — UI-free desktop orchestration layer shared by every desktop head:
+	    • DesktopAppController + ViewModels (calls, connections, history, statistics, Kommo, gateway)
+	    • Kommo local-mode client (AmoCrmService), call helpers, RTP recorder
+	    • PortAudio audio backend (macOS / Linux) and the platform-neutral ringtone entry point
+	  Consumers: Callspire.Desktop (WPF, Windows) and Callspire.Service (macOS sidecar behind the SwiftUI app).
+	  No WPF / Avalonia / WebView types may appear here.
+	-->
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<!-- PortAudio callback code writes directly into native buffers -->
+		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+		<RootNamespace>Softphone</RootNamespace>
+		<AssemblyName>Callspire.AppHost</AssemblyName>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Callspire.Core\Callspire.Core.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- NAudio: cross-platform WAV/PCM utilities (WASAPI classes are not used here) -->
+		<PackageReference Include="NAudio" Version="2.2.1" />
+		<!-- PortAudioSharp2 bundles native libportaudio for osx-arm64/osx-x64/linux/win-x64 -->
+		<PackageReference Include="PortAudioSharp2" Version="1.0.6" />
+	</ItemGroup>
+
+</Project>

@@ -44,9 +44,9 @@ jobs:
           path: publish/windows
           retention-days: 30
 
-  # ─── macOS Desktop ────────────────────────────────────────────────────────
+  # ─── macOS sidecar ────────────────────────────────────────────────────────
   build-macos:
-    name: macOS Desktop
+    name: macOS Service sidecar
     runs-on: macos-latest
 
     steps:
@@ -58,49 +58,14 @@ jobs:
           dotnet-version: '8.0.x'
           global-json-file: global.json
 
-      - name: Build (net8.0 / Avalonia)
-        run: dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release
+      - name: Publish Callspire.Service (osx-arm64)
+        run: bash Callspire.Mac/Scripts/build-service.sh arm64 Release
 
-      # Self-contained .app bundle (Info.plist with callspire:// + microphone usage, icon).
-      # Unsigned in CI (ad-hoc); sign/notarize locally with macOS/package-app.sh --sign … --dmg.
-      - name: Package Callspire.app (arm64)
-        run: bash Callspire.Desktop/macOS/package-app.sh --arch arm64 --config Release
-
-      - name: Upload macOS artifact
+      - name: Upload macOS sidecar
         uses: actions/upload-artifact@v4
         with:
-          name: callspire-macos-arm64-app
-          path: publish/macos/Callspire.app
-          retention-days: 30
-
-  # ─── Linux Desktop ────────────────────────────────────────────────────────
-  build-linux:
-    name: Linux Desktop
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-          global-json-file: global.json
-
-      - name: Install PortAudio
-        run: sudo apt-get install -y --no-install-recommends libportaudio2
-
-      - name: Restore
-        run: dotnet restore Callspire.Desktop/Callspire.Desktop.csproj -p:TargetFramework=net8.0 -r linux-x64
-
-      - name: Publish
-        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0 -c Release -r linux-x64 --no-self-contained --no-restore -o publish/linux
-
-      - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: callspire-linux-x64
-          path: publish/linux
+          name: callspire-macos-service-arm64
+          path: publish/macos/Service
           retention-days: 30
 
   # ─── Android APK (experimental) ─────────────────────────────────────────

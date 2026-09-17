@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<!--
+	  Callspire.Service — headless telephony sidecar for the macOS SwiftUI app (Callspire.Mac).
+	  Hosts DesktopAppController (SIP via PortAudio, WebRTC via the Swift-owned WKWebView, Kommo, gateway)
+	  and exposes it over a JSON IPC on a Unix domain socket. No UI framework dependencies.
+
+	  Publish (from a Mac or via CI): see Callspire.Mac/Scripts/build-service.sh
+	  (dotnet publish, Release, osx-arm64, self-contained). The Xcode project copies the publish
+	  folder into Callspire.app/Contents/MacOS/Service/.
+	-->
+	<PropertyGroup>
+		<OutputType>Exe</OutputType>
+		<TargetFramework>net8.0</TargetFramework>
+		<Nullable>enable</Nullable>
+		<ImplicitUsings>disable</ImplicitUsings>
+		<RootNamespace>Softphone.Service</RootNamespace>
+		<AssemblyName>Callspire.Service</AssemblyName>
+		<RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
+		<SelfContained>true</SelfContained>
+		<InvariantGlobalization>true</InvariantGlobalization>
+		<SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+		<UseAppHost>true</UseAppHost>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="..\Callspire.AppHost\Callspire.AppHost.csproj" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- WebRtcClient (index.html / slot.html / phone.js) is served by WebRtcAssetServer to the Swift WKWebView. -->
+		<Content Include="..\WebRtcClient\**\*" Link="WebRtcClient\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+		<!-- Incoming call ringtone (PortAudioTonePlayer) -->
+		<Content Include="..\ringtone\**\*.wav" Link="ringtone\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+		<!-- ffmpeg for recording transcode (CallDetails playback) -->
+		<Content Include="..\tools\MacOS\**\*" Link="tools\MacOS\%(RecursiveDir)%(Filename)%(Extension)">
+			<CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+			<CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+			<ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+		</Content>
+	</ItemGroup>
+
+	<PropertyGroup Condition="'$(Configuration)' == 'Release' And '$(PublishDir)' != ''">
+		<DebugType>none</DebugType>
+		<DebugSymbols>false</DebugSymbols>
+	</PropertyGroup>
+
+</Project>

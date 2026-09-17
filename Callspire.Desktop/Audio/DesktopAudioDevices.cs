@@ -8,6 +8,7 @@ namespace Softphone
     /// <summary>
     /// WASAPI Communications-mode endpoint adapted to the Core audio device interfaces.
     /// One underlying object provides both capture and render (shared AEC loop).
+    /// PortAudio wrappers live in Callspire.AppHost (PortAudioDevices.cs).
     /// </summary>
     internal sealed class WasapiAudioDevices : IAudioCaptureDevice, IAudioRenderDevice
     {
@@ -30,42 +31,4 @@ namespace Softphone
         public void Dispose() => _endPoint.Dispose();
     }
 #endif
-
-    // ── PortAudio device wrappers — cross-platform (macOS / Linux / Windows) ──
-
-    /// <summary>PortAudio microphone capture (primary backend on macOS/Linux).</summary>
-    internal sealed class PortAudioCaptureDevice : IAudioCaptureDevice
-    {
-        private readonly PortAudioAudioSource _source;
-
-        public PortAudioCaptureDevice(PortAudioAudioSource source)
-        {
-            _source = source ?? throw new ArgumentNullException(nameof(source));
-        }
-
-        public IAudioSource Source => _source;
-
-        public Action<short[]>? OnRawPcmFrameTap
-        {
-            get => _source.OnRawPcmFrameTap;
-            set => _source.OnRawPcmFrameTap = value;
-        }
-
-        public void Dispose() => _source.Dispose();
-    }
-
-    /// <summary>PortAudio speaker playback (primary backend on macOS/Linux).</summary>
-    internal sealed class PortAudioRenderDevice : IAudioRenderDevice
-    {
-        private readonly PortAudioSink _sink;
-
-        public PortAudioRenderDevice(PortAudioSink sink)
-        {
-            _sink = sink ?? throw new ArgumentNullException(nameof(sink));
-        }
-
-        public IAudioSink Sink => _sink;
-
-        public void Dispose() => _sink.Dispose();
-    }
 }

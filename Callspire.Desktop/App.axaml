@@ -1,8 +1,0 @@
-<ResourceDictionary xmlns="https://github.com/avaloniaui"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
-    <!--
-        Avalonia styles resource dictionary.
-        Loaded programmatically by AvaloniaApp.Initialize() so it is never
-        processed by the WPF _wpftmp temp project (avoids AVLN2002 duplicates).
-    -->
-</ResourceDictionary>

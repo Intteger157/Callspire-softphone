@@ -44,29 +44,16 @@ build_windows() {
 }
 
 build_macos() {
-  yellow "Desktop (macOS)"
-  run build "$ROOT/Callspire.Desktop/Callspire.Desktop.csproj" \
-      -f net8.0 -c "$CONFIGURATION"
+  yellow "macOS (SwiftUI + Callspire.Service sidecar)"
+  run build "$ROOT/Callspire.Service/Callspire.Service.csproj" -c "$CONFIGURATION"
   if [[ $PUBLISH -eq 1 ]]; then
-    # Produces publish/macos/Callspire.app (self-contained, Info.plist with callspire:// scheme,
-    # NSMicrophoneUsageDescription, icon). Add --sign/--notarize-profile/--dmg via env or by
-    # calling macOS/package-app.sh directly. Arch: CALLSPIRE_MAC_ARCH=arm64|x64|universal.
-    bash "$ROOT/Callspire.Desktop/macOS/package-app.sh" \
-        --arch "${CALLSPIRE_MAC_ARCH:-arm64}" --config "$CONFIGURATION"
+    bash "$ROOT/Callspire.Mac/Scripts/package-dmg.sh" --arch "${CALLSPIRE_MAC_ARCH:-arm64}"
     green "Artifact: $ROOT/publish/macos/Callspire.app"
   fi
 }
 
 build_linux() {
-  yellow "Desktop (Linux)"
-  run build "$ROOT/Callspire.Desktop/Callspire.Desktop.csproj" \
-      -f net8.0 -c "$CONFIGURATION"
-  if [[ $PUBLISH -eq 1 ]]; then
-    run publish "$ROOT/Callspire.Desktop/Callspire.Desktop.csproj" \
-        -f net8.0 -c "$CONFIGURATION" -r linux-x64 --no-self-contained \
-        -o "$ROOT/publish/linux"
-    green "Artifact: $ROOT/publish/linux"
-  fi
+  yellow "Linux desktop is not supported (macOS = SwiftUI, Windows = WPF)"
 }
 
 build_android() {

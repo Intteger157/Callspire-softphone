@@ -8,7 +8,7 @@ namespace Softphone
     /// <summary>
     /// Platform-agnostic DI / hook wiring that must run before any service or
     /// window is created.  Called from both the WPF startup (App.xaml.cs, Windows)
-    /// and the Avalonia startup (Program.cs, macOS/Linux).
+    /// WPF App.xaml.cs (Windows). The macOS SwiftUI app uses Callspire.Service / ServiceBootstrap instead.
     ///
     /// Intentionally free of any WPF, NAudio WASAPI, or WebView2 references so
     /// that it compiles and runs on every supported target framework.

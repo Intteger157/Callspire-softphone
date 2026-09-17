@@ -1,0 +1,53 @@
+name: Callspire
+options:
+  bundleIdPrefix: com.callspire
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+settings:
+  MARKETING_VERSION: "1.1.0"
+  CURRENT_PROJECT_VERSION: "1"
+  SWIFT_VERSION: "5.9"
+  MACOSX_DEPLOYMENT_TARGET: "13.0"
+  CODE_SIGN_STYLE: Automatic
+targets:
+  Callspire:
+    type: application
+    platform: macOS
+    sources:
+      - path: Callspire
+        excludes:
+          - Info.plist
+          - Callspire.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.callspire.softphone
+        PRODUCT_NAME: Callspire
+        INFOPLIST_FILE: Callspire/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Callspire/Callspire.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+        SWIFT_EMIT_LOC_STRINGS: NO
+    entitlements:
+      path: Callspire/Callspire.entitlements
+    info:
+      path: Callspire/Info.plist
+      properties:
+        NSMicrophoneUsageDescription: Callspire needs access to your microphone to make and receive calls.
+    scheme:
+      testTargets: []
+    postCompileScripts: []
+    postbuildScripts:
+      - name: Embed Callspire.Service
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          SERVICE_SRC="${SRCROOT}/../publish/macos/Service"
+          DEST="${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Contents/MacOS/Service"
+          if [ -d "$SERVICE_SRC" ]; then
+            mkdir -p "$DEST"
+            rsync -a --delete "$SERVICE_SRC/" "$DEST/"
+          else
+            echo "warning: $SERVICE_SRC missing — run Callspire.Mac/Scripts/build-service.sh first"
+          fi

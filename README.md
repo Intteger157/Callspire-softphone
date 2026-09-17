@@ -1,10 +1,8 @@
 # Callspire Softphone
 
-**Callspire** is a cross-platform softphone built on **.NET 8 + Avalonia UI** that supports **SIP and WebRTC calling**, designed for modern corporate telephony and integrations.
+**Callspire** is a corporate softphone with **SIP and WebRTC**, Kommo CRM, and PBX Gateway integration.
 
-> Status: **Active Development (v1.1.x)**
-> Platforms: **Windows · macOS · Linux · Android**
-> Tech stack: **.NET 8 · Avalonia 12 · WPF (Windows legacy) · SIPSorcery · WebRTC · NAudio · PortAudio**
+> Tech stack: **.NET 8 · WPF (Windows) · SwiftUI (macOS) · SIPSorcery · WebRTC · NAudio · PortAudio**
 
 [![Build](https://github.com/your-org/softphone-crossplatform/actions/workflows/build.yml/badge.svg)](https://github.com/your-org/softphone-crossplatform/actions/workflows/build.yml)
 
@@ -14,13 +12,13 @@
 
 - SIP calling (G.711, G.722, Opus via Concentus)
 - WebRTC calling (WSS / TURN)
-- Avalonia cross-platform UI (dark / light / system theme)
+- Windows WPF UI and macOS SwiftUI UI (dark / light / system)
 - Call history and detailed call statistics
 - Incoming / outgoing calls with call recording
 - Audio device selection (mic / speaker)
-- Acoustic echo cancellation: native `webrtc_apm.dll` on Windows, pure-C# `SoftwareAec` on macOS / Linux / Android
+- Acoustic echo cancellation: native `webrtc_apm.dll` on Windows, PortAudio + SoftwareAec on macOS
 - AmoCRM / Kommo CRM integration
-- МиКО АТС CDR / caller-ID lookup
+- MikoPBX CDR / caller-ID lookup
 
 ---
 
@@ -42,19 +40,12 @@
 ```
 Callspire.sln
 ├── Callspire.Core/          # Platform-agnostic business logic
-│   ├── Audio/               #   IAudioCaptureDevice, IAudioRenderDevice, AEC
-│   ├── WebRtc/              #   IWebRtcEngineHost, WebRtcService
-│   └── *.cs                 #   SipService, AppSettings, CallHistory, …
-│
-├── Callspire.Desktop/       # Windows + macOS + Linux desktop head
-│   ├── Avalonia/            #   Avalonia window ports (Phase 5)
-│   ├── Audio/               #   WASAPI (Windows) / PortAudio (macOS, Linux)
-│   ├── WebRtc/              #   WebView2 engine (Windows) / headless stub
-│   └── *.xaml / *.axaml     #   WPF (Windows legacy) + Avalonia windows
-│
-└── Callspire.Android/       # Android head (Avalonia 11.3.x / net8.0-android)
-    ├── Audio/               #   AudioRecord / AudioTrack devices
-    └── Services/            #   CallForegroundService
+├── Callspire.AppHost/       # DesktopAppController + ViewModels (shared)
+├── Callspire.Desktop/       # Windows WPF + WebView2
+├── Callspire.Service/       # macOS telephony sidecar (JSON IPC)
+├── Callspire.Mac/           # SwiftUI app (WKWebView + sidecar)
+├── Callspire.Android/       # Android head
+└── WebRtcClient/            # phone.js engine (Windows WebView2 / macOS WKWebView)
 ```
 
 ### Target frameworks
@@ -62,7 +53,9 @@ Callspire.sln
 | Project | TFM(s) |
 |---|---|
 | `Callspire.Core` | `net8.0` |
-| `Callspire.Desktop` | `net8.0-windows10.0.17763` (WPF + WinExe) · `net8.0` (Avalonia, macOS/Linux) |
+| `Callspire.AppHost` | `net8.0` |
+| `Callspire.Desktop` | `net8.0-windows10.0.17763` (WPF) |
+| `Callspire.Service` | `net8.0` (`osx-arm64` / `osx-x64` self-contained) |
 | `Callspire.Android` | `net8.0-android34.0` |
 
 ---
@@ -74,8 +67,7 @@ Callspire.sln
 | Platform | Requirements |
 |---|---|
 | **Windows** | .NET SDK 8.0, WebView2 Runtime |
-| **macOS** | .NET SDK 8.0, PortAudio (`brew install portaudio`) |
-| **Linux** | .NET SDK 8.0, `libportaudio2` (`apt install libportaudio2`) |
+| **macOS** | .NET SDK 8.0, Xcode 15+, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) |
 | **Android** | .NET SDK 8.0, `dotnet workload install android`, Android SDK |
 
 ### Quick start
@@ -90,10 +82,9 @@ Callspire.sln
 ```bash
 # macOS / Linux — Bash
 chmod +x build.sh
-./build.sh                        # build all targets
-./build.sh macos                  # macOS Desktop only
-./build.sh linux --publish        # build + produce publish/ output
-./build.sh android                # Android APK (requires workload + SDK)
+./build.sh windows                # compile-check Windows Desktop (from any OS with the SDK)
+./build.sh macos --publish        # sidecar + SwiftUI package (Mac only)
+./build.sh android
 ```
 
 ### Manual per-project commands
@@ -102,11 +93,12 @@ chmod +x build.sh
 # Core (all platforms)
 dotnet build Callspire.Core/Callspire.Core.csproj
 
-# Desktop — Windows
-dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763
+# Desktop — Windows WPF
+dotnet build Callspire.Desktop/Callspire.Desktop.csproj
 
-# Desktop — macOS / Linux
-dotnet build Callspire.Desktop/Callspire.Desktop.csproj -f net8.0
+# macOS sidecar
+dotnet build Callspire.Service/Callspire.Service.csproj
+Callspire.Mac/Scripts/build-service.sh arm64
 
 # Android
 dotnet workload install android
@@ -118,21 +110,12 @@ dotnet build Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0
 ```bash
 # Windows x64
 dotnet publish Callspire.Desktop/Callspire.Desktop.csproj \
-    -f net8.0-windows10.0.17763 -c Release -r win-x64 --no-self-contained \
+    -c Release -r win-x64 --no-self-contained \
     -o publish/windows
 
-# macOS — .app bundle (self-contained; Info.plist with callspire:// scheme + microphone usage)
-Callspire.Desktop/macOS/package-app.sh --arch arm64            # or x64 | universal
-Callspire.Desktop/macOS/package-app.sh --arch universal --dmg \
-    --sign "Developer ID Application: Your Name (TEAMID)" \
-    --notarize-profile callspire-notary                         # signed + notarized .dmg
-# → publish/macos/Callspire.app  (+ Callspire-<version>-<arch>.dmg)
-# Checklist for certificates/notarytool is in the script header.
-
-# Linux x64
-dotnet publish Callspire.Desktop/Callspire.Desktop.csproj \
-    -f net8.0 -c Release -r linux-x64 --no-self-contained \
-    -o publish/linux
+# macOS — SwiftUI .app + sidecar (see Callspire.Mac/README.md)
+Callspire.Mac/Scripts/package-dmg.sh --arch arm64
+# → publish/macos/Callspire.app  (+ Callspire-arm64.dmg)
 
 # Android APK
 dotnet publish Callspire.Android/Callspire.Android.csproj \
@@ -148,8 +131,7 @@ The workflow at `.github/workflows/build.yml` runs four independent jobs on ever
 | Job | Runner | TFM |
 |---|---|---|
 | Windows Desktop | `windows-latest` | `net8.0-windows10.0.17763` |
-| macOS Desktop | `macos-latest` | `net8.0` |
-| Linux Desktop | `ubuntu-latest` | `net8.0` |
+| macOS sidecar | `macos-latest` | `Callspire.Service` (`net8.0`) |
 | Android APK | `ubuntu-latest` | `net8.0-android34.0` |
 
 Compiled artifacts are uploaded via `actions/upload-artifact` and available for 30 days after each run.
@@ -162,7 +144,7 @@ Compiled artifacts are uploaded via `actions/upload-artifact` and available for 
 |---|---|---|
 | `webrtc_apm.dll` | `native-aec/build/Release/` | Windows native AEC (webrtc audio processing module). Falls back to pure-C# SoftwareAec if absent. |
 | ffmpeg | `tools/` | Audio file conversion for call recordings. |
-| WebRtcClient JS bundle | `WebRtcClient/` | WebRTC JS engine loaded in WebView2 (Windows only). |
+| WebRtcClient JS bundle | `WebRtcClient/` | WebRTC JS engine: WebView2 on Windows, WKWebView on macOS. |
 
 ---
 
