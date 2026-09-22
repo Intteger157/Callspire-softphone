@@ -75,7 +75,7 @@ namespace Softphone.Audio
     /// <summary>
     /// Selects the AEC implementation per platform:
     /// Windows → native webrtc_apm.dll (or none, preserving historical behaviour when the DLL
-    /// is absent); macOS / Linux / Android → SoftwareAec, never touching the native DLL.
+    /// is absent); macOS → SoftwareAec, never touching the native DLL.
     /// </summary>
     public static class EchoCancellerFactory
     {

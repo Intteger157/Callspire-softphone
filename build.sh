@@ -7,7 +7,6 @@
 #   ./build.sh windows            # Windows cross-target (compile only, no .exe)
 #   ./build.sh macos              # macOS Avalonia binary
 #   ./build.sh linux              # Linux Avalonia binary
-#   ./build.sh android            # Android APK
 #   ./build.sh all --publish      # Build + publish all
 #   ./build.sh linux --debug      # Debug configuration
 # ──────────────────────────────────────────────────────────────────────────────
@@ -56,22 +55,6 @@ build_linux() {
   yellow "Linux desktop is not supported (macOS = SwiftUI, Windows = WPF)"
 }
 
-build_android() {
-  yellow "Android APK"
-  if ! dotnet workload list 2>/dev/null | grep -q android; then
-    echo "  Installing .NET android workload..."
-    dotnet workload install android
-  fi
-  run build "$ROOT/Callspire.Android/Callspire.Android.csproj" \
-      -f net8.0-android34.0 -c "$CONFIGURATION"
-  if [[ $PUBLISH -eq 1 ]]; then
-    run publish "$ROOT/Callspire.Android/Callspire.Android.csproj" \
-        -f net8.0-android34.0 -c "$CONFIGURATION" \
-        -o "$ROOT/publish/android"
-    green "Artifact: $ROOT/publish/android"
-  fi
-}
-
 echo "Callspire build  |  target=$TARGET  config=$CONFIGURATION  publish=$PUBLISH"
 
 case "$TARGET" in
@@ -79,15 +62,13 @@ case "$TARGET" in
   windows) build_core; build_windows ;;
   macos)   build_core; build_macos ;;
   linux)   build_core; build_linux ;;
-  android) build_core; build_android ;;
   all)
     build_core
     build_macos
     build_linux
-    build_android
     ;;
   *)
-    echo "Unknown target: $TARGET. Use: all | core | windows | macos | linux | android"
+    echo "Unknown target: $TARGET. Use: all | core | windows | macos | linux"
     exit 1
     ;;
 esac

@@ -86,13 +86,6 @@ native-aec/speexdsp/
 native-aec/build/
 native-aec/**/webrtc_apm.dll
 
-# ── Android ──────────────────────────────────────────────────────────────────
-# Legacy Gradle project (superseded by Callspire.Android)
-android-softphone/
-
-# Scoped Gradle paths — do NOT use **/build/ (ignores repo-root build/ too)
-android-softphone/.gradle/
-android-softphone/**/build/
 **/.gradle/
 **/local.properties
 *.apk

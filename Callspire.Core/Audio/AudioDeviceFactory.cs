@@ -25,7 +25,7 @@ namespace Softphone.Audio
 
     /// <summary>
     /// Creates platform audio devices for a call. Implemented per-head
-    /// (DesktopAudioDeviceFactory: WASAPI/WinMM/PortAudio; Android head: AudioRecord/AudioTrack).
+    /// (DesktopAudioDeviceFactory: WASAPI/WinMM/PortAudio).
     /// </summary>
     public interface IAudioDeviceFactory
     {

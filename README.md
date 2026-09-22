@@ -44,7 +44,6 @@ Callspire.sln
 ├── Callspire.Desktop/       # Windows WPF + WebView2
 ├── Callspire.Service/       # macOS telephony sidecar (JSON IPC)
 ├── Callspire.Mac/           # SwiftUI app (WKWebView + sidecar)
-├── Callspire.Android/       # Android head
 └── WebRtcClient/            # phone.js engine (Windows WebView2 / macOS WKWebView)
 ```
 
@@ -56,7 +55,6 @@ Callspire.sln
 | `Callspire.AppHost` | `net8.0` |
 | `Callspire.Desktop` | `net8.0-windows10.0.17763` (WPF) |
 | `Callspire.Service` | `net8.0` (`osx-arm64` / `osx-x64` self-contained) |
-| `Callspire.Android` | `net8.0-android34.0` |
 
 ---
 
@@ -68,7 +66,6 @@ Callspire.sln
 |---|---|
 | **Windows** | .NET SDK 8.0, WebView2 Runtime |
 | **macOS** | .NET SDK 8.0, Xcode 15+, [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) |
-| **Android** | .NET SDK 8.0, `dotnet workload install android`, Android SDK |
 
 ### Quick start
 
@@ -84,7 +81,6 @@ Callspire.sln
 chmod +x build.sh
 ./build.sh windows                # compile-check Windows Desktop (from any OS with the SDK)
 ./build.sh macos --publish        # sidecar + SwiftUI package (Mac only)
-./build.sh android
 ```
 
 ### Manual per-project commands
@@ -99,10 +95,6 @@ dotnet build Callspire.Desktop/Callspire.Desktop.csproj
 # macOS sidecar
 dotnet build Callspire.Service/Callspire.Service.csproj
 Callspire.Mac/Scripts/build-service.sh arm64
-
-# Android
-dotnet workload install android
-dotnet build Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0
 ```
 
 ### Publish (self-contained examples)
@@ -116,23 +108,18 @@ dotnet publish Callspire.Desktop/Callspire.Desktop.csproj \
 # macOS — SwiftUI .app + sidecar (see Callspire.Mac/README.md)
 Callspire.Mac/Scripts/package-dmg.sh --arch arm64
 # → publish/macos/Callspire.app  (+ Callspire-arm64.dmg)
-
-# Android APK
-dotnet publish Callspire.Android/Callspire.Android.csproj \
-    -f net8.0-android34.0 -c Release -o publish/android
 ```
 
 ---
 
 ## CI / GitHub Actions
 
-The workflow at `.github/workflows/build.yml` runs four independent jobs on every push:
+The workflow at `.github/workflows/build.yml` runs two independent jobs on every push:
 
 | Job | Runner | TFM |
 |---|---|---|
 | Windows Desktop | `windows-latest` | `net8.0-windows10.0.17763` |
 | macOS sidecar | `macos-latest` | `Callspire.Service` (`net8.0`) |
-| Android APK | `ubuntu-latest` | `net8.0-android34.0` |
 
 Compiled artifacts are uploaded via `actions/upload-artifact` and available for 30 days after each run.
 
@@ -145,9 +132,3 @@ Compiled artifacts are uploaded via `actions/upload-artifact` and available for 
 | `webrtc_apm.dll` | `native-aec/build/Release/` | Windows native AEC (webrtc audio processing module). Falls back to pure-C# SoftwareAec if absent. |
 | ffmpeg | `tools/` | Audio file conversion for call recordings. |
 | WebRtcClient JS bundle | `WebRtcClient/` | WebRTC JS engine: WebView2 on Windows, WKWebView on macOS. |
-
----
-
-## Android (legacy Kotlin scaffold)
-
-A minimal Android-only Kotlin scaffold is available in `android-softphone/`. It has been superseded by the cross-platform `Callspire.Android` .NET project described above.

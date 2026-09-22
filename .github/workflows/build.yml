@@ -67,36 +67,3 @@ jobs:
           name: callspire-macos-service-arm64
           path: publish/macos/Service
           retention-days: 30
-
-  # ─── Android APK (experimental) ─────────────────────────────────────────
-  build-android:
-    name: Android APK
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.422'
-          global-json-file: global.json
-
-      - name: Verify SDK version
-        run: dotnet --version
-
-      - name: Install Android workload
-        run: dotnet workload install android --source https://api.nuget.org/v3/index.json
-
-      - name: Set Android SDK root
-        run: echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
-
-      - name: Publish APK
-        run: dotnet publish Callspire.Android/Callspire.Android.csproj -f net8.0-android34.0 -c Release -p:CheckEolWorkloads=false -p:AndroidSdkDirectory=${{ env.ANDROID_SDK_ROOT }} -o publish/android
-
-      - name: Upload Android artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: callspire-android-apk
-          path: publish/android/*.apk
-          retention-days: 30

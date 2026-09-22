@@ -5,7 +5,7 @@ namespace Softphone.Audio
 {
     /// <summary>
     /// Microphone capture abstraction. Platform heads provide implementations:
-    /// WASAPI/WinMM on Windows, PortAudio on macOS/Linux, AudioRecord on Android.
+    /// WASAPI/WinMM on Windows, PortAudio on macOS.
     /// Business logic (SipService) consumes only this interface — never NAudio/WASAPI types.
     /// </summary>
     public interface IAudioCaptureDevice : IDisposable
