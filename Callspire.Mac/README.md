@@ -1,5 +1,7 @@
 # Callspire.Mac — SwiftUI shell + C# sidecar
 
+Part of the **[Callspire-softphone](https://github.com/Intteger157/Callspire-softphone)** desktop repository (Windows WPF + macOS SwiftUI).
+
 Native macOS UI (SwiftUI) that talks to `Callspire.Service` over a Unix-domain JSON socket.
 Telephony, Kommo, gateway and history stay in .NET (`Callspire.AppHost` + `Callspire.Core`).
 WebRTC `phone.js` runs in a hidden `WKWebView` hosted by this app.

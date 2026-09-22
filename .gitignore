@@ -125,6 +125,7 @@ callspire-pbx-gateway/
 softphone-web/
 callspire-web-softphone/
 update-server/
+Callspire.Gateway-for-MikoPBX/
 
 # ── Build / distribution artifacts (not source) ─────────────────────────────
 build/

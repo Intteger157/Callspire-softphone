@@ -143,3 +143,18 @@ Workflow `.github/workflows/release.yml` builds `Callspire.exe` (plus dependenci
 | `webrtc_apm.dll` | `native-aec/build/Release/` | Windows native AEC (webrtc audio processing module). Falls back to pure-C# SoftwareAec if absent. |
 | ffmpeg | `tools/` | Audio file conversion for call recordings. |
 | WebRtcClient JS bundle | `WebRtcClient/` | WebRTC JS engine: WebView2 on Windows, WKWebView on macOS. |
+
+---
+
+## Related repositories
+
+Callspire is split across several GitHub repos. **This repository** is the **desktop softphone** (Windows + macOS).
+
+| Repository | Role |
+|---|---|
+| **[Callspire-softphone](https://github.com/Intteger157/Callspire-softphone)** (this repo) | Windows WPF + macOS SwiftUI desktop clients |
+| **[Callspire-PBX-Gateway](https://github.com/Intteger157/Callspire-PBX-Gateway)** | FastAPI gateway next to MikoPBX — CDR, originate, admin, WebRTC, Kommo |
+| **[Callspire-web-softphone](https://github.com/Intteger157/Callspire-web-softphone)** | Vue browser SPA served by the gateway at `/softphone/` |
+| **[Callspire.Gateway-for-MikoPBX](https://github.com/Intteger157/Callspire.Gateway-for-MikoPBX)** | One-command Linux installer: MikoPBX Docker + gateway + web UI |
+
+Desktop clients talk to the gateway using the stable Kommo/CDR API (`/api/kommo/*`, etc.). Gateway and web UI are deployed on the PBX server; desktop builds ship from this repo’s CI releases.
