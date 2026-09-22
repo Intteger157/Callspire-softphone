@@ -4,7 +4,7 @@
 
 > Tech stack: **.NET 8 · WPF (Windows) · SwiftUI (macOS) · SIPSorcery · WebRTC · NAudio · PortAudio**
 
-[![Build](https://github.com/your-org/softphone-crossplatform/actions/workflows/build.yml/badge.svg)](https://github.com/your-org/softphone-crossplatform/actions/workflows/build.yml)
+[![Build](https://github.com/Intteger157/Callspire-softphone/actions/workflows/build.yml/badge.svg)](https://github.com/Intteger157/Callspire-softphone/actions/workflows/build.yml)
 
 ---
 
@@ -125,7 +125,7 @@ Compiled artifacts are uploaded via `actions/upload-artifact` and available for 
 
 ### GitHub Releases (Windows `.exe`)
 
-Push a version tag to publish a Windows zip to [GitHub Releases](https://github.com/Intteger157/CallSpire/releases):
+Push a version tag to publish a Windows zip to [GitHub Releases](https://github.com/Intteger157/Callspire-softphone/releases):
 
 ```bash
 git tag v1.0.0
