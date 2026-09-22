@@ -119,7 +119,9 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-Workflow `.github/workflows/release.yml` builds `Callspire.exe` (plus dependencies) and attaches `Callspire-<version>-win-x64.zip` to the release. Tags with a hyphen (e.g. `v1.0.0-beta.1`) are marked as pre-releases.
+Workflow `.github/workflows/release.yml` builds a **self-contained** Windows folder (includes .NET 8 runtime, `tools/Windows/ffmpeg`, optional `webrtc_apm.dll`) and attaches `Callspire-<version>-win-x64.zip` (~140 MB). Tags with a hyphen (e.g. `v1.0.0-beta.1`) are marked as pre-releases.
+
+No separate .NET install is required on target PCs. WebView2 Evergreen runtime must still be present (standard on Windows 10/11).
 
 ---
 

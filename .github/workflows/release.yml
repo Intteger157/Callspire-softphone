@@ -33,8 +33,37 @@ jobs:
           dotnet-version: "8.0.x"
           global-json-file: global.json
 
+      # ffmpeg is gitignored locally; bundle essentials build for call recording conversion.
+      - name: Bundle ffmpeg (Windows essentials)
+        shell: pwsh
+        run: |
+          $destRoot = "tools/Windows"
+          New-Item -ItemType Directory -Force -Path $destRoot | Out-Null
+          $zip = "$env:RUNNER_TEMP/ffmpeg-essentials.zip"
+          Invoke-WebRequest -Uri "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $env:RUNNER_TEMP/ffmpeg-extract -Force
+          $folder = Get-ChildItem "$env:RUNNER_TEMP/ffmpeg-extract" -Directory | Select-Object -First 1
+          if (-not $folder) { throw "ffmpeg extract folder not found" }
+          Copy-Item -Recurse -Force $folder.FullName (Join-Path $destRoot $folder.Name)
+          $ffmpegExe = Get-ChildItem (Join-Path $destRoot $folder.Name) -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpegExe) { throw "ffmpeg.exe not found after extract" }
+          Write-Host "Bundled ffmpeg: $($ffmpegExe.FullName)"
+
+      # Optional native AEC DLL (SpeexDSP). App runs without it; matches local release when built.
+      - name: Build native AEC (webrtc_apm.dll)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          git clone --depth 1 https://gitlab.xiph.org/xiph/speexdsp.git native-aec/speexdsp
+          cmake -S native-aec -B native-aec/build -G "Visual Studio 17 2022" -A x64
+          cmake --build native-aec/build --config Release
+          if (-not (Test-Path native-aec/build/Release/webrtc_apm.dll)) {
+            Write-Warning "webrtc_apm.dll was not produced; release will ship without native AEC"
+          }
+
+      # Self-contained publish matches local production drops (~140 MB zip), not framework-dependent (~18 MB).
       - name: Publish
-        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release -r win-x64 --no-self-contained -o publish/windows
+        run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish/windows
 
       - name: Package zip
         shell: pwsh
@@ -42,7 +71,9 @@ jobs:
           $version = "${{ github.ref_name }}"
           if ($version -match '^v') { $version = $version.Substring(1) }
           $zip = "Callspire-$version-win-x64.zip"
-          Compress-Archive -Path "publish/windows/*" -DestinationPath $zip
+          Compress-Archive -Path "publish/windows/*" -DestinationPath $zip -CompressionLevel Optimal
+          $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
+          Write-Host "Created $zip ($sizeMb MB)"
           "zip=$zip" >> $env:GITHUB_ENV
 
       - name: Upload to GitHub Release
