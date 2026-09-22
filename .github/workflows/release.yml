@@ -65,21 +65,25 @@ jobs:
       - name: Publish
         run: dotnet publish Callspire.Desktop/Callspire.Desktop.csproj -f net8.0-windows10.0.17763 -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o publish/windows
 
-      - name: Package zip
+      - name: Build setup.exe (Inno Setup)
         shell: pwsh
         run: |
           $version = "${{ github.ref_name }}"
           if ($version -match '^v') { $version = $version.Substring(1) }
-          $zip = "Callspire-$version-win-x64.zip"
-          Compress-Archive -Path "publish/windows/*" -DestinationPath $zip -CompressionLevel Optimal
-          $sizeMb = [math]::Round((Get-Item $zip).Length / 1MB, 1)
-          Write-Host "Created $zip ($sizeMb MB)"
-          "zip=$zip" >> $env:GITHUB_ENV
+          choco install innosetup -y --no-progress
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found after Inno Setup install" }
+          & $iscc "/DMyAppVersion=$version" "installer\Callspire.iss"
+          $setup = "Callspire-$version-win-x64-setup.exe"
+          if (-not (Test-Path $setup)) { throw "Setup exe not found: $setup" }
+          $sizeMb = [math]::Round((Get-Item $setup).Length / 1MB, 1)
+          Write-Host "Created $setup ($sizeMb MB)"
+          "setup=$setup" >> $env:GITHUB_ENV
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.zip }}
+          files: ${{ env.setup }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
