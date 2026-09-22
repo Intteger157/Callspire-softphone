@@ -123,6 +123,17 @@ The workflow at `.github/workflows/build.yml` runs two independent jobs on every
 
 Compiled artifacts are uploaded via `actions/upload-artifact` and available for 30 days after each run.
 
+### GitHub Releases (Windows `.exe`)
+
+Push a version tag to publish a Windows zip to [GitHub Releases](https://github.com/Intteger157/CallSpire/releases):
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Workflow `.github/workflows/release.yml` builds `Callspire.exe` (plus dependencies) and attaches `Callspire-<version>-win-x64.zip` to the release. Tags with a hyphen (e.g. `v1.0.0-beta.1`) are marked as pre-releases.
+
 ---
 
 ## Optional native components
