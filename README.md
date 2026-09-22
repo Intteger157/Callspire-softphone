@@ -22,19 +22,6 @@
 
 ---
 
-## Screenshots
-
-### Dial pad
-<img width="1100" height="700" alt="Dial pad" src="https://github.com/user-attachments/assets/6cd4e26c-13b3-4c08-b2f0-6b35eaec1ca2" />
-
-### Active call
-<img width="380" height="750" alt="Active call" src="https://github.com/user-attachments/assets/7809ed47-d1e9-4a85-a3d1-03975669829f" />
-
-### Call details
-<img width="1103" height="807" alt="Call details" src="https://github.com/user-attachments/assets/06823fe3-25d1-46de-8847-906b50be6381" />
-
----
-
 ## Project structure
 
 ```
