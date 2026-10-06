@@ -77,4 +77,10 @@ In the gateway admin panel, copy the **provision link** and open it in Safari/Ch
 Format: `callspire://provision?token=…&proxy=https://…`  
 The app redeems the token, writes `settings.json`, reconnects WebRTC/SIP, and shows a confirmation dialog.
 
-Requires Callspire to be the default handler for `callspire://` (automatic after first successful launch from `/Applications`).
+Requires Callspire in **`/Applications`** and Launch Services knowing the `callspire://` handler:
+
+1. Launch Callspire once (registers the URL scheme on each start).
+2. Use a **link click** or Terminal — Chrome’s address bar treats `callspire://…` as a web search, not an app open:  
+   `open "callspire://provision?token=…&proxy=…"`
+3. If `open` still returns **-10814**, re-register manually:  
+   `/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f -R -trusted /Applications/Callspire.app`

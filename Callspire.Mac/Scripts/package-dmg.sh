@@ -76,6 +76,13 @@ if [[ -d "$APP_OUT" ]]; then
   embed_app_icon "$APP_OUT"
 fi
 
+register_launch_services() {
+  local app="$1"
+  local lsregister="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+  [[ -x "$lsregister" ]] || return 0
+  "$lsregister" -f -R -trusted "$app" 2>/dev/null || "$lsregister" -f "$app" 2>/dev/null || true
+}
+
 if [[ -d "$APP_OUT" ]]; then
   if [[ -n "$SIGN" ]]; then
     codesign --force --deep --options runtime --entitlements "$MAC/Callspire/Callspire.entitlements" --sign "$SIGN" "$APP_OUT"
@@ -83,6 +90,7 @@ if [[ -d "$APP_OUT" ]]; then
     # Ad-hoc sign so the bundle is coherent; Gatekeeper still requires notarization or first Open for quarantined downloads.
     codesign --force --deep --sign - "$APP_OUT" 2>/dev/null || true
   fi
+  register_launch_services "$APP_OUT"
 fi
 
 create_dmg() {

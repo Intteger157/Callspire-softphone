@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreServices
 import Darwin
 
 @main
@@ -96,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard !InstanceBroker.isSecondaryForwarder else { return }
+        registerWithLaunchServices()
         InstanceBroker.startServer { [weak self] urlString in
             Task { @MainActor in
                 guard let url = URL(string: urlString) else { return }
@@ -106,6 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Unsigned/ad-hoc builds are not always indexed by Launch Services until explicitly registered.
+    private func registerWithLaunchServices() {
+        let bundleURL = Bundle.main.bundleURL as CFURL
+        LSRegisterURL(bundleURL, true)
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {

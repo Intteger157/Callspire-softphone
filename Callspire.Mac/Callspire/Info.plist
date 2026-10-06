@@ -42,17 +42,9 @@
                 <string>callspire</string>
             </array>
             <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-        </dict>
-        <dict>
-            <key>CFBundleURLName</key>
-            <string>com.callspire.softphone.tel</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>tel</string>
-            </array>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
         </dict>
     </array>
     <key>NSAppTransportSecurity</key>

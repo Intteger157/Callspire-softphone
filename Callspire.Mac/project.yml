@@ -38,6 +38,12 @@ targets:
       path: Callspire/Info.plist
       properties:
         NSMicrophoneUsageDescription: Callspire needs access to your microphone to make and receive calls.
+        CFBundleURLTypes:
+          - CFBundleURLName: com.callspire.softphone.url
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            CFBundleURLSchemes:
+              - callspire
     scheme:
       testTargets: []
     postCompileScripts: []
