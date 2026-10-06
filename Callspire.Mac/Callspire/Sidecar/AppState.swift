@@ -472,8 +472,12 @@ final class AppState: ObservableObject {
     }
 
     func gatewayAuthorize(url: String, ext: String) async -> String? {
-        struct P: Codable { var url: String; var extension: String }
-        do { try await ipc.requestVoid("gatewayAuthorize", params: P(url: url, extension: ext)); return nil }
+        struct P: Codable {
+            var url: String
+            var pbxExtension: String
+            enum CodingKeys: String, CodingKey { case url; case pbxExtension = "extension" }
+        }
+        do { try await ipc.requestVoid("gatewayAuthorize", params: P(url: url, pbxExtension: ext)); return nil }
         catch { return error.localizedDescription }
     }
 
