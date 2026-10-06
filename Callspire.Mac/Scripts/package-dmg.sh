@@ -20,6 +20,10 @@ if [[ -n "${CI:-}" && "$CI_BUILD" -eq 0 ]]; then CI_BUILD=1; fi
 
 bash "$HERE/build-service.sh" "$ARCH" Release
 
+if command -v python3 >/dev/null 2>&1; then
+  bash "$HERE/generate-app-icon.sh" || echo "warning: generate-app-icon.sh failed (Pillow?)"
+fi
+
 if command -v xcodegen >/dev/null 2>&1; then
   (cd "$MAC" && xcodegen generate)
 fi
@@ -59,8 +63,11 @@ embed_app_icon() {
   mkdir -p "$iconset"
   cp "$appiconset"/*.png "$iconset/" 2>/dev/null || true
   if [[ -n "$(ls -A "$iconset"/*.png 2>/dev/null)" ]]; then
-    iconutil -c icns -o "$resources/AppIcon.icns" "$iconset"
-    echo "App icon: $resources/AppIcon.icns"
+    if iconutil -c icns -o "$resources/AppIcon.icns" "$iconset" 2>/dev/null; then
+      echo "App icon: $resources/AppIcon.icns"
+    else
+      echo "warning: iconutil failed — run Callspire.Mac/Scripts/generate-app-icon.sh and rebuild"
+    fi
   fi
   rm -rf "$tmp"
 }

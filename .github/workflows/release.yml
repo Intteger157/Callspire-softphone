@@ -104,6 +104,9 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      - name: Python deps (app icons)
+        run: python3 -m pip install --quiet Pillow
+
       - name: Build Callspire.app + DMG (unsigned)
         run: bash Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --ci
 
