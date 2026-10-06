@@ -11,6 +11,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
     private weak var ipc: IpcClient?
     private var loadContinuation: CheckedContinuation<Bool, Never>?
     private var loadSettling = false
+    private var appNapActivity: NSObjectProtocol?
 
     func attach(ipc: IpcClient) {
         self.ipc = ipc
@@ -21,6 +22,13 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         loadSettling = false
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
+        // The page is never visible, so WebKit would otherwise throttle its timers and suspend the
+        // WebContent process: JsSIP keep-alives and C# watchdog pongs stop and the UA reconnects in a loop.
+        Self.setPrivateFlag(config.preferences, "hiddenPageDOMTimerThrottlingEnabled", false)
+        Self.setPrivateFlag(config.preferences, "hiddenPageDOMTimerThrottlingAutoIncreases", false)
+        Self.setPrivateFlag(config.preferences, "pageVisibilityBasedProcessSuppressionEnabled", false)
+        Self.setPrivateFlag(config, "alwaysRunsAtForegroundPriority", true)
+        beginAppNapExemption()
         let uc = config.userContentController
         uc.add(self, name: "callspire")
         // phone.js / index.html post via invokeCSharpAction (Avalonia) or chrome.webview (WPF).
@@ -38,6 +46,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         uc.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 8, height: 8), configuration: config)
         wv.navigationDelegate = self
+        Self.setPrivateFlag(wv, "windowOcclusionDetectionEnabled", false)
         if #available(macOS 13.3, *), enableDevTools {
             wv.isInspectable = true
         }
@@ -80,6 +89,25 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         }
         webView = nil
         finishLoad(false)
+        if let activity = appNapActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            appNapActivity = nil
+        }
+    }
+
+    private func beginAppNapExemption() {
+        guard appNapActivity == nil else { return }
+        appNapActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiatedAllowingIdleSystemSleep, .latencyCritical],
+            reason: "Callspire keeps the SIP/WebRTC registration alive"
+        )
+    }
+
+    /// KVC resolves `key` to WebKit's private `_setKey:` setter; skipped when this WebKit lacks it.
+    private static func setPrivateFlag(_ object: NSObject, _ key: String, _ value: Bool) {
+        let setter = "_set" + key.prefix(1).uppercased() + key.dropFirst() + ":"
+        guard object.responds(to: NSSelectorFromString(setter)) else { return }
+        object.setValue(value, forKey: key)
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
