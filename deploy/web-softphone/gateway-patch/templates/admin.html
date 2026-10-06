@@ -1154,6 +1154,16 @@
         <div style="display:flex;gap:8px;align-items:stretch">
             <input type="text" id="provision-url" readonly style="font-family:ui-monospace,monospace;font-size:12px" onclick="this.select()">
             <button type="button" class="btn" onclick="copyProvisionUrl()" style="white-space:nowrap">Copy</button>
+            <button type="button" class="btn btn-outline" onclick="openProvisionInApp()" style="white-space:nowrap">Open</button>
+        </div>
+        <p style="color:#8b8fa3;font-size:12px;margin-top:10px;line-height:1.45">
+            <strong>macOS:</strong> if <code style="color:#c9cdd8">open callspire://…</code> says no application (-10814), launch Callspire from
+            <code style="color:#c9cdd8">/Applications</code> once, then use the Terminal command below (works without URL-scheme registration).
+        </p>
+        <label style="margin-top:8px">macOS Terminal (paste full link)</label>
+        <div style="display:flex;gap:8px;align-items:stretch">
+            <input type="text" id="provision-mac-open" readonly style="font-family:ui-monospace,monospace;font-size:11px" onclick="this.select()">
+            <button type="button" class="btn" onclick="copyProvisionMacOpen()" style="white-space:nowrap">Copy</button>
         </div>
         <div style="display:flex;gap:20px;margin-top:14px;color:#8b8fa3;font-size:12px;flex-wrap:wrap">
             <div>Expires in <strong id="provision-ttl" style="color:#e4e6eb">30 minutes</strong></div>
@@ -3065,7 +3075,9 @@ async function regenerateProvisionLink() {
             ttl_minutes: provisionCurrent.ttlMinutes,
         });
         if (r.proxy_url) provisionProxyBase = String(r.proxy_url).replace(/\/$/, '');
-        if (inp) inp.value = buildProvisionUrl(r.token_id);
+        const url = buildProvisionUrl(r.token_id);
+        if (inp) inp.value = url;
+        syncProvisionMacOpen(url);
         if (ttlEl) ttlEl.textContent = (r.ttl_minutes || 30) + ' minutes';
         if (statusEl) statusEl.innerHTML = '<span class="success">Link ready — remember to send it over a private channel.</span>';
     } catch (e) {
@@ -3084,6 +3096,39 @@ function buildProvisionUrl(tokenId) {
     // the token format.
     const qs = new URLSearchParams({ token: tokenId, proxy: proxy });
     return 'callspire://provision?' + qs.toString();
+}
+
+function syncProvisionMacOpen(url) {
+    const mac = document.getElementById('provision-mac-open');
+    if (!mac || !url) return;
+    mac.value = 'open -b com.callspire.softphone ' + JSON.stringify(url);
+}
+
+function openProvisionInApp() {
+    const inp = document.getElementById('provision-url');
+    if (!inp || !inp.value || !inp.value.startsWith('callspire://')) return;
+    window.location.href = inp.value;
+}
+
+function copyProvisionMacOpen() {
+    const inp = document.getElementById('provision-mac-open');
+    const statusEl = document.getElementById('provision-status');
+    if (!inp || !inp.value) return;
+    const onDone = (ok) => {
+        if (!statusEl) return;
+        statusEl.innerHTML = ok
+            ? '<span class="success">macOS command copied.</span>'
+            : '<span class="error-msg">Could not copy — select and copy manually.</span>';
+        setTimeout(() => { if (statusEl) statusEl.innerHTML = ''; }, 2500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(inp.value).then(() => onDone(true), () => {
+            inp.select(); document.execCommand && document.execCommand('copy'); onDone(true);
+        });
+    } else {
+        inp.select();
+        try { document.execCommand('copy'); onDone(true); } catch (_) { onDone(false); }
+    }
 }
 
 function copyProvisionUrl() {

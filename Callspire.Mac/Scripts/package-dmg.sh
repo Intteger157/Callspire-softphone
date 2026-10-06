@@ -72,6 +72,17 @@ embed_app_icon() {
   rm -rf "$tmp"
 }
 
+verify_url_scheme_in_plist() {
+  local app="$1"
+  local plist="$app/Contents/Info.plist"
+  [[ -f "$plist" ]] || { echo "ERROR: missing Info.plist in $app"; exit 1; }
+  if ! plutil -extract CFBundleURLTypes json -o - "$plist" 2>/dev/null | grep -q callspire; then
+    echo "ERROR: CFBundleURLTypes does not declare callspire:// in $plist"
+    plutil -p "$plist" | head -60
+    exit 1
+  fi
+}
+
 if [[ -d "$APP_OUT" ]]; then
   embed_app_icon "$APP_OUT"
 fi
@@ -91,6 +102,7 @@ if [[ -d "$APP_OUT" ]]; then
     codesign --force --deep --sign - "$APP_OUT" 2>/dev/null || true
   fi
   register_launch_services "$APP_OUT"
+  verify_url_scheme_in_plist "$APP_OUT"
 fi
 
 create_dmg() {

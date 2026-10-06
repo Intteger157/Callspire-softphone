@@ -80,7 +80,8 @@ The app redeems the token, writes `settings.json`, reconnects WebRTC/SIP, and sh
 Requires Callspire in **`/Applications`** and Launch Services knowing the `callspire://` handler:
 
 1. Launch Callspire once (registers the URL scheme on each start).
-2. Use a **link click** or Terminal — Chrome’s address bar treats `callspire://…` as a web search, not an app open:  
-   `open "callspire://provision?token=…&proxy=…"`
-3. If `open` still returns **-10814**, re-register manually:  
+2. Prefer **Open** in the gateway admin modal, or click a `callspire://` link — not the Chrome address bar (it searches Google).
+3. If `open callspire://…` returns **-10814**, use bundle id (works on unsigned CI builds):  
+   `open -b com.callspire.softphone "callspire://provision?token=…&proxy=…"`
+4. Optional:  
    `/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f -R -trusted /Applications/Callspire.app`

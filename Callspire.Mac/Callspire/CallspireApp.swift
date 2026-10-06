@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import CoreServices
+import Carbon.HIToolbox
 import Darwin
 
 @main
@@ -97,7 +97,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         guard !InstanceBroker.isSecondaryForwarder else { return }
-        registerWithLaunchServices()
+        UrlSchemeRegistrar.registerCallspireScheme()
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleGetUrlEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
         InstanceBroker.startServer { [weak self] urlString in
             Task { @MainActor in
                 guard let url = URL(string: urlString) else { return }
@@ -110,10 +116,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Unsigned/ad-hoc builds are not always indexed by Launch Services until explicitly registered.
-    private func registerWithLaunchServices() {
-        let bundleURL = Bundle.main.bundleURL as CFURL
-        LSRegisterURL(bundleURL, true)
+    @objc private func handleGetUrlEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
+        guard let raw = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: raw) else { return }
+        deliverOpenUrls([url])
+    }
+
+    private func deliverOpenUrls(_ urls: [URL]) {
+        if InstanceBroker.isSecondaryForwarder {
+            InstanceBroker.forwardOpenUrlsAndExit(urls)
+            return
+        }
+        Task { @MainActor in
+            guard let state else {
+                pendingOpenUrls.append(contentsOf: urls)
+                return
+            }
+            for url in urls { state.handleUrl(url) }
+        }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -133,17 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        if InstanceBroker.isSecondaryForwarder {
-            InstanceBroker.forwardOpenUrlsAndExit(urls)
-            return
-        }
-        Task { @MainActor in
-            guard let state else {
-                pendingOpenUrls.append(contentsOf: urls)
-                return
-            }
-            for url in urls { state.handleUrl(url) }
-        }
+        deliverOpenUrls(urls)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
