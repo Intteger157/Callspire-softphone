@@ -3101,7 +3101,7 @@ function buildProvisionUrl(tokenId) {
 function syncProvisionMacOpen(url) {
     const mac = document.getElementById('provision-mac-open');
     if (!mac || !url) return;
-    mac.value = 'open -b com.callspire.softphone ' + JSON.stringify(url);
+    mac.value = 'open -a /Applications/Callspire.app --args ' + JSON.stringify(url);
 }
 
 function openProvisionInApp() {

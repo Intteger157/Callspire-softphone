@@ -81,7 +81,7 @@ Requires Callspire in **`/Applications`** and Launch Services knowing the `calls
 
 1. Launch Callspire once (registers the URL scheme on each start).
 2. Prefer **Open** in the gateway admin modal, or click a `callspire://` link — not the Chrome address bar (it searches Google).
-3. If `open callspire://…` returns **-10814**, use bundle id (works on unsigned CI builds):  
-   `open -b com.callspire.softphone "callspire://provision?token=…&proxy=…"`
+3. If `open callspire://…` returns **-10814**, pass the URL as a launch argument (works on unsigned CI builds):  
+   `open -a /Applications/Callspire.app --args 'callspire://provision?token=…&proxy=…'`
 4. Optional:  
    `/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f -R -trusted /Applications/Callspire.app`

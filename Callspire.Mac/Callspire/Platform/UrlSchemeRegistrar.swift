@@ -15,10 +15,10 @@ enum UrlSchemeRegistrar {
         }
     }
 
-    /// Works even when `open callspire://…` returns -10814 (use full provision URL).
+    /// Reliable on unsigned builds: passes the URL in argv (handled at launch) or use when -10814.
     static func terminalOpenCommand(for url: String) -> String {
-        let bid = Bundle.main.bundleIdentifier ?? "com.callspire.softphone"
-        let escaped = url.replacingOccurrences(of: "\"", with: "\\\"")
-        return "open -b \(bid) \"\(escaped)\""
+        let app = "/Applications/Callspire.app"
+        let quoted = url.replacingOccurrences(of: "'", with: "'\\''")
+        return "open -a \(app) --args '\(quoted)'"
     }
 }

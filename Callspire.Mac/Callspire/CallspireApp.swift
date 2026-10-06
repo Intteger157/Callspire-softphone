@@ -139,10 +139,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if InstanceBroker.isSecondaryForwarder {
             NSApp.setActivationPolicy(.prohibited)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { exit(0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { exit(0) }
             return
         }
         NSApp.setActivationPolicy(.regular)
+        let argvUrls = InstanceBroker.protocolUrlsFromLaunch().compactMap { URL(string: $0) }
+        if !argvUrls.isEmpty { deliverOpenUrls(argvUrls) }
         let nc = NSWorkspace.shared.notificationCenter
         sleepToken = nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.state?.notifySleep() }
