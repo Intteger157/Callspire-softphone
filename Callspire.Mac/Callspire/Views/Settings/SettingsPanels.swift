@@ -51,7 +51,7 @@ struct ConnectionPanel: View {
                         HStack(spacing: 6) {
                             StatusDot(tone: status.isError ? .error : (status.isOnline ? .online : .offline))
                             Text(status.isOnline ? "Connected" : status.text).font(.caption)
-                                .foregroundStyle(status.isOnline ? Color.green : .secondary)
+                                .foregroundStyle(status.isOnline ? Color.green : Color.secondary)
                         }
                     }
                     if isSecondary {
@@ -141,7 +141,7 @@ struct ConnectionPanel: View {
                         Text("Turn settings").font(.subheadline.weight(.semibold))
                         let uri = isSecondary ? draft.secondaryTurnUri : draft.mainTurnUri
                         StatusDot(tone: uri.isEmpty ? .offline : .online)
-                        Text(turnStatus(uri)).font(.caption).foregroundStyle(uri.isEmpty ? .secondary : .green)
+                        Text(turnStatus(uri)).font(.caption).foregroundStyle(uri.isEmpty ? Color.secondary : Color.green)
                     }
                 }
             }
@@ -446,7 +446,7 @@ struct IntegrationsPanel: View {
                                 .disabled(authorizing || draft.kommoClientId.isEmpty || draft.kommoSubdomain.isEmpty)
                                 StatusDot(tone: info.kommoOAuth.isAuthorized ? .online : .offline)
                                 Text(info.kommoOAuth.statusText).font(.caption)
-                                    .foregroundStyle(info.kommoOAuth.isAuthorized ? Color.green : .secondary)
+                                    .foregroundStyle(info.kommoOAuth.isAuthorized ? Color.green : Color.secondary)
                             }
                         } else {
                             LabeledField(title: "Long-lived token") { SecureField("", text: $draft.kommoToken) }
@@ -517,7 +517,7 @@ struct IntegrationsPanel: View {
                     StatusDot(tone: state.main.gatewayConnected ? .online : (draft.gatewayEnabled ? .warning : .offline))
                     Text(state.main.gatewayStatusText.isEmpty ? (state.main.gatewayConnected ? "Connected" : "Not connected") : state.main.gatewayStatusText)
                         .font(.caption)
-                        .foregroundStyle(state.main.gatewayConnected ? Color.green : .secondary)
+                        .foregroundStyle(state.main.gatewayConnected ? Color.green : Color.secondary)
                 }
             }
         }

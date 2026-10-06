@@ -9,7 +9,7 @@ final class IpcClient {
     private var buffer = Data()
     private var nextId: UInt64 = 1
     private var pending: [String: (Result<AnyJSON?, Error>) -> Void] = [:]
-    private var requestHandlers: [String: (AnyJSON?, (Result<AnyJSON?, Error>) -> Void) -> Void] = [:]
+    private var requestHandlers: [String: (AnyJSON?, @escaping (Result<AnyJSON?, Error>) -> Void) -> Void] = [:]
     var onEvent: ((String, AnyJSON?) -> Void)?
     var onDisconnected: (() -> Void)?
     private(set) var isConnected = false
