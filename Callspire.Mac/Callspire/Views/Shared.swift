@@ -323,11 +323,14 @@ struct OutboundCallButton: View {
 
     @ViewBuilder
     private func callButton(forceSelection: Bool) -> some View {
-        Button { startCall(forceSelection: forceSelection) } label: {
-            labelContent
+        if prominent {
+            Button { startCall(forceSelection: forceSelection) } label: { labelContent }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+        } else {
+            Button { startCall(forceSelection: forceSelection) } label: { labelContent }
+                .buttonStyle(.plain)
         }
-        .buttonStyle(prominent ? .borderedProminent : .plain)
-        .tint(prominent ? .green : nil)
     }
 
     @ViewBuilder

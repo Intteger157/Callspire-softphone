@@ -2,8 +2,8 @@ import SwiftUI
 import AppKit
 import Combine
 
-/// Settings window — System Settings layout: coloured sidebar icons, pane header,
-/// grouped form, and a single Save / Revert bar for every editable pane.
+/// Settings window — System Settings layout: coloured sidebar icons, grouped form,
+/// and a single Save / Revert bar for every editable pane.
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
 
@@ -25,12 +25,12 @@ struct SettingsView: View {
                 Label {
                     Text(p.title)
                 } icon: {
-                    SettingsIcon(symbol: p.filledSymbol, tint: p.tint)
+                    SettingsIcon(symbol: p.filledSymbol, tint: p.tint, size: 28)
                 }
                 .tag(p)
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 250)
         } detail: {
             VStack(spacing: 0) {
                 if !loaded {
@@ -54,8 +54,8 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(24)
                 } else {
-                    PaneHeader(panel: panel)
                     pane
+                        .padding(.top, 4)
                 }
                 if loaded && panel != .about {
                     Divider()
@@ -257,19 +257,3 @@ struct SettingsIcon: View {
     }
 }
 
-private struct PaneHeader: View {
-    let panel: AppState.SettingsPanel
-    var body: some View {
-        HStack(spacing: 14) {
-            SettingsIcon(symbol: panel.filledSymbol, tint: panel.tint, size: 40)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(panel.title).font(.title2.weight(.semibold))
-                Text(panel.subtitle).font(.callout).foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 28)
-        .padding(.top, 18)
-        .padding(.bottom, 4)
-    }
-}
