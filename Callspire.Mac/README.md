@@ -40,11 +40,26 @@ On every push, workflow **Build** (`/.github/workflows/build.yml`) publishes:
 - Windows desktop (`callspire-windows-x64` artifact)
 - macOS `Callspire.app` as an unsigned zip (`callspire-macos-arm64-unsigned`)
 
-Download the zip from the Actions run → unzip → first launch: **right-click → Open** (unsigned build).
+Download the zip from the Actions run → unzip → **drag `Callspire.app` to `/Applications`** (do not run from the DMG or Downloads folder — macOS App Translocation breaks WebRTC and icons).
 
-Tag `v*` triggers **Release** (`release.yml`): Windows Inno Setup installer + macOS unsigned `.zip` / `.dmg` on the GitHub Release page.
+### First launch (unsigned CI builds)
 
-Production Mac builds with notarization: run locally with `package-dmg.sh --sign "Developer ID Application: …"`.
+GitHub builds are **not notarized**. macOS Gatekeeper may block the app until you allow it once:
+
+1. Move `Callspire.app` to **Applications**.
+2. **Right-click → Open** (or System Settings → Privacy & Security → **Open Anyway** after the first blocked attempt).
+3. Optional: remove quarantine after download:  
+   `xattr -dr com.apple.quarantine /Applications/Callspire.app`
+
+For a smooth “just works” install for users, sign and notarize locally:
+
+```bash
+export CALLSPIRE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --sign "$CALLSPIRE_SIGN_IDENTITY"
+# then notarize + staple the .dmg with notarytool (Apple Developer account required)
+```
+
+Tag `v*` triggers **Release** (`release.yml`): Windows Inno Setup installer + macOS unsigned `.zip` / `.dmg` on the GitHub Release page. The `.dmg` shows **Callspire.app** and an **Applications** folder shortcut (drag-to-install layout).
 
 ## IPC (NDJSON over `~/Library/Application Support/Callspire/service.sock`)
 
@@ -55,3 +70,11 @@ C# → Swift requests: `showConnectionSelection`, `showLeadSelection`, `showKomm
 
 `NSWorkspace.willSleepNotification` / `didWakeNotification` → `systemWillSleep` / `systemDidWake`.
 `callspire://` and `tel:` are registered in `Info.plist` and forwarded as `handleProtocolUrl`.
+
+### PBX Gateway auto-setup (same as Windows)
+
+In the gateway admin panel, copy the **provision link** and open it in Safari/Chrome.  
+Format: `callspire://provision?token=…&proxy=https://…`  
+The app redeems the token, writes `settings.json`, reconnects WebRTC/SIP, and shows a confirmation dialog.
+
+Requires Callspire to be the default handler for `callspire://` (automatic after first successful launch from `/Applications`).

@@ -365,33 +365,6 @@ namespace Softphone.AppHost
 
         // ───────────────────────── click-to-call ─────────────────────────
 
-        /// <summary>
-        /// Handle a <c>callspire://call?number=...</c> / <c>tel:</c> URL. Queued until a line is online.
-        /// </summary>
-        public void HandleProtocolUrl(string url)
-        {
-            // callspire://cdr-auth?token=… — PBX Gateway browser login callback (WPF App.HandleCallspireProtocol).
-            if (TryExtractCdrAuthToken(url, out var cdrToken))
-            {
-                HandleCdrAuthToken(cdrToken);
-                return;
-            }
-
-            string? number = ExtractNumberFromUrl(url);
-            if (string.IsNullOrWhiteSpace(number)) return;
-            Log($"[Controller] click-to-call: {number}");
-            _shell?.BringToForeground();
-
-            if (ViewModel.AnyOnline)
-            {
-                _ = PlaceCallAsync(number);
-                return;
-            }
-
-            lock (_pendingClickToCall) _pendingClickToCall.Enqueue(number);
-            UiThread.BeginInvoke(() => ViewModel.PhoneNumber = number);
-        }
-
         internal void FlushPendingClickToCall()
         {
             string? next = null;
@@ -438,6 +411,11 @@ namespace Softphone.AppHost
                     return Uri.UnescapeDataString(url.Substring(4));
 
                 var uri = new Uri(url);
+                if (string.Equals(uri.Host, "provision", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(uri.Host, "cdr-auth", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(uri.Host, "oauth", StringComparison.OrdinalIgnoreCase))
+                    return null;
+
                 var query = uri.Query.TrimStart('?');
                 foreach (var pair in query.Split('&', StringSplitOptions.RemoveEmptyEntries))
                 {
