@@ -42,6 +42,18 @@ On every push, workflow **Build** (`/.github/workflows/build.yml`) publishes:
 
 Download the zip from the Actions run → unzip → **drag `Callspire.app` to `/Applications`** (do not run from the DMG or Downloads folder — macOS App Translocation breaks WebRTC and icons).
 
+### Correct macOS app vs legacy .NET shell
+
+Current macOS releases are **SwiftUI + sidecar**, not the old Avalonia/.NET app.
+
+| Check | SwiftUI (correct) | Legacy (do not use) |
+|-------|-------------------|---------------------|
+| Sidecar | `Callspire.app/Contents/MacOS/Service/Callspire.Service` exists | No `Service/` folder |
+| Main binary | Small native Mach-O (Swift), no `libcoreclr.dylib` in `Contents/MacOS/` | `libcoreclr.dylib`, `libSkiaSharp.dylib`, `libAvaloniaNative.dylib` next to `Callspire` |
+| Typical crash | Sidecar log in `~/Library/Application Support/Callspire/logs/` | Immediate abort on launch (`IL_Throw` / `libcoreclr` on main thread) |
+
+If Crash Reporter shows **`libcoreclr.dylib`** and **`libAvaloniaNative.dylib`** with the main executable at `Contents/MacOS/Callspire`, replace the app with a fresh **GitHub Release** or CI zip built via `Callspire.Mac/Scripts/package-dmg.sh`. Do **not** use `Callspire.Desktop/macOS/package-app.sh` (removed).
+
 ### First launch (unsigned CI builds)
 
 GitHub builds are **not notarized**. macOS Gatekeeper may block the app until you allow it once:
@@ -62,6 +74,14 @@ macOS remembers **microphone** and **Privacy & Security** prompts per app identi
 4. **Gatekeeper “Open Anyway”** is usually **once per downloaded build**, not every launch — if it appears every update, you are likely launching a quarantined copy outside `/Applications`.
 
 Theme (light/dark) is stored in `settings.json` and is independent of macOS System Settings → Appearance; choosing **System** in Callspire follows the Mac appearance.
+
+### Microphone prompt shows `127.0.0.1`
+
+WebRTC runs in an embedded WebKit page on loopback (`http://127.0.0.1:17842/`). macOS can show a **site** prompt (“Allow 127.0.0.1…”) in addition to the **Callspire** prompt in System Settings → Privacy → Microphone.
+
+- Allow **Callspire** once in System Settings → Privacy & Security → **Microphone**.
+- Current builds use a **fixed loopback port** and auto-grant WebKit when Callspire already has microphone access, so the `127.0.0.1` dialog should not repeat every launch.
+- If it still appears every time: confirm the app lives in **`/Applications`**, update to the latest build, and reset stale WebKit permissions: System Settings → Privacy → **Microphone** (toggle Callspire off/on) or delete `~/Library/WebKit/com.callspire.softphone` while Callspire is quit.
 
 For a smooth “just works” install for users, sign and notarize locally:
 

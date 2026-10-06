@@ -6,7 +6,7 @@ import AppKit
 /// Mirrors AvaloniaWebRtcEngineHost / WPF WebRtcEngineHost: the view must stay in the hierarchy
 /// with a non-zero size so getUserMedia works.
 @MainActor
-final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private var webView: WKWebView?
     private weak var ipc: IpcClient?
     private var loadContinuation: CheckedContinuation<Bool, Never>?
@@ -31,6 +31,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
     }
 
     func createHost(url: String, enableDevTools: Bool) async -> Bool {
+        _ = await MicrophoneAccess.requestIfNeeded()
         destroy()
         loadSettling = false
         let config = WKWebViewConfiguration()
@@ -59,6 +60,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         uc.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 8, height: 8), configuration: config)
         wv.navigationDelegate = self
+        wv.uiDelegate = self
         Self.setPrivateFlag(wv, "windowOcclusionDetectionEnabled", false)
         if #available(macOS 13.3, *), enableDevTools {
             wv.isInspectable = true
@@ -164,6 +166,31 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         Task { try? await ipc?.requestVoid("webRtcHostReset") }
+    }
+
+    /// Avoid repeating "Allow 127.0.0.1 to use your microphone?" when Callspire already has TCC access.
+    func webView(
+        _ webView: WKWebView,
+        requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+        initiatedByFrame frame: WKFrameInfo,
+        type: WKMediaCaptureType,
+        decisionHandler: @escaping (WKPermissionDecision) -> Void
+    ) {
+        switch type {
+        case .camera:
+            decisionHandler(.deny)
+        case .microphone, .cameraAndMicrophone:
+            if MicrophoneAccess.isAuthorized {
+                decisionHandler(.grant)
+            } else {
+                Task { @MainActor in
+                    let ok = await MicrophoneAccess.requestIfNeeded()
+                    decisionHandler(ok ? .grant : .deny)
+                }
+            }
+        @unknown default:
+            decisionHandler(.prompt)
+        }
     }
 
     private func finishLoad(_ ok: Bool) {

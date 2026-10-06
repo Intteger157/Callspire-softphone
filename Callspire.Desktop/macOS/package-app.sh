@@ -24,6 +24,12 @@
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+echo "ERROR: The legacy macOS Avalonia .app packager was removed." >&2
+echo "macOS is built as SwiftUI (Callspire.Mac) + Callspire.Service sidecar." >&2
+echo "Use:  Callspire.Mac/Scripts/package-dmg.sh --arch arm64" >&2
+echo "Or:   ./build.sh macos --publish" >&2
+exit 1
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 PROJECT="$ROOT/Callspire.Desktop/Callspire.Desktop.csproj"

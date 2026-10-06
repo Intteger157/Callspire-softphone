@@ -83,8 +83,33 @@ verify_url_scheme_in_plist() {
   fi
 }
 
+# Reject the deprecated Avalonia/.NET-at-MacOS-root layout (crashes on startup with libcoreclr as main).
+verify_swift_ui_bundle() {
+  local app="$1"
+  local exe="$app/Contents/MacOS/Callspire"
+  local service="$app/Contents/MacOS/Service/Callspire.Service"
+  [[ -f "$exe" ]] || { echo "ERROR: missing $exe"; exit 1; }
+  [[ -x "$service" ]] || {
+    echo "ERROR: missing sidecar $service"
+    echo "This bundle is not Callspire.Mac (SwiftUI). Do not use Callspire.Desktop/macOS/package-app.sh."
+    exit 1
+  }
+  if [[ -f "$app/Contents/MacOS/libcoreclr.dylib" ]] || [[ -f "$app/Contents/MacOS/libAvaloniaNative.dylib" ]]; then
+    echo "ERROR: Contents/MacOS contains .NET/Avalonia native libs — legacy macOS build."
+    echo "Build with Callspire.Mac/Scripts/package-dmg.sh and install to /Applications."
+    exit 1
+  fi
+  if command -v otool >/dev/null 2>&1 && file "$exe" 2>/dev/null | grep -q "Mach-O"; then
+    if otool -L "$exe" 2>/dev/null | grep -qE 'libcoreclr|libhostfxr|libAvaloniaNative'; then
+      echo "ERROR: MacOS/Callspire is a .NET host, not the Swift UI executable."
+      exit 1
+    fi
+  fi
+}
+
 if [[ -d "$APP_OUT" ]]; then
   embed_app_icon "$APP_OUT"
+  verify_swift_ui_bundle "$APP_OUT"
 fi
 
 register_launch_services() {

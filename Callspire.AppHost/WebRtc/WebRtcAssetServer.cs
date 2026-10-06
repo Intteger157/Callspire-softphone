@@ -18,6 +18,12 @@ namespace Softphone.WebRtc
     /// </summary>
     public sealed class WebRtcAssetServer : IDisposable
     {
+        /// <summary>
+        /// Stable loopback port so WKWebView remembers camera/microphone permission for the same origin
+        /// (<c>http://127.0.0.1:17842/</c>) across app restarts. Falls back to ephemeral ports if busy.
+        /// </summary>
+        public const int PreferredLoopbackPort = 17842;
+
         private readonly string _root;
         private HttpListener? _listener;
         private CancellationTokenSource? _cts;
@@ -60,11 +66,14 @@ namespace Softphone.WebRtc
             if (_listener != null) return;
             if (!Directory.Exists(_root)) throw new DirectoryNotFoundException(_root);
 
-            // Try a handful of ports: pick a free one, then bind HttpListener to it.
+            // Prefer a fixed loopback port (WebKit stores getUserMedia consent per origin, including port).
             Exception? last = null;
-            for (int attempt = 0; attempt < 5; attempt++)
+            var portsToTry = new System.Collections.Generic.List<int> { PreferredLoopbackPort };
+            for (int attempt = 1; attempt < 5; attempt++)
+                portsToTry.Add(GetFreeLoopbackPort());
+
+            foreach (int port in portsToTry)
             {
-                int port = GetFreeLoopbackPort();
                 var listener = new HttpListener();
                 listener.Prefixes.Add($"http://127.0.0.1:{port}/");
                 try
