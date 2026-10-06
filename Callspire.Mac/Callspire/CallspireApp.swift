@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sleepToken: NSObjectProtocol?
     private var wakeToken: NSObjectProtocol?
 
+    @MainActor
     func attach(state: AppState) {
         self.state = state
         let queued = pendingOpenUrls
