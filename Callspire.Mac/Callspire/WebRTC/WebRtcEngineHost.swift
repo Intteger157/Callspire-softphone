@@ -10,6 +10,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
     private var webView: WKWebView?
     private weak var ipc: IpcClient?
     private var loadContinuation: CheckedContinuation<Bool, Never>?
+    private var loadSettling = false
 
     func attach(ipc: IpcClient) {
         self.ipc = ipc
@@ -17,10 +18,24 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
 
     func createHost(url: String, enableDevTools: Bool) async -> Bool {
         destroy()
+        loadSettling = false
         let config = WKWebViewConfiguration()
         config.mediaTypesRequiringUserActionForPlayback = []
         let uc = config.userContentController
         uc.add(self, name: "callspire")
+        // phone.js / index.html post via invokeCSharpAction (Avalonia) or chrome.webview (WPF).
+        // Callspire Mac hosts WKWebView in Swift — inject the bridge before any page script runs.
+        let bridge = """
+        (function () {
+            if (typeof window.invokeCSharpAction === 'function') return;
+            window.invokeCSharpAction = function (jsonStr) {
+                try {
+                    window.webkit.messageHandlers.callspire.postMessage(jsonStr);
+                } catch (e) { /* swallow */ }
+            };
+        })();
+        """
+        uc.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 8, height: 8), configuration: config)
         wv.navigationDelegate = self
         wv.uiDelegate = self
@@ -77,7 +92,38 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        finishLoad(true)
+        // didFinish fires for iframe navigations too — settle once after index.html + slot iframes.
+        guard loadContinuation != nil, !loadSettling else { return }
+        loadSettling = true
+        Task { @MainActor in
+            let slots = await waitForEngineSlots(timeout: 12)
+            finishLoad(slots)
+        }
+    }
+
+    /// Poll until index.html marks WebRtcClient slot iframes ready (same flag C# WaitForSlotReadyAsync uses).
+    private func waitForEngineSlots(timeout: TimeInterval) async -> Bool {
+        guard let webView else { return false }
+        let deadline = Date().addingTimeInterval(timeout)
+        let probe = """
+        (() => { try {
+            return !!(window._slotReady && window._slotReady.main);
+        } catch (e) { return false; } })()
+        """
+        while Date() < deadline {
+            let ok = await invokeScript(probe)
+            if ok == "true" || ok == "1" { return true }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+        return false
+    }
+
+    /// Auto-grant mic/camera for loopback WebRTC engine page (macOS 14+).
+    @available(macOS 14.0, *)
+    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
+                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+        decisionHandler(.grant)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

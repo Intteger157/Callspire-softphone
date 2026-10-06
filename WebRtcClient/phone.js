@@ -79,9 +79,12 @@ window.SoftphoneWebRtc = (function () {
     //   • WebView2 (Windows WPF):        window.chrome.webview.postMessage(str)
     //   • Avalonia NativeWebView (macOS WKWebView / Linux WebKit / Windows WebView2 via Avalonia):
     //                                     invokeCSharpAction(str)  (injected by Avalonia.Controls.WebView)
+    //   • Callspire Mac WKWebView       → webkit.messageHandlers.callspire (or injected invokeCSharpAction)
     function hasDirectHostBridge() {
         try {
-            return !!((window.chrome && window.chrome.webview) || typeof window.invokeCSharpAction === 'function');
+            return !!((window.chrome && window.chrome.webview)
+                || typeof window.invokeCSharpAction === 'function'
+                || (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.callspire));
         } catch (e) { return false; }
     }
     function postToHostDirect(jsonStr) {
@@ -91,6 +94,10 @@ window.SoftphoneWebRtc = (function () {
         }
         if (typeof window.invokeCSharpAction === 'function') {
             window.invokeCSharpAction(jsonStr);
+            return true;
+        }
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.callspire) {
+            window.webkit.messageHandlers.callspire.postMessage(jsonStr);
             return true;
         }
         return false;

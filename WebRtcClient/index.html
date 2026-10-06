@@ -67,11 +67,16 @@
         // Host bridge (top frame only):
         //   WebView2 (WPF)            → window.chrome.webview.postMessage(str)
         //   Avalonia NativeWebView    → invokeCSharpAction(str)   (WKWebView on macOS, WebKit on Linux, WebView2 on Windows)
+        //   Callspire Mac WKWebView     → webkit.messageHandlers.callspire (or injected invokeCSharpAction)
         window.__softphoneDesktopHost = true;
         function postToHost(str) {
             try {
                 if (window.chrome && window.chrome.webview) { window.chrome.webview.postMessage(str); return true; }
                 if (typeof window.invokeCSharpAction === 'function') { window.invokeCSharpAction(str); return true; }
+                if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.callspire) {
+                    window.webkit.messageHandlers.callspire.postMessage(str);
+                    return true;
+                }
             } catch (e) { /* swallow */ }
             return false;
         }
