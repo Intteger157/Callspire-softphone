@@ -52,6 +52,7 @@ from ami_client import ami_originate
 from connection_check import check_ami_tcp, check_wss_tls
 from miko_rest_client import MikoRestClient, MikoRestConfig, MikoRestError
 from app_kommo import register_kommo_routes
+from app_mobile_releases import register_mobile_releases_routes
 
 try:
     from gateway_web_softphone import install_web_softphone as _install_web_softphone
@@ -1764,6 +1765,16 @@ register_kommo_routes(
     download_recording=_kommo_internal_download_recording,
     extension_from_token=_extension_from_token,
     verify_linkedid=_kommo_verify_linkedid,
+)
+
+register_mobile_releases_routes(
+    app,
+    cfg=cfg,
+    require_admin=require_admin,
+    require_jwt=require_jwt,
+    templates=templates,
+    html_context=_html_context,
+    public_base_url=lambda request: (cfg.get("public_url") or str(request.base_url)).rstrip("/"),
 )
 # ======================= Admin panel (HTML) =======================
 

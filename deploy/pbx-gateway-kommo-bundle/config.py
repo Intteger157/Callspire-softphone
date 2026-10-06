@@ -70,6 +70,11 @@ _defaults = {
     # what the admin ``Host`` header sees.
     "public_url": "",
     "users": [],
+    # Mobile app update proxy (GitHub private releases).
+    "mobile_releases_enabled": True,
+    "mobile_releases_github_owner": "",
+    "mobile_releases_github_repo": "",
+    "mobile_releases_asset_name": "IGCaller.apk",
 }
 
 def _first_existing_file(candidates: list[str]) -> str | None:
