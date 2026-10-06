@@ -5,72 +5,14 @@ struct MainView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.openWindow) private var openWindow
 
-    private enum SidebarItem: Hashable {
-        case nav(AppState.NavItem)
-        case settings
-        case logs
-    }
-
-    @State private var selection: SidebarItem = .nav(.dialer)
-
     var body: some View {
-        NavigationSplitView {
-            List(selection: $selection) {
-                Section {
-                    accountRow
-                }
-
-                Section {
-                    ForEach(AppState.NavItem.allCases) { item in
-                        Label {
-                            Text(item.title)
-                        } icon: {
-                            Image(systemName: selection == .nav(item) ? item.symbolSelected : item.symbol)
-                                .symbolRenderingMode(.hierarchical)
-                        }
-                        .tag(SidebarItem.nav(item))
-                    }
-                }
-
-                Section {
-                    Label("Settings", systemImage: "gearshape")
-                        .tag(SidebarItem.settings)
-                    Label("Logs", systemImage: "text.alignleft")
-                        .tag(SidebarItem.logs)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 250)
-        } detail: {
+        HStack(spacing: 0) {
+            rail
+            Divider()
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .navigationTitle(detailTitle)
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                StatusPill(
-                    text: state.main.accountText.isEmpty ? state.statusLine : state.main.accountText,
-                    tone: state.main.anyOnline ? .online : (state.connected ? .offline : .error)
-                )
-                .help(state.main.accountToolTip.isEmpty ? state.statusLine : state.main.accountToolTip)
-            }
-        }
-        .onChange(of: selection) { item in
-            switch item {
-            case .nav(let nav):
-                state.selectedNav = nav
-            case .settings:
-                state.openSettings()
-                // Keep main nav selection visually stable after opening Settings window.
-                selection = .nav(state.selectedNav)
-            case .logs:
-                state.openLogs()
-                selection = .nav(state.selectedNav)
-            }
-        }
-        .onChange(of: state.selectedNav) { nav in
-            if case .nav = selection { selection = .nav(nav) }
-        }
         .alert(item: $state.alert) { a in
             Alert(title: Text(a.title), message: Text(a.text), dismissButton: .default(Text("OK")))
         }
@@ -92,8 +34,66 @@ struct MainView: View {
         }
         .onChange(of: state.settingsOpenRequest) { _ in openWindow(id: "settings") }
         .onChange(of: state.logsOpenRequest) { _ in openWindow(id: "logs") }
-        .onAppear { selection = .nav(state.selectedNav) }
     }
+
+    // MARK: - Icon rail
+
+    private var rail: some View {
+        VStack(spacing: 6) {
+            avatar
+                .padding(.bottom, 10)
+
+            ForEach(AppState.NavItem.allCases) { item in
+                RailButton(
+                    symbol: item.symbol,
+                    selectedSymbol: item.symbolSelected,
+                    title: item.title,
+                    isSelected: state.selectedNav == item
+                ) { state.selectedNav = item }
+            }
+
+            Spacer()
+
+            RailButton(symbol: "gearshape", selectedSymbol: "gearshape.fill", title: "Settings", isSelected: false) {
+                state.openSettings()
+            }
+            RailButton(symbol: "text.alignleft", selectedSymbol: "text.alignleft", title: "Logs", isSelected: false) {
+                state.openLogs()
+            }
+        }
+        .padding(.vertical, 14)
+        .frame(width: 72)
+        .frame(maxHeight: .infinity)
+        .background(VisualEffectBackground(material: .sidebar))
+    }
+
+    private var avatar: some View {
+        let line = state.main.main
+        return ZStack(alignment: .bottomTrailing) {
+            Circle()
+                .fill(Color.accentColor.gradient)
+                .frame(width: 38, height: 38)
+                .overlay(Text(initial).font(.headline).foregroundStyle(.white))
+            Circle()
+                .fill(line.isError ? Color.red : (line.isOnline ? Color.green : Color.gray))
+                .frame(width: 11, height: 11)
+                .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+        }
+        .help(accountHelp)
+    }
+
+    private var accountHelp: String {
+        let name = state.main.main.displayName.isEmpty ? "Callspire" : state.main.main.displayName
+        let status = state.main.accountText.isEmpty ? state.statusLine : state.main.accountText
+        return "\(name) — \(status)"
+    }
+
+    private var initial: String {
+        let name = state.main.main.displayName.trimmingCharacters(in: .whitespaces)
+        return String((name.isEmpty ? "C" : name).prefix(1)).uppercased()
+    }
+
+    // MARK: - Detail
 
     @ViewBuilder
     private var detail: some View {
@@ -111,33 +111,32 @@ struct MainView: View {
         case .statistics: return "Call Statistics"
         }
     }
+}
 
-    private var accountRow: some View {
-        HStack(spacing: 10) {
-            ZStack {
-                Circle()
-                    .fill(Color.accentColor.opacity(0.85))
-                    .frame(width: 28, height: 28)
-                Text(initial)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white)
-            }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(state.main.main.displayName.isEmpty ? "Callspire" : state.main.main.displayName)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
-                Text(state.main.main.text.isEmpty ? state.statusLine : state.main.main.text)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+/// Large icon-only navigation button with tooltip (labels hidden by design).
+private struct RailButton: View {
+    let symbol: String
+    let selectedSymbol: String
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: isSelected ? selectedSymbol : symbol)
+                .font(.system(size: 21, weight: .regular))
+                .frame(width: 46, height: 46)
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(hover ? 0.07 : 0))
+                )
+                .contentShape(Rectangle())
         }
-        .padding(.vertical, 2)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var initial: String {
-        let name = state.main.main.displayName.trimmingCharacters(in: .whitespaces)
-        return String((name.isEmpty ? "C" : name).prefix(1)).uppercased()
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(title)
+        .accessibilityLabel(title)
     }
 }

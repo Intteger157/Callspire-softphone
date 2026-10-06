@@ -5,7 +5,7 @@ import AppKit
 
 enum MacTheme {
     static let contentMaxWidth: CGFloat = 360
-    static let keypadKey: CGFloat = 52
+    static let keypadKey: CGFloat = 64
     static let callButton: CGFloat = 64
     static let corner: CGFloat = 10
     static let controlFill = Color(nsColor: .controlBackgroundColor)
@@ -159,30 +159,42 @@ struct KeyValueRow: View {
 
 // MARK: - Dialer / call controls
 
-/// Soft rounded key (FaceTime / Phone–adjacent), not a stroked circle.
+/// Shrinks slightly while pressed — gives keypad / call buttons tactile feedback.
+struct PressScaleStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.93 : 1)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+/// Phone-style key: digit + letters on a soft filled circle with hover highlight.
 struct KeypadKey: View {
     let label: String
     var letters: String? = nil
     var size: CGFloat = MacTheme.keypadKey
     let action: () -> Void
+    @State private var hover = false
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 0) {
+            VStack(spacing: 1) {
                 Text(label)
-                    .font(.system(size: size * 0.42, weight: .regular, design: .rounded))
-                if let letters, !letters.isEmpty {
-                    Text(letters)
-                        .font(.system(size: 8, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .tracking(1.2)
-                }
+                    .font(.system(size: size * (label == "*" ? 0.5 : 0.4), weight: .regular))
+                    .foregroundStyle(.primary)
+                Text(letters ?? " ")
+                    .font(.system(size: 9, weight: .medium))
+                    .tracking(1.5)
+                    .foregroundStyle(.secondary)
+                    .opacity(letters == nil ? 0 : 1)
             }
             .frame(width: size, height: size)
-            .background(.quaternary.opacity(0.55), in: Circle())
+            .background(Circle().fill(Color.primary.opacity(hover ? 0.14 : 0.08)))
             .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressScaleStyle())
+        .onHover { hover = $0 }
     }
 }
 
@@ -219,20 +231,43 @@ struct CallActionButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 22, weight: .semibold))
+            Group {
                 if let title, !title.isEmpty {
-                    Text(title).font(.caption2).lineLimit(1)
+                    HStack(spacing: 6) {
+                        Image(systemName: systemImage).font(.system(size: 16, weight: .semibold))
+                        Text(title).font(.callout.weight(.medium)).lineLimit(1)
+                    }
+                    .padding(.horizontal, 18)
+                    .frame(height: 48)
+                    .background(color, in: Capsule())
+                } else {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 24, weight: .semibold))
+                        .frame(width: MacTheme.callButton, height: MacTheme.callButton)
+                        .background(color, in: Circle())
                 }
             }
             .foregroundStyle(.white)
-            .frame(width: title == nil ? MacTheme.callButton : 88, height: MacTheme.callButton)
-            .background(enabled ? color : Color.gray.opacity(0.45), in: Circle())
-            .contentShape(Circle())
+            .opacity(enabled ? 1 : 0.35)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressScaleStyle())
         .disabled(!enabled)
+    }
+}
+
+/// Native sidebar vibrancy behind SwiftUI content.
+struct VisualEffectBackground: NSViewRepresentable {
+    var material: NSVisualEffectView.Material = .sidebar
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let v = NSVisualEffectView()
+        v.material = material
+        v.blendingMode = .behindWindow
+        v.state = .followsWindowActiveState
+        return v
+    }
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = material
     }
 }
 

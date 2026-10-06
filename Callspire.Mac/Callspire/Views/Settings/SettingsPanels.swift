@@ -1,27 +1,69 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Connection (Form)
+// MARK: - Form building blocks
+
+/// Label on the left, visible bordered field on the right (with a placeholder so empty fields are obvious).
+struct FormField: View {
+    let title: String
+    @Binding var text: String
+    var prompt: String = ""
+    var secure: Bool = false
+    var width: CGFloat = 280
+
+    var body: some View {
+        LabeledContent(title) {
+            Group {
+                if secure {
+                    SecureField("", text: $text, prompt: Text(prompt))
+                } else {
+                    TextField("", text: $text, prompt: Text(prompt))
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .labelsHidden()
+            .frame(width: width)
+        }
+    }
+}
+
+/// Section header with an optional status pill on the trailing edge.
+struct SectionTitle: View {
+    let title: String
+    var status: (text: String, tone: StatusDot.Tone)? = nil
+    var body: some View {
+        HStack {
+            Text(title)
+            Spacer()
+            if let status { StatusPill(text: status.text, tone: status.tone) }
+        }
+    }
+}
+
+// MARK: - Connection
 
 struct ConnectionPanel: View {
     @EnvironmentObject var state: AppState
     @Binding var draft: SettingsDto
     let info: SettingsDto
     let busy: Bool
-    let onSave: (String) -> Void
     let onTest: (Bool) -> Void
     @State private var showSecondary = false
 
     var body: some View {
         Form {
-            connectionSection(isSecondary: false)
+            lineSections(isSecondary: false)
+
             if showSecondary || hasSecondary {
-                connectionSection(isSecondary: true)
+                lineSections(isSecondary: true)
             } else {
                 Section {
                     Button { showSecondary = true } label: {
-                        Label("Add Additional Connection", systemImage: "plus.circle")
+                        Label("Add a Second Line…", systemImage: "plus.circle")
                     }
+                    .buttonStyle(.link)
+                } footer: {
+                    Text("Use a second SIP or WebRTC account, for example a separate trunk.")
                 }
             }
         }
@@ -34,77 +76,98 @@ struct ConnectionPanel: View {
     }
 
     @ViewBuilder
-    private func connectionSection(isSecondary: Bool) -> some View {
+    private func lineSections(isSecondary: Bool) -> some View {
         let status = isSecondary ? state.main.secondary : state.main.main
-        let isWebRtc = (isSecondary ? draft.secondaryTransport : draft.mainTransport).lowercased() == "webrtc"
-        let turnUri = isSecondary ? draft.secondaryTurnUri : draft.mainTurnUri
+        let transport = isSecondary ? $draft.secondaryTransport : $draft.mainTransport
+        let isWebRtc = transport.wrappedValue.lowercased() == "webrtc"
 
         Section {
-            TextField("Name", text: isSecondary ? $draft.secondaryName : $draft.mainName)
-            Picker("Transport", selection: isSecondary ? $draft.secondaryTransport : $draft.mainTransport) {
-                ForEach(info.transportOptions.isEmpty ? [Choice(key: "Sip", label: "SIP"), Choice(key: "WebRtc", label: "WebRTC")] : info.transportOptions) {
-                    Text($0.key.lowercased() == "webrtc" ? "WebRTC" : "SIP").tag($0.key)
+            FormField(title: "Display name", text: isSecondary ? $draft.secondaryName : $draft.mainName,
+                      prompt: isSecondary ? "Second line" : "Office")
+            LabeledContent("Transport") {
+                Picker("", selection: transport) {
+                    Text("SIP").tag(transportKey("sip"))
+                    Text("WebRTC").tag(transportKey("webrtc"))
                 }
-            }
-            .pickerStyle(.segmented)
-
-            if isWebRtc {
-                TextField("WebSocket URI", text: isSecondary ? $draft.secondaryWsUri : $draft.mainWsUri)
-                TextField("Username", text: isSecondary ? $draft.secondaryWebRtcUsername : $draft.mainWebRtcUsername)
-                SecureField("Password", text: isSecondary ? $draft.secondaryWebRtcPassword : $draft.mainWebRtcPassword)
-            } else {
-                TextField("SIP Server", text: isSecondary ? $draft.secondaryServer : $draft.mainServer)
-                if isSecondary {
-                    TextField("RTP Server (optional)", text: $draft.secondaryRtpServer)
-                } else {
-                    TextField("Port", text: $draft.mainPort)
-                }
-                TextField("Username", text: isSecondary ? $draft.secondaryUsername : $draft.mainUsername)
-                SecureField("Password", text: isSecondary ? $draft.secondaryPassword : $draft.mainPassword)
-                Toggle("Use TLS", isOn: isSecondary ? $draft.secondaryUseTls : $draft.mainUseTls)
-                Toggle("Use SRTP", isOn: isSecondary ? $draft.secondaryUseSrtp : $draft.mainUseSrtp)
-            }
-
-            HStack {
-                StatusPill(
-                    text: status.text.isEmpty ? (status.isOnline ? "Connected" : "Not connected") : status.text,
-                    tone: status.isError ? .error : (status.isOnline ? .online : .offline)
-                )
-                Spacer()
-                Button("Test Connection") { onTest(isSecondary) }.disabled(busy)
-            }
-
-            Button {
-                onSave("Settings saved. Reconnecting…")
-            } label: {
-                if busy { ProgressView().controlSize(.small) }
-                Text("Save and Connect")
-            }
-            .disabled(busy)
-
-            if isSecondary {
-                Button("Remove Secondary Connection", role: .destructive) { clearSecondary() }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 180)
             }
         } header: {
-            Text(isSecondary ? "Secondary Connection" : "Primary Connection")
-        } footer: {
-            Text("Pick a transport, then enter credentials. The same username/password are used for SIP and WebRTC registration.")
+            SectionTitle(title: isSecondary ? "Second Line" : "Main Line", status: lineStatus(status))
         }
 
-        Section("TURN") {
-            TextField("TURN URI", text: isSecondary ? $draft.secondaryTurnUri : $draft.mainTurnUri)
-            TextField("Username", text: isSecondary ? $draft.secondaryTurnUsername : $draft.mainTurnUsername)
-            SecureField("Password", text: isSecondary ? $draft.secondaryTurnPassword : $draft.mainTurnPassword)
-            StatusPill(text: turnStatus(turnUri), tone: turnUri.isEmpty ? .offline : .online)
+        Section {
+            if isWebRtc {
+                FormField(title: "WebSocket URI", text: isSecondary ? $draft.secondaryWsUri : $draft.mainWsUri,
+                          prompt: "wss://pbx.example.com/webrtc")
+                FormField(title: "Username", text: isSecondary ? $draft.secondaryWebRtcUsername : $draft.mainWebRtcUsername,
+                          prompt: "Extension or login")
+                FormField(title: "Password", text: isSecondary ? $draft.secondaryWebRtcPassword : $draft.mainWebRtcPassword,
+                          prompt: "Required", secure: true)
+            } else {
+                FormField(title: "Server", text: isSecondary ? $draft.secondaryServer : $draft.mainServer,
+                          prompt: "pbx.example.com")
+                if isSecondary {
+                    FormField(title: "RTP server", text: $draft.secondaryRtpServer, prompt: "Optional")
+                } else {
+                    FormField(title: "Port", text: $draft.mainPort, prompt: "5060", width: 90)
+                }
+                FormField(title: "Username", text: isSecondary ? $draft.secondaryUsername : $draft.mainUsername,
+                          prompt: "Extension or login")
+                FormField(title: "Password", text: isSecondary ? $draft.secondaryPassword : $draft.mainPassword,
+                          prompt: "Required", secure: true)
+            }
+            LabeledContent("Reachability") {
+                Button("Test Connection") { onTest(isSecondary) }
+                    .disabled(busy)
+            }
+        } header: {
+            Text("Account")
+        } footer: {
+            Text(isWebRtc
+                 ? "WebRTC registers through the PBX WebSocket endpoint. Changes take effect after Save."
+                 : "Standard SIP registration over UDP/TCP or TLS. Changes take effect after Save.")
+        }
+
+        if isWebRtc {
+            Section {
+                FormField(title: "TURN URI", text: isSecondary ? $draft.secondaryTurnUri : $draft.mainTurnUri,
+                          prompt: "turn:turn.example.com:3478")
+                FormField(title: "Username", text: isSecondary ? $draft.secondaryTurnUsername : $draft.mainTurnUsername,
+                          prompt: "Optional")
+                FormField(title: "Password", text: isSecondary ? $draft.secondaryTurnPassword : $draft.mainTurnPassword,
+                          prompt: "Optional", secure: true)
+            } header: {
+                Text("TURN Server (Optional)")
+            } footer: {
+                Text("Only needed when calls connect but there is no audio behind strict NAT.")
+            }
+        } else {
+            Section("Security") {
+                Toggle("Encrypt signalling (TLS)", isOn: isSecondary ? $draft.secondaryUseTls : $draft.mainUseTls)
+                Toggle("Encrypt audio (SRTP)", isOn: isSecondary ? $draft.secondaryUseSrtp : $draft.mainUseSrtp)
+            }
+        }
+
+        if isSecondary {
+            Section {
+                Button("Remove Second Line", role: .destructive) { clearSecondary() }
+            } footer: {
+                Text("Removal is applied when you click Save.")
+            }
         }
     }
 
-    private func turnStatus(_ uri: String) -> String {
-        if uri.isEmpty { return "Not configured" }
-        if let q = uri.range(of: "transport=", options: .caseInsensitive) {
-            return "Configured (\(uri[q.upperBound...].prefix(3).uppercased()))"
-        }
-        return "Configured (UDP)"
+    private func lineStatus(_ c: ConnectionStatus) -> (text: String, tone: StatusDot.Tone)? {
+        let text = c.text.isEmpty ? (c.isOnline ? "Connected" : "Not connected") : c.text
+        let tone: StatusDot.Tone = c.isError ? .error : (c.isOnline ? .online : .offline)
+        return (text, tone)
+    }
+
+    /// Server-side keys are "Sip" / "WebRtc"; keep whatever casing the sidecar reports.
+    private func transportKey(_ kind: String) -> String {
+        info.transportOptions.first(where: { $0.key.lowercased() == kind })?.key ?? (kind == "sip" ? "Sip" : "WebRtc")
     }
 
     private func clearSecondary() {
@@ -114,7 +177,6 @@ struct ConnectionPanel: View {
         draft.secondaryTurnUri = ""; draft.secondaryTurnUsername = ""; draft.secondaryTurnPassword = ""
         draft.secondaryUseTls = false; draft.secondaryUseSrtp = false
         showSecondary = false
-        onSave("Secondary connection removed.")
     }
 }
 
@@ -124,8 +186,6 @@ struct AudioPanel: View {
     @EnvironmentObject var state: AppState
     @Binding var draft: SettingsDto
     let info: SettingsDto
-    let busy: Bool
-    let onSave: (String) -> Void
     @State private var previewing = false
 
     var body: some View {
@@ -139,59 +199,62 @@ struct AudioPanel: View {
                     Text("System Default").tag(-1)
                     ForEach(info.speakers.filter { $0.index >= 0 }) { Text($0.name).tag($0.index) }
                 }
-                Toggle("Acoustic Echo Cancellation (SIP)", isOn: $draft.echoCancellation)
-                Button {
-                    Task { _ = await state.refreshAudioDevices() }
-                } label: {
-                    Label("Refresh Devices", systemImage: "arrow.clockwise")
-                }
+                Toggle("Echo cancellation", isOn: $draft.echoCancellation)
             } header: {
-                Text("Devices")
+                HStack {
+                    Text("Devices")
+                    Spacer()
+                    Button { Task { _ = await state.refreshAudioDevices() } } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                }
             } footer: {
-                if !info.audioBackendInfo.isEmpty { Text(info.audioBackendInfo) }
+                Text(info.audioBackendInfo.isEmpty ? "Echo cancellation applies to SIP calls." : info.audioBackendInfo)
             }
 
-            Section("Codec") {
-                Picker("Audio Codec", selection: $draft.sipCodec) {
+            Section {
+                Picker("Codec", selection: $draft.sipCodec) {
                     ForEach(info.sipCodecOptions) { Text($0.label).tag($0.key) }
                 }
-                Picker("Sample Rate", selection: $draft.sipSampleRate) {
+                Picker("Sample rate", selection: $draft.sipSampleRate) {
                     ForEach(info.sipSampleRateOptions, id: \.self) { Text(sampleRateLabel($0)).tag($0) }
                 }
                 if draft.sipCodec.lowercased() == "opus" {
-                    TextField("Opus Bitrate", value: $draft.sipOpusBitrate, format: .number)
+                    LabeledContent("Opus bitrate") {
+                        TextField("", value: $draft.sipOpusBitrate, format: .number, prompt: Text("64000"))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                    }
                 }
+            } header: {
+                Text("Call Quality")
+            } footer: {
+                Text("G.711 works with every PBX. Choose Opus or G.722 only if your PBX supports it.")
             }
 
             Section("Ringtone") {
                 Picker("Sound", selection: $draft.ringtoneWav) {
-                    Text("WAV File").tag(true)
-                    Text("Generated Tone").tag(false)
+                    Text("Ringtone file").tag(true)
+                    Text("Classic tone").tag(false)
                 }
-                HStack {
-                    Text("Volume")
-                    Slider(value: $draft.ringtoneVolume, in: 0...1, step: 0.05)
-                    Text("\(Int((draft.ringtoneVolume * 100).rounded()))%")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
-                }
-                HStack {
-                    Button(previewing ? "Stop Preview" : "Preview") {
-                        if previewing { state.stopRingtone() } else { state.previewRingtone(draft: draft) }
-                        previewing.toggle()
+                LabeledContent("Volume") {
+                    HStack {
+                        Image(systemName: "speaker.fill").foregroundStyle(.secondary)
+                        Slider(value: $draft.ringtoneVolume, in: 0...1, step: 0.05)
+                            .frame(width: 180)
+                        Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
                     }
                 }
-            }
-
-            Section {
-                Button {
-                    onSave("Audio settings saved.")
-                } label: {
-                    if busy { ProgressView().controlSize(.small) }
-                    Text("Save Audio Settings")
+                LabeledContent("Preview") {
+                    Button {
+                        if previewing { state.stopRingtone() } else { state.previewRingtone(draft: draft) }
+                        previewing.toggle()
+                    } label: {
+                        Label(previewing ? "Stop" : "Play", systemImage: previewing ? "stop.fill" : "play.fill")
+                    }
                 }
-                .disabled(busy)
             }
         }
         .formStyle(.grouped)
@@ -200,9 +263,9 @@ struct AudioPanel: View {
 
     private func sampleRateLabel(_ hz: Int) -> String {
         switch hz {
-        case 8000: return "8000 Hz (Standard)"
-        case 16000: return "16000 Hz (Wideband)"
-        case 48000: return "48000 Hz (Opus)"
+        case 8000: return "8 kHz (Standard)"
+        case 16000: return "16 kHz (Wideband)"
+        case 48000: return "48 kHz (Opus)"
         default: return "\(hz) Hz"
         }
     }
@@ -213,27 +276,18 @@ struct AudioPanel: View {
 struct GeneralPanel: View {
     @EnvironmentObject var state: AppState
     @Binding var draft: SettingsDto
-    let busy: Bool
-    let onSave: (String) -> Void
 
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: Binding(
-                    get: { draft.callRecording },
-                    set: { draft.callRecording = $0; onSave($0 ? "Call recording enabled." : "Call recording disabled.") }
-                )) {
-                    Text("Call Recording")
+                Toggle("Record calls automatically", isOn: $draft.callRecording)
+                LabeledContent("Recordings") {
+                    Button("Show in Finder") { state.openRecordingsFolder() }
                 }
+            } header: {
+                Text("Call Recording")
             } footer: {
-                Text("Record WebRTC calls automatically. Available in WebRTC mode only.")
-            }
-            Section {
-                Button {
-                    state.openRecordingsFolder()
-                } label: {
-                    Label("Open Recordings Folder", systemImage: "folder")
-                }
+                Text("Available for WebRTC calls. Recordings are saved on this Mac.")
             }
         }
         .formStyle(.grouped)
@@ -243,39 +297,27 @@ struct GeneralPanel: View {
 // MARK: - Appearance
 
 struct AppearancePanel: View {
-    @EnvironmentObject var state: AppState
     @Binding var draft: SettingsDto
     let info: SettingsDto
-    let busy: Bool
-    let onSave: (String) -> Void
 
     var body: some View {
         Form {
             Section {
-                Picker("Theme", selection: $draft.theme) {
-                    ForEach(info.themeOptions) { Text(themeLabel($0)).tag($0.key) }
+                LabeledContent("Appearance") {
+                    Picker("", selection: $draft.theme) {
+                        Text("System").tag("system")
+                        Text("Light").tag("light")
+                        Text("Dark").tag("dark")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 240)
                 }
             } footer: {
-                Text("Choose how Callspire looks. System follows Appearance in System Settings.")
-            }
-            Section {
-                Button("Apply Theme") {
-                    state.setTheme(draft.theme)
-                    onSave("Theme applied.")
-                }
-                .disabled(busy)
+                Text("Applied immediately. System follows the setting in macOS System Settings.")
             }
         }
         .formStyle(.grouped)
-    }
-
-    private func themeLabel(_ c: Choice) -> String {
-        switch c.key.lowercased() {
-        case "system": return "Use System"
-        case "dark": return "Dark"
-        case "light": return "Light"
-        default: return c.label
-        }
     }
 }
 
@@ -285,27 +327,33 @@ struct AdvancedPanel: View {
     @EnvironmentObject var state: AppState
     @Binding var draft: SettingsDto
     let info: SettingsDto
-    let busy: Bool
-    let onSave: (String) -> Void
 
     var body: some View {
         Form {
             Section {
-                Text("No advanced settings yet.")
-                    .font(.body.weight(.medium))
-                Text("Per-connection options (SIP / WebRTC, WebSocket URI, TURN) live under Connection.")
-                    .foregroundStyle(.secondary)
+                Toggle("Detailed WebRTC logging", isOn: $draft.webRtcDebug)
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("Turn on when support asks for logs. Leave off for everyday use.")
             }
 
-            Section("Diagnostics") {
-                Toggle("Verbose WebRTC Logging", isOn: Binding(
-                    get: { draft.webRtcDebug },
-                    set: { draft.webRtcDebug = $0; onSave("Diagnostics updated.") }
-                ))
-                Button { state.openLogsFolder() } label: { Label("Open Logs Folder", systemImage: "folder") }
-                Button { state.openLogs() } label: { Label("Show Live Log", systemImage: "text.alignleft") }
+            Section("Logs") {
+                LabeledContent("Live log") {
+                    Button("Open Log Window") { state.openLogs() }
+                }
+                LabeledContent("Log files") {
+                    Button("Show in Finder") { state.openLogsFolder() }
+                }
                 if !info.settingsFile.isEmpty {
-                    LabeledContent("Settings File", value: info.settingsFile)
+                    LabeledContent("Settings file") {
+                        Text(info.settingsFile)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
                 }
             }
         }
@@ -319,8 +367,6 @@ struct IntegrationsPanel: View {
     @EnvironmentObject var state: AppState
     @Binding var draft: SettingsDto
     let info: SettingsDto
-    let busy: Bool
-    let onSave: (String) -> Void
     let onMessage: (SettingsView.StatusMessage) -> Void
     @State private var authorizing = false
     @State private var gatewayBusy = false
@@ -329,123 +375,147 @@ struct IntegrationsPanel: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle("Kommo Integration", isOn: $draft.kommoEnabled)
-            } footer: {
-                Text("Automatically attach call logs and recordings to leads in Kommo.")
-            }
-
-            if draft.kommoEnabled {
-                Section("Source") {
-                    Picker("Upload Source", selection: $draft.kommoSource) {
-                        Text("PBX Gateway").tag("gateway")
-                        Text("Local (This Mac)").tag("local")
-                    }
-                    .pickerStyle(.segmented)
-                }
-
-                if !isGatewaySource {
-                    Section("Local Kommo") {
-                        TextField("Subdomain", text: $draft.kommoSubdomain)
-                        Picker("Authentication", selection: $draft.kommoAuthMode) {
-                            ForEach(info.kommoAuthOptions) { Text($0.label).tag($0.key) }
-                        }
-                        .pickerStyle(.segmented)
-                        if draft.kommoAuthMode == "oauth" {
-                            TextField("Client ID", text: $draft.kommoClientId)
-                            SecureField("Client Secret", text: $draft.kommoClientSecret)
-                            TextField("Redirect URI", text: $draft.kommoRedirectUri)
-                            HStack {
-                                Button {
-                                    authorizing = true
-                                    Task {
-                                        let err = await state.kommoAuthorize(draft: draft)
-                                        authorizing = false
-                                        onMessage(.init(text: err ?? "Kommo authorized.", isError: err != nil))
-                                    }
-                                } label: {
-                                    if authorizing { ProgressView().controlSize(.small) }
-                                    Text("Authorize with Kommo")
-                                }
-                                .disabled(authorizing || draft.kommoClientId.isEmpty || draft.kommoSubdomain.isEmpty)
-                                StatusPill(
-                                    text: info.kommoOAuth.statusText,
-                                    tone: info.kommoOAuth.isAuthorized ? .online : .offline
-                                )
-                            }
-                        } else {
-                            SecureField("Long-Lived Token", text: $draft.kommoToken)
-                        }
-                    }
-                }
-
-                Section {
-                    Toggle("Upload Call Recordings", isOn: $draft.kommoRecordingUpload)
-                    Toggle("Manual Lead Selection", isOn: $draft.kommoLeadSelection)
-                }
-
-                Section {
-                    Button {
-                        onSave("Kommo settings saved.")
-                    } label: {
-                        if busy { ProgressView().controlSize(.small) }
-                        Text("Save Kommo Settings")
-                    }
-                    .disabled(busy)
-                    if state.main.amoCrmConfigured {
-                        StatusPill(
-                            text: state.main.amoCrmStatusText,
-                            tone: state.main.amoCrmOnline ? .online : .warning
-                        )
-                    }
-                }
-            }
-
-            Section {
-                Toggle("Callspire PBX Gateway", isOn: $draft.gatewayEnabled)
-                TextField("Service URL", text: $draft.gatewayUrl)
-                TextField("Extension", text: $draft.gatewayExtension)
-                HStack {
-                    Button {
-                        gatewayBusy = true
-                        Task {
-                            let err = await state.gatewayAuthorize(url: draft.gatewayUrl, ext: draft.gatewayExtension)
-                            gatewayBusy = false
-                            onMessage(.init(
-                                text: err ?? "Browser opened. Sign in and the token returns via callspire://cdr-auth.",
-                                isError: err != nil
-                            ))
-                        }
-                    } label: {
-                        if gatewayBusy { ProgressView().controlSize(.small) }
-                        Text("Authorize")
-                    }
-                    .disabled(gatewayBusy || draft.gatewayUrl.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                    Button("Clear Settings") {
-                        Task {
-                            await state.gatewayClear()
-                            onMessage(.init(text: "PBX Gateway settings cleared.", isError: false))
-                        }
-                    }
-                    .disabled(gatewayBusy)
-
-                    Button("Save") { onSave("Gateway settings saved.") }
-                        .disabled(busy)
-                }
-                StatusPill(
-                    text: state.main.gatewayStatusText.isEmpty
-                        ? (state.main.gatewayConnected ? "Connected" : "Not connected")
-                        : state.main.gatewayStatusText,
-                    tone: state.main.gatewayConnected ? .online : (draft.gatewayEnabled ? .warning : .offline)
-                )
-            } header: {
-                Text("PBX Gateway")
-            } footer: {
-                Text("Call history, recordings, Caller ID and originate — authenticated API to MikoPBX through the gateway.")
-            }
+            gatewaySection
+            kommoSections
         }
         .formStyle(.grouped)
+    }
+
+    // MARK: PBX Gateway
+
+    private var gatewayStatus: (text: String, tone: StatusDot.Tone)? {
+        guard draft.gatewayEnabled else { return nil }
+        let text = state.main.gatewayStatusText.isEmpty
+            ? (state.main.gatewayConnected ? "Connected" : "Not connected")
+            : state.main.gatewayStatusText
+        return (text, state.main.gatewayConnected ? .online : (draft.gatewayEnabled ? .warning : .offline))
+    }
+
+    @ViewBuilder
+    private var gatewaySection: some View {
+        Section {
+            Toggle("Use Callspire PBX Gateway", isOn: $draft.gatewayEnabled)
+            if draft.gatewayEnabled {
+                FormField(title: "Service URL", text: $draft.gatewayUrl, prompt: "https://pbx.example.com/tool")
+                FormField(title: "Extension", text: $draft.gatewayExtension, prompt: "204", width: 120)
+                LabeledContent("Sign in") {
+                    HStack {
+                        Button {
+                            gatewayBusy = true
+                            Task {
+                                let err = await state.gatewayAuthorize(url: draft.gatewayUrl, ext: draft.gatewayExtension)
+                                gatewayBusy = false
+                                onMessage(.init(text: err ?? "Finish signing in in your browser — Callspire connects automatically.",
+                                                isError: err != nil))
+                            }
+                        } label: {
+                            if gatewayBusy { ProgressView().controlSize(.small) }
+                            Text(state.main.gatewayConnected ? "Re-authorize…" : "Authorize in Browser…")
+                        }
+                        .disabled(gatewayBusy || draft.gatewayUrl.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                        Button("Disconnect", role: .destructive) {
+                            Task {
+                                await state.gatewayClear()
+                                onMessage(.init(text: "PBX Gateway disconnected.", isError: false))
+                            }
+                        }
+                        .disabled(gatewayBusy || !state.main.gatewayConnected)
+                    }
+                }
+            }
+        } header: {
+            SectionTitle(title: "PBX Gateway", status: gatewayStatus)
+        } footer: {
+            Text("Gives Callspire call history, recordings, outbound Caller ID and click-to-call from your MikoPBX.")
+        }
+    }
+
+    // MARK: Kommo
+
+    private var kommoStatus: (text: String, tone: StatusDot.Tone)? {
+        guard draft.kommoEnabled && state.main.amoCrmConfigured else { return nil }
+        let m = state.main
+        let text = m.amoCrmStatusText.isEmpty ? (m.amoCrmOnline ? "Connected" : "Offline") : m.amoCrmStatusText
+        return (text, m.amoCrmOnline ? .online : .warning)
+    }
+
+    @ViewBuilder
+    private var kommoSections: some View {
+        Section {
+            Toggle("Send calls to Kommo", isOn: $draft.kommoEnabled)
+            if draft.kommoEnabled {
+                LabeledContent("Connect via") {
+                    Picker("", selection: $draft.kommoSource) {
+                        Text("PBX Gateway").tag("gateway")
+                        Text("This Mac").tag("local")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 220)
+                }
+            }
+        } header: {
+            SectionTitle(title: "Kommo CRM", status: kommoStatus)
+        } footer: {
+            if draft.kommoEnabled {
+                Text(isGatewaySource
+                     ? "Recommended. The PBX Gateway matches calls and uploads recordings — nothing else to set up here."
+                     : "This Mac talks to Kommo directly and uploads its own recordings.")
+            } else {
+                Text("Attach call notes and recordings to Kommo contacts and leads.")
+            }
+        }
+
+        if draft.kommoEnabled && !isGatewaySource {
+            Section {
+                FormField(title: "Account", text: $draft.kommoSubdomain, prompt: "yourcompany")
+                LabeledContent("Sign-in method") {
+                    Picker("", selection: $draft.kommoAuthMode) {
+                        ForEach(info.kommoAuthOptions) { Text($0.label).tag($0.key) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 260)
+                }
+                if draft.kommoAuthMode == "oauth" {
+                    FormField(title: "Client ID", text: $draft.kommoClientId, prompt: "From Kommo integration")
+                    FormField(title: "Client secret", text: $draft.kommoClientSecret, prompt: "Required", secure: true)
+                    FormField(title: "Redirect URI", text: $draft.kommoRedirectUri, prompt: "https://…")
+                    LabeledContent("Authorization") {
+                        HStack {
+                            StatusPill(text: info.kommoOAuth.statusText,
+                                       tone: info.kommoOAuth.isAuthorized ? .online : .offline)
+                            Button {
+                                authorizing = true
+                                Task {
+                                    let err = await state.kommoAuthorize(draft: draft)
+                                    authorizing = false
+                                    onMessage(.init(text: err ?? "Kommo authorized.", isError: err != nil))
+                                }
+                            } label: {
+                                if authorizing { ProgressView().controlSize(.small) }
+                                Text("Authorize…")
+                            }
+                            .disabled(authorizing || draft.kommoClientId.isEmpty || draft.kommoSubdomain.isEmpty)
+                        }
+                    }
+                } else {
+                    FormField(title: "Access token", text: $draft.kommoToken, prompt: "Long-lived token", secure: true)
+                }
+            } header: {
+                Text("Kommo Account")
+            } footer: {
+                Text("Account is the part before .kommo.com in your Kommo address.")
+            }
+        }
+
+        if draft.kommoEnabled {
+            Section("After Each Call") {
+                Toggle("Upload call recordings", isOn: $draft.kommoRecordingUpload)
+                Toggle("Ask which lead to attach the call to", isOn: $draft.kommoLeadSelection)
+            }
+        }
     }
 }
 
@@ -464,41 +534,41 @@ struct AboutPanel: View {
                     Image(nsImage: NSApp.applicationIconImage)
                         .resizable()
                         .frame(width: 56, height: 56)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Callspire Softphone").font(.title3.weight(.semibold))
-                        Text(info.versionText.isEmpty
-                             ? "Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")"
-                             : info.versionText)
-                            .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Callspire").font(.title3.weight(.semibold))
+                        Text(versionText).foregroundStyle(.secondary)
                     }
                 }
-                Text("A modern softphone for macOS.")
-                    .foregroundStyle(.secondary)
+                .padding(.vertical, 4)
             }
 
-            Section("Updates") {
-                Text("Updates are checked automatically once per day when the application starts.")
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Button {
-                        checking = true
-                        Task { result = await state.checkForUpdates(); checking = false }
-                    } label: {
-                        if checking { ProgressView().controlSize(.small) }
-                        Text("Check for Updates")
-                    }
-                    .disabled(checking)
-                    if result?.available ?? info.updateAvailable {
-                        Button("Download") { state.openUpdateUrl() }
+            Section {
+                LabeledContent("Software update") {
+                    HStack {
+                        if result?.available ?? info.updateAvailable {
+                            Button("Download") { state.openUpdateUrl() }
+                                .buttonStyle(.borderedProminent)
+                        }
+                        Button {
+                            checking = true
+                            Task { result = await state.checkForUpdates(); checking = false }
+                        } label: {
+                            if checking { ProgressView().controlSize(.small) }
+                            Text("Check Now")
+                        }
+                        .disabled(checking)
                     }
                 }
+            } footer: {
                 let status = result?.status ?? info.updateStatus
-                if !status.isEmpty {
-                    Text(status).font(.caption).foregroundStyle(.secondary)
-                }
+                Text(status.isEmpty ? "Callspire checks for updates once a day at launch." : status)
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var versionText: String {
+        if !info.versionText.isEmpty { return info.versionText }
+        return "Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "")"
     }
 }

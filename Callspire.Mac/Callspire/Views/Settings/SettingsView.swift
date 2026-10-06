@@ -2,10 +2,10 @@ import SwiftUI
 import AppKit
 import Combine
 
-/// Settings window — macOS System Settings style (sidebar + Form).
+/// Settings window — System Settings layout: coloured sidebar icons, pane header,
+/// grouped form, and a single Save / Revert bar for every editable pane.
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
-    @Environment(\.dismiss) private var dismiss
 
     @State private var panel: AppState.SettingsPanel = .connection
     @State private var draft = SettingsDto()
@@ -21,47 +21,27 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
-                Label(p.title, systemImage: p.symbol).tag(p)
+                Label {
+                    Text(p.title)
+                } icon: {
+                    SettingsIcon(symbol: p.filledSymbol, tint: p.tint)
+                }
+                .tag(p)
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
-            .safeAreaInset(edge: .bottom) {
-                Button("Close", role: .cancel) { closeWindow() }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-            }
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
         } detail: {
-            Group {
+            VStack(spacing: 0) {
                 if !loaded {
                     ProgressView("Loading settings…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    switch panel {
-                    case .connection: ConnectionPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onTest: test)
-                    case .audio: AudioPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
-                    case .general: GeneralPanel(draft: $draft, busy: busy, onSave: save)
-                    case .appearance: AppearancePanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
-                    case .advanced: AdvancedPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
-                    case .integrations: IntegrationsPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onMessage: { message = $0 })
-                    case .about: AboutPanel(info: state.settings)
-                    }
+                    PaneHeader(panel: panel)
+                    pane
                 }
-            }
-            .safeAreaInset(edge: .bottom) {
-                if let message {
-                    HStack(spacing: 8) {
-                        Image(systemName: message.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(message.isError ? Color.red : Color.green)
-                        Text(message.text).font(.callout).lineLimit(2)
-                        Spacer()
-                        Button { self.message = nil } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(10)
-                    .background(.bar)
+                if loaded && panel != .about {
+                    Divider()
+                    saveBar
                 }
             }
             .navigationTitle(panel.title)
@@ -70,6 +50,12 @@ struct SettingsView: View {
         .onChange(of: state.settingsOpenRequest) { _ in
             panel = state.settingsInitialPanel
             Task { await reload() }
+        }
+        .onChange(of: draft.theme) { theme in
+            // Theme previews immediately and is persisted by setTheme — it never makes the form dirty.
+            guard loaded, theme != baseline.theme else { return }
+            baseline.theme = theme
+            state.setTheme(theme)
         }
         .onReceive(state.$settings.dropFirst()) { fresh in
             guard loaded else { return }
@@ -91,6 +77,50 @@ struct SettingsView: View {
         .onAppear { panel = state.settingsInitialPanel }
     }
 
+    @ViewBuilder
+    private var pane: some View {
+        switch panel {
+        case .connection: ConnectionPanel(draft: $draft, info: state.settings, busy: busy, onTest: test)
+        case .audio: AudioPanel(draft: $draft, info: state.settings)
+        case .general: GeneralPanel(draft: $draft)
+        case .appearance: AppearancePanel(draft: $draft, info: state.settings)
+        case .advanced: AdvancedPanel(draft: $draft, info: state.settings)
+        case .integrations: IntegrationsPanel(draft: $draft, info: state.settings, onMessage: { message = $0 })
+        case .about: AboutPanel(info: state.settings)
+        }
+    }
+
+    private var saveBar: some View {
+        HStack(spacing: 10) {
+            if let message {
+                Image(systemName: message.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                    .foregroundStyle(message.isError ? Color.red : Color.green)
+                Text(message.text)
+                    .font(.callout)
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+            } else if isDirty {
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 7))
+                    .foregroundStyle(.orange)
+                Text("Unsaved changes").font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if busy { ProgressView().controlSize(.small) }
+            Button("Revert") { revert() }
+                .disabled(!isDirty || busy)
+            Button("Save") { save() }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("s", modifiers: .command)
+                .disabled(!isDirty || busy)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(.bar)
+    }
+
+    // MARK: - Actions
+
     private func reload() async {
         if let s = await state.loadSettings() {
             draft = s
@@ -99,16 +129,23 @@ struct SettingsView: View {
         }
     }
 
-    private func save(_ successText: String) {
+    private func revert() {
+        draft = state.settings
+        baseline = state.settings.asFields()
+        message = nil
+    }
+
+    private func save() {
         busy = true
         message = nil
+        let reconnects = panel == .connection
         Task {
             let err = await state.saveSettings(draft)
             busy = false
             if let err {
                 message = StatusMessage(text: err, isError: true)
             } else {
-                message = StatusMessage(text: successText, isError: false)
+                message = StatusMessage(text: reconnects ? "Saved. Reconnecting…" : "Settings saved.", isError: false)
                 if let s = await state.loadSettings() { draft = s; baseline = s.asFields() }
             }
         }
@@ -116,23 +153,80 @@ struct SettingsView: View {
 
     private func test(secondary: Bool) {
         busy = true
+        message = nil
         Task {
             let r = await state.testConnection(secondary: secondary, draft: draft)
             busy = false
             if let r { message = StatusMessage(text: r.statusText, isError: r.isError) }
         }
     }
+}
 
-    private func closeWindow() {
-        if isDirty {
-            let alert = NSAlert()
-            alert.messageText = "Discard unsaved changes?"
-            alert.informativeText = "You have edited settings that were not saved."
-            alert.addButton(withTitle: "Discard")
-            alert.addButton(withTitle: "Cancel")
-            if alert.runModal() != .alertFirstButtonReturn { return }
+// MARK: - Sidebar / header chrome
+
+extension AppState.SettingsPanel {
+    var filledSymbol: String {
+        switch self {
+        case .connection: return "network"
+        case .audio: return "speaker.wave.2.fill"
+        case .general: return "gearshape.fill"
+        case .appearance: return "paintbrush.fill"
+        case .advanced: return "slider.horizontal.3"
+        case .integrations: return "link"
+        case .about: return "info.circle.fill"
         }
-        dismiss()
-        NSApp.keyWindow?.close()
+    }
+    var tint: Color {
+        switch self {
+        case .connection: return .blue
+        case .audio: return .pink
+        case .general: return .gray
+        case .appearance: return .indigo
+        case .advanced: return .gray
+        case .integrations: return .green
+        case .about: return .gray
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .connection: return "Your SIP or WebRTC account and an optional second line."
+        case .audio: return "Microphone, speaker, call codec and ringtone."
+        case .general: return "Call recording and where recordings are stored."
+        case .appearance: return "Light, dark or follow the system."
+        case .advanced: return "Diagnostics and log files."
+        case .integrations: return "Kommo CRM and Callspire PBX Gateway."
+        case .about: return "Version and updates."
+        }
+    }
+}
+
+/// System Settings–style white glyph on a coloured rounded square.
+struct SettingsIcon: View {
+    let symbol: String
+    let tint: Color
+    var size: CGFloat = 20
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.55, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.25, style: .continuous))
+    }
+}
+
+private struct PaneHeader: View {
+    let panel: AppState.SettingsPanel
+    var body: some View {
+        HStack(spacing: 14) {
+            SettingsIcon(symbol: panel.filledSymbol, tint: panel.tint, size: 40)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(panel.title).font(.title2.weight(.semibold))
+                Text(panel.subtitle).font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 28)
+        .padding(.top, 18)
+        .padding(.bottom, 4)
     }
 }
