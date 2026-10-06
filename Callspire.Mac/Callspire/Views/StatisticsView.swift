@@ -14,6 +14,10 @@ struct StatisticsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                Text("Call Statistics")
+                    .font(.title3.weight(.semibold))
+                    .padding(.bottom, 4)
+
                 HStack(alignment: .top) {
                     if !st.periodHint.isEmpty {
                         Text(st.periodHint).font(.callout).foregroundStyle(.secondary)

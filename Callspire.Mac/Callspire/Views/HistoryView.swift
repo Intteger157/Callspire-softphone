@@ -6,7 +6,9 @@ struct HistoryView: View {
     @State private var confirmClear = false
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            historyHeader
+            Group {
             if state.main.history.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "clock")
@@ -37,6 +39,8 @@ struct HistoryView: View {
                 }
                 .listStyle(.inset)
             }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let hint = state.main.historyFilterHint, !hint.isEmpty {
@@ -52,18 +56,26 @@ struct HistoryView: View {
                 .background(.bar)
             }
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button("Clear History", role: .destructive) { confirmClear = true }
-                    .disabled(state.main.history.isEmpty)
-            }
-        }
         .confirmationDialog("Clear all call history?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) { state.clearHistory() }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This removes every entry from the local call history. Recordings on disk are kept.")
         }
+    }
+
+    /// In-content header (not window toolbar) — avoids title-bar jump when switching tabs.
+    private var historyHeader: some View {
+        HStack {
+            Text("Call History")
+                .font(.title3.weight(.semibold))
+            Spacer()
+            Button("Clear History", role: .destructive) { confirmClear = true }
+                .disabled(state.main.history.isEmpty)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 }
 

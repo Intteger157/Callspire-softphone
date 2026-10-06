@@ -12,7 +12,8 @@ struct MainView: View {
             detail
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .navigationTitle(detailTitle)
+        // Keep one window title so macOS traffic-light / toolbar layout does not reflow on tab change.
+        .navigationTitle("Callspire")
         .alert(item: $state.alert) { a in
             Alert(title: Text(a.title), message: Text(a.text), dismissButton: .default(Text("OK")))
         }
@@ -101,14 +102,6 @@ struct MainView: View {
         case .dialer: DialerView()
         case .history: HistoryView()
         case .statistics: StatisticsView()
-        }
-    }
-
-    private var detailTitle: String {
-        switch state.selectedNav {
-        case .dialer: return "Callspire"
-        case .history: return "Call History"
-        case .statistics: return "Call Statistics"
         }
     }
 }
