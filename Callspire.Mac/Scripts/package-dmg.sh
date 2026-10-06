@@ -47,6 +47,28 @@ if [[ ! -d "$APP_OUT" ]]; then
   if [[ -n "$FOUND" ]]; then APP_OUT="$FOUND"; fi
 fi
 
+embed_app_icon() {
+  local app="$1"
+  local appiconset="$MAC/Callspire/Assets.xcassets/AppIcon.appiconset"
+  local resources="$app/Contents/Resources"
+  [[ -d "$appiconset" ]] || return 0
+  mkdir -p "$resources"
+  local tmp iconset
+  tmp="$(mktemp -d)"
+  iconset="$tmp/AppIcon.iconset"
+  mkdir -p "$iconset"
+  cp "$appiconset"/*.png "$iconset/" 2>/dev/null || true
+  if [[ -n "$(ls -A "$iconset"/*.png 2>/dev/null)" ]]; then
+    iconutil -c icns -o "$resources/AppIcon.icns" "$iconset"
+    echo "App icon: $resources/AppIcon.icns"
+  fi
+  rm -rf "$tmp"
+}
+
+if [[ -d "$APP_OUT" ]]; then
+  embed_app_icon "$APP_OUT"
+fi
+
 if [[ -d "$APP_OUT" ]]; then
   if [[ -n "$SIGN" ]]; then
     codesign --force --deep --options runtime --entitlements "$MAC/Callspire/Callspire.entitlements" --sign "$SIGN" "$APP_OUT"

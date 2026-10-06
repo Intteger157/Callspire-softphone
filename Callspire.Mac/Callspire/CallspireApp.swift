@@ -7,13 +7,17 @@ struct CallspireApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var state = AppState()
 
+    init() {
+        InstanceBroker.claimPrimaryOrForwardAndExit()
+    }
+
     var body: some Scene {
         Window("Callspire", id: "main") {
             MainView()
                 .environmentObject(state)
                 .frame(minWidth: 900, minHeight: 600)
                 .onAppear {
-                    appDelegate.state = state
+                    appDelegate.attach(state: state)
                     state.start()
                 }
         }
@@ -78,13 +82,38 @@ struct WindowAccessor: NSViewRepresentable {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var state: AppState?
+    private var pendingOpenUrls: [URL] = []
     private var sleepToken: NSObjectProtocol?
     private var wakeToken: NSObjectProtocol?
-    private var lockPath: String { (NSHomeDirectory() as NSString).appendingPathComponent("Library/Application Support/Callspire/app.lock") }
+
+    func attach(state: AppState) {
+        self.state = state
+        let queued = pendingOpenUrls
+        pendingOpenUrls.removeAll()
+        for url in queued { state.handleUrl(url) }
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard !InstanceBroker.isSecondaryForwarder else { return }
+        InstanceBroker.startServer { [weak self] urlString in
+            Task { @MainActor in
+                guard let url = URL(string: urlString) else { return }
+                if let state = self?.state {
+                    state.handleUrl(url)
+                } else {
+                    self?.pendingOpenUrls.append(url)
+                }
+            }
+        }
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if InstanceBroker.isSecondaryForwarder {
+            NSApp.setActivationPolicy(.prohibited)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { exit(0) }
+            return
+        }
         NSApp.setActivationPolicy(.regular)
-        acquireSingleInstance()
         let nc = NSWorkspace.shared.notificationCenter
         sleepToken = nc.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.state?.notifySleep() }
@@ -95,7 +124,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls { Task { @MainActor in state?.handleUrl(url) } }
+        if InstanceBroker.isSecondaryForwarder {
+            InstanceBroker.forwardOpenUrlsAndExit(urls)
+            return
+        }
+        Task { @MainActor in
+            guard let state else {
+                pendingOpenUrls.append(contentsOf: urls)
+                return
+            }
+            for url in urls { state.handleUrl(url) }
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -107,18 +146,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         Task { @MainActor in state?.stop() }
-        try? FileManager.default.removeItem(atPath: lockPath)
-    }
-
-    private func acquireSingleInstance() {
-        let dir = (lockPath as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
-        if fd >= 0 {
-            if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-                // Another instance is running; macOS already routed the URL/reopen to it via Launch Services.
-                NSApp.terminate(nil)
-            }
-        }
+        InstanceBroker.stopServer()
     }
 }

@@ -19,6 +19,8 @@ targets:
         excludes:
           - Info.plist
           - Callspire.entitlements
+          - Assets.xcassets
+      - path: Callspire/Assets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.callspire.softphone

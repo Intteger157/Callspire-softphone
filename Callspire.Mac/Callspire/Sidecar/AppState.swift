@@ -46,6 +46,7 @@ final class AppState: ObservableObject {
     @Published var logStreaming = false
 
     private var connectTask: Task<Void, Never>?
+    private var pendingProtocolUrls: [String] = []
     private var connectionReply: ((ConnectionSelectionResult) -> Void)?
     private var leadReply: ((LeadSelectionResult) -> Void)?
     private var kommoReply: ((Int64?) -> Void)?
@@ -106,6 +107,7 @@ final class AppState: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        guard !InstanceBroker.isSecondaryForwarder else { return }
         registerIpcHandlers()
         sidecar.onCrash = { [weak self] in self?.statusLine = "Service crashed — restarting…" }
         do { try sidecar.start(socketPath: socketPath) }
@@ -142,6 +144,7 @@ final class AppState: ObservableObject {
                 _ = try? await ipc.request("ping", as: Ping.self)
                 await refreshState()
                 if logStreaming { await loadLogSnapshot() }
+                flushPendingProtocolUrls()
                 return
             } catch {
                 statusLine = "Waiting for service…"
@@ -558,8 +561,24 @@ final class AppState: ObservableObject {
     // MARK: - System
 
     func handleUrl(_ url: URL) {
-        Task { try? await ipc.requestVoid("handleProtocolUrl", params: ["url": url.absoluteString]) }
+        let s = url.absoluteString
+        guard ipc.isConnected else {
+            pendingProtocolUrls.append(s)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        sendProtocolUrl(s)
+    }
+
+    private func sendProtocolUrl(_ url: String) {
+        Task { try? await ipc.requestVoid("handleProtocolUrl", params: ["url": url]) }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func flushPendingProtocolUrls() {
+        let pending = pendingProtocolUrls
+        pendingProtocolUrls.removeAll()
+        for url in pending { sendProtocolUrl(url) }
     }
 
     func notifySleep() { Task { try? await ipc.requestVoid("systemWillSleep") } }

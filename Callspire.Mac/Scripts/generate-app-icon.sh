@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate AppIcon.appiconset PNGs from Callspire.Desktop/Assets/icon.png (requires Python + Pillow).
+# Regenerate AppIcon.appiconset PNGs from Callspire.Desktop/icon.ico or Assets/icon.png (Python + Pillow).
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -9,10 +9,17 @@ from PIL import Image
 from pathlib import Path
 import os
 root = Path(os.environ["ROOT"])
-src = root / "Callspire.Desktop/Assets/icon.png"
+ico = root / "Callspire.Desktop/icon.ico"
+png = root / "Callspire.Desktop/Assets/icon.png"
+src = ico if ico.is_file() else png
+if not src.is_file():
+    raise SystemExit(f"No icon source found (tried {ico}, {png})")
 out = root / "Callspire.Mac/Callspire/Assets.xcassets/AppIcon.appiconset"
 out.mkdir(parents=True, exist_ok=True)
 img = Image.open(src).convert("RGBA")
+if img.width < 512 or img.height < 512:
+    img = img.resize((1024, 1024), Image.Resampling.LANCZOS)
+print("Source:", src)
 spec = [
     (16, "icon_16x16.png"), (32, "icon_16x16@2x.png"),
     (32, "icon_32x32.png"), (64, "icon_32x32@2x.png"),
