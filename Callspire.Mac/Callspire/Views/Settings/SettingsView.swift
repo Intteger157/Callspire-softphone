@@ -33,8 +33,25 @@ struct SettingsView: View {
         } detail: {
             VStack(spacing: 0) {
                 if !loaded {
-                    ProgressView("Loading settings…")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    VStack(spacing: 14) {
+                        if state.connected {
+                            ProgressView("Loading settings…")
+                        } else {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 36))
+                                .foregroundStyle(.secondary)
+                            Text("Callspire.Service is not running")
+                                .font(.headline)
+                            Text(state.statusLine)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                            Button("Retry") { Task { await reload() } }
+                                .keyboardShortcut(.defaultAction)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(24)
                 } else {
                     PaneHeader(panel: panel)
                     pane
@@ -47,6 +64,9 @@ struct SettingsView: View {
             .navigationTitle(panel.title)
         }
         .task { await reload() }
+        .onChange(of: state.connected) { connected in
+            if connected && !loaded { Task { await reload() } }
+        }
         .onChange(of: state.settingsOpenRequest) { _ in
             panel = state.settingsInitialPanel
             Task { await reload() }
@@ -122,6 +142,13 @@ struct SettingsView: View {
     // MARK: - Actions
 
     private func reload() async {
+        loaded = false
+        message = nil
+        if !state.connected {
+            for _ in 0..<40 where !state.connected {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+        }
         if let s = await state.loadSettings() {
             draft = s
             baseline = s.asFields()

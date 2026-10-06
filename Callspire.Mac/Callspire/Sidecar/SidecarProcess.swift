@@ -18,7 +18,7 @@ final class SidecarProcess {
 
     func start(socketPath: String) throws {
         stop()
-        let exe = Self.locateServiceExecutable()
+        let exe = try Self.locateServiceExecutable()
         let proc = Process()
         proc.executableURL = exe
         proc.arguments = ["--socket", socketPath, "--parent-pid", String(ProcessInfo.processInfo.processIdentifier)]
@@ -51,7 +51,7 @@ final class SidecarProcess {
         }
     }
 
-    static func locateServiceExecutable() -> URL {
+    static func locateServiceExecutable() throws -> URL {
         let bundle = Bundle.main.bundleURL
         let candidates = [
             bundle.appendingPathComponent("Contents/MacOS/Service/Callspire.Service"),
@@ -62,7 +62,11 @@ final class SidecarProcess {
         if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
             return found
         }
-        // Last-resort: PATH lookup for developers running from Xcode without a published sidecar.
-        return URL(fileURLWithPath: "/usr/local/bin/Callspire.Service")
+        let tried = candidates.map(\.path).joined(separator: "\n")
+        throw NSError(
+            domain: "Callspire",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Callspire.Service not found in the app bundle.\n\(tried)"]
+        )
     }
 }

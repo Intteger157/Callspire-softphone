@@ -408,13 +408,14 @@ final class AppState: ObservableObject {
 
     /// Fresh editor snapshot from the sidecar (re-reads settings.json).
     func loadSettings() async -> SettingsDto? {
+        guard ipc.isConnected else { return nil }
         do {
             let s = try await ipc.request("getSettings", as: SettingsDto.self)
             settings = s
             settingsLoaded = true
             return s
         } catch {
-            showError("Settings", error)
+            if ipc.isConnected { showError("Settings", error) }
             return nil
         }
     }

@@ -39,13 +39,16 @@ namespace Softphone.Service
             ServiceBootstrap.Initialize(dispatcher);
             AppLog.Log($"[Service] starting v{UpdateService.GetCurrentVersion()} pid={Environment.ProcessId} socket={socketPath}");
 
-            // The Swift app owns single-instance semantics for the bundle; this guard only prevents two
-            // sidecars fighting over the same socket when launched by hand.
-            using var instance = new CrossPlatformSingleInstance();
-            if (!instance.TryAcquire())
+            // The Swift shell holds instance.lock for callspire:// forwarding. When embedded (--parent-pid),
+            // skip the sidecar guard entirely; only manual CLI launches need instance.lock.
+            if (parentPid <= 0)
             {
-                AppLog.Log("[Service] another sidecar instance is already running — exiting");
-                return 2;
+                using var instance = new CrossPlatformSingleInstance();
+                if (!instance.TryAcquire())
+                {
+                    AppLog.Log("[Service] another sidecar instance is already running — exiting");
+                    return 2;
+                }
             }
 
             var host = new ServiceHost(socketPath, dispatcher);
