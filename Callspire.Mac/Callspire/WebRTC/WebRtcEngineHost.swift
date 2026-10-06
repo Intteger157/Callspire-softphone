@@ -6,7 +6,7 @@ import AppKit
 /// Mirrors AvaloniaWebRtcEngineHost / WPF WebRtcEngineHost: the view must stay in the hierarchy
 /// with a non-zero size so getUserMedia works.
 @MainActor
-final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
+final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     private var webView: WKWebView?
     private weak var ipc: IpcClient?
     private var loadContinuation: CheckedContinuation<Bool, Never>?
@@ -38,7 +38,6 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         uc.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         let wv = WKWebView(frame: NSRect(x: 0, y: 0, width: 8, height: 8), configuration: config)
         wv.navigationDelegate = self
-        wv.uiDelegate = self
         if #available(macOS 13.3, *), enableDevTools {
             wv.isInspectable = true
         }
@@ -103,7 +102,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
 
     /// Poll until index.html marks WebRtcClient slot iframes ready (same flag C# WaitForSlotReadyAsync uses).
     private func waitForEngineSlots(timeout: TimeInterval) async -> Bool {
-        guard let webView else { return false }
+        guard webView != nil else { return false }
         let deadline = Date().addingTimeInterval(timeout)
         let probe = """
         (() => { try {
@@ -116,14 +115,6 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
             try? await Task.sleep(nanoseconds: 150_000_000)
         }
         return false
-    }
-
-    /// Auto-grant mic/camera for loopback WebRTC engine page (macOS 14+).
-    @available(macOS 14.0, *)
-    func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin,
-                 initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
-                 decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        decisionHandler(.grant)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
