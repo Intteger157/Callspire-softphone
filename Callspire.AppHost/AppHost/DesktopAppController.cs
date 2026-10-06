@@ -42,6 +42,13 @@ namespace Softphone.AppHost
         {
             _settings = settings;
             History = new CallHistoryService();
+            ThemePreferences.ConfiguredModeChanged += _ => RefreshSettingsFromDisk();
+        }
+
+        private void RefreshSettingsFromDisk()
+        {
+            try { _settings = LoadSettingsWithMigrations(); }
+            catch { }
         }
 
         public static DesktopAppController CreateFromSettings()

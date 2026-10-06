@@ -51,6 +51,18 @@ GitHub builds are **not notarized**. macOS Gatekeeper may block the app until yo
 3. Optional: remove quarantine after download:  
    `xattr -dr com.apple.quarantine /Applications/Callspire.app`
 
+### Updates without repeating System Settings
+
+macOS remembers **microphone** and **Privacy & Security** prompts per app identity (bundle id + **code signature**). To avoid re-approving every release:
+
+1. **Always update in place** — drag the new `Callspire.app` from the DMG onto `/Applications/Callspire.app` and choose **Replace**. Do not run from Downloads or the mounted DMG (App Translocation breaks WebRTC and can look like a “new” app).
+2. **Remove quarantine only on the copy in Applications** (after download):  
+   `xattr -dr com.apple.quarantine /Applications/Callspire.app`
+3. **Unsigned GitHub builds** are ad-hoc signed; each CI build has a different signature, so macOS may treat an update as a new app and ask for **microphone access again**. That is expected until you ship **Developer ID + notarization** with a stable signing identity (same team id every release).
+4. **Gatekeeper “Open Anyway”** is usually **once per downloaded build**, not every launch — if it appears every update, you are likely launching a quarantined copy outside `/Applications`.
+
+Theme (light/dark) is stored in `settings.json` and is independent of macOS System Settings → Appearance; choosing **System** in Callspire follows the Mac appearance.
+
 For a smooth “just works” install for users, sign and notarize locally:
 
 ```bash

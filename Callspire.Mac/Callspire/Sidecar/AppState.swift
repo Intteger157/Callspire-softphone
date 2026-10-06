@@ -208,6 +208,8 @@ final class AppState: ObservableObject {
     }
 
     private struct Ping: Codable { var pong: Bool?; var version: String?; var pid: Int? }
+    /// Avoid re-applying NSApp.appearance on every stateSnapshot (prevents flicker / accidental reset).
+    private var appliedThemeKey = ""
 
     func refreshState() async {
         do {
@@ -323,7 +325,10 @@ final class AppState: ObservableObject {
     private struct TitleText: Codable { var title: String; var text: String }
 
     func applyTheme(_ mode: String) {
-        switch mode.lowercased() {
+        let key = mode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard key != appliedThemeKey else { return }
+        appliedThemeKey = key
+        switch key {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
         default: NSApp.appearance = nil

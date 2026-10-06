@@ -1,34 +1,38 @@
 import SwiftUI
 import Charts
 
-/// Call Statistics — filters, KPI tiles, charts and breakdowns.
+/// Call Statistics — same chrome as Call History / dialer (system surfaces, accent green).
 struct StatisticsView: View {
     @EnvironmentObject var state: AppState
     @State private var customFrom = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var customTo = Date()
 
     private var st: StatisticsState { state.main.statistics }
+    private var accent: Color { Color.accentColor }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                header
-                filters
-                if st.hasLegacyUnknownConnection {
-                    Label("Some older calls have no connection information and are counted under “Unknown”.", systemImage: "info.circle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 4)
+        VStack(spacing: 0) {
+            header
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    filters
+                    if st.hasLegacyUnknownConnection {
+                        Label("Some older calls have no connection information and are counted under “Unknown”.", systemImage: "info.circle")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    kpiGrid
+                    chartsRow
+                    breakdownRow
+                    topNumbers
                 }
-                kpiCards
-                charts
-                breakdowns
-                topNumbers
+                .padding(.horizontal, 16)
+                .padding(.bottom, 20)
+                .frame(maxWidth: 960, alignment: .leading)
             }
-            .padding(24)
-            .frame(maxWidth: 1080, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(MacTheme.windowFill)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             if let f = st.customFrom { customFrom = f }
             if let t = st.customTo { customTo = t }
@@ -37,9 +41,9 @@ struct StatisticsView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Call Statistics")
-                    .font(.title2.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                 if !st.periodHint.isEmpty {
                     Text(st.periodHint)
                         .font(.callout)
@@ -52,28 +56,28 @@ struct StatisticsView: View {
             }
             .disabled(!st.hasReport)
         }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 
-    // MARK: filters
+    // MARK: Filters
 
     private var filters: some View {
         Card(padding: 12) {
-            HStack(spacing: 14) {
+            HStack(spacing: 16) {
                 filterPicker("Period", options: st.periodOptions, index: st.periodIndex) { state.setStatisticsFilter(periodIndex: $0) }
                 if st.secondaryEnabled || st.connectionOptions.count > 1 {
                     filterPicker("Connection", options: st.connectionOptions, index: st.connectionIndex) { state.setStatisticsFilter(connectionIndex: $0) }
                 }
                 filterPicker("Direction", options: st.directionOptions, index: st.directionIndex) { state.setStatisticsFilter(directionIndex: $0) }
                 if st.isCustomPeriod {
-                    DatePicker("From", selection: $customFrom, displayedComponents: .date)
-                        .datePickerStyle(.field)
-                        .labelsHidden()
-                    DatePicker("To", selection: $customTo, displayedComponents: .date)
-                        .datePickerStyle(.field)
-                        .labelsHidden()
+                    DatePicker("From", selection: $customFrom, displayedComponents: .date).labelsHidden()
+                    DatePicker("To", selection: $customTo, displayedComponents: .date).labelsHidden()
                     Button("Apply") { applyCustomRange() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .tint(accent)
                 }
                 Spacer(minLength: 0)
             }
@@ -94,127 +98,95 @@ struct StatisticsView: View {
                 ForEach(Array(options.enumerated()), id: \.offset) { i, label in Text(label).tag(i) }
             }
             .labelsHidden()
-            .frame(minWidth: 140)
+            .frame(minWidth: 132)
         }
     }
 
     // MARK: KPI
 
-    private var kpiCards: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 168), spacing: 12)], spacing: 12) {
-            kpi("Total", value: st.kpiTotal, hint: st.kpiDirectionHint, symbol: "phone.fill", tint: .blue) { state.drillDownHistory("all") }
-            kpi("Answered", value: st.kpiAnswered, hint: st.kpiSuccessRate, symbol: "phone.arrow.down.left.fill", tint: .green) { state.drillDownHistory("answered") }
-            kpi("Unanswered", value: st.kpiUnanswered, hint: st.kpiUnansweredHint, symbol: "phone.down.fill", tint: .orange) { state.drillDownHistory("unanswered") }
-            kpi("Talk time", value: st.kpiTalkTime, hint: st.kpiAvgTalk, symbol: "clock.fill", tint: .indigo, action: nil)
-            kpi("Contact rate", value: st.kpiContactRate, hint: st.kpiRingTime, symbol: "percent", tint: .teal, action: nil)
-            kpi("Missed", value: st.kpiMissed, hint: st.kpiFailedCancelled, symbol: "phone.badge.waveform.fill", tint: .red) { state.drillDownHistory("missed") }
+    private var kpiGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 148), spacing: 10)], spacing: 10) {
+            kpi("Total", st.kpiTotal, st.kpiDirectionHint, drill: { state.drillDownHistory("all") })
+            kpi("Answered", st.kpiAnswered, st.kpiSuccessRate, emphasis: .green, drill: { state.drillDownHistory("answered") })
+            kpi("Unanswered", st.kpiUnanswered, st.kpiUnansweredHint, emphasis: .orange, drill: { state.drillDownHistory("unanswered") })
+            kpi("Talk time", st.kpiTalkTime, st.kpiAvgTalk, drill: nil)
+            kpi("Contact rate", st.kpiContactRate, st.kpiRingTime, drill: nil)
+            kpi("Missed", st.kpiMissed, st.kpiFailedCancelled, emphasis: .red, drill: { state.drillDownHistory("missed") })
         }
     }
 
-    private func kpi(_ title: String, value: String, hint: String, symbol: String, tint: Color, action: (() -> Void)?) -> some View {
-        let tile = VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 24, height: 24)
-                    .background(tint.gradient, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    @ViewBuilder
+    private func kpi(_ title: String, _ value: String, _ hint: String, emphasis: Color? = nil, drill: (() -> Void)?) -> some View {
+        let valueColor = emphasis ?? Color.primary
+        let tile = Card(padding: 12) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(title)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                if action != nil {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                }
+                Text(value.isEmpty ? "0" : value)
+                    .font(.system(size: 24, weight: .semibold, design: .rounded))
+                    .foregroundStyle(valueColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text(hint.isEmpty ? " " : hint)
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
             }
-            Text(value.isEmpty ? "0" : value)
-                .font(.system(size: 26, weight: .semibold, design: .rounded))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(hint.isEmpty ? " " : hint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
-        .background(MacTheme.controlFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-        )
-
-        return Group {
-            if let action {
-                Button(action: action) { tile }
-                    .buttonStyle(.plain)
-                    .help("Show these calls in Call History")
-            } else {
-                tile
-            }
+        if let drill {
+            Button(action: drill) { tile }
+                .buttonStyle(.plain)
+                .help("Show in Call History")
+        } else {
+            tile
         }
     }
 
-    // MARK: charts
+    // MARK: Charts
 
-    private var charts: some View {
-        HStack(alignment: .top, spacing: 12) {
-            callsByDay
-            activityByHour
-        }
-    }
-
-    private var callsByDay: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("Calls by day", systemImage: "chart.bar.fill")
-                if st.daily.isEmpty {
-                    emptyChart
-                } else {
+    private var chartsRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            chartCard(title: "Calls by day", caption: nil) {
+                if st.daily.isEmpty { emptyChart } else {
                     Chart(st.daily) { day in
                         BarMark(x: .value("Day", day.label), y: .value("Total", day.total))
-                            .foregroundStyle(Color.accentColor.opacity(0.35))
+                            .foregroundStyle(accent.opacity(0.22))
                         BarMark(x: .value("Day", day.label), y: .value("Answered", day.answered))
                             .foregroundStyle(Color.green.gradient)
                     }
-                    .chartYAxis { AxisMarks(position: .leading) }
-                    .chartLegend(.hidden)
-                    .frame(height: 168)
-                    HStack(spacing: 14) {
-                        legendSwatch("Answered", color: .green)
-                        legendSwatch("Total", color: Color.accentColor.opacity(0.45))
+                    .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(MacTheme.separator) } }
+                    .frame(height: 160)
+                }
+            }
+            chartCard(title: "Activity by hour", caption: st.peakHourText) {
+                if st.hourly.isEmpty { emptyChart } else {
+                    let peak = st.hourly.map(\.total).max() ?? 0
+                    Chart(st.hourly) { h in
+                        BarMark(x: .value("Hour", h.label), y: .value("Calls", h.total))
+                            .foregroundStyle(h.total == peak && h.total > 0 ? accent : accent.opacity(0.35))
+                            .cornerRadius(2)
                     }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(MacTheme.separator) } }
+                    .chartXAxis { AxisMarks(values: .automatic(desiredCount: 8)) { _ in AxisValueLabel().font(.caption2) } }
+                    .frame(height: 160)
                 }
             }
         }
     }
 
-    private var activityByHour: some View {
+    private func chartCard<Content: View>(title: String, caption: String?, @ViewBuilder content: () -> Content) -> some View {
         Card {
-            VStack(alignment: .leading, spacing: 10) {
-                sectionTitle("Activity by hour", systemImage: "clock.fill", caption: st.peakHourText)
-                if st.hourly.isEmpty {
-                    emptyChart
-                } else {
-                    let peak = st.hourly.map(\.total).max() ?? 0
-                    Chart(st.hourly) { h in
-                        BarMark(x: .value("Hour", h.label), y: .value("Calls", h.total))
-                            .foregroundStyle(h.total == peak && h.total > 0 ? Color.teal : Color.teal.opacity(0.35))
-                            .cornerRadius(3)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(title).font(.headline)
+                    Spacer()
+                    if let caption, !caption.isEmpty {
+                        Text(caption).font(.caption).foregroundStyle(.secondary)
                     }
-                    .chartYAxis { AxisMarks(position: .leading) }
-                    .chartXAxis {
-                        AxisMarks(values: .automatic(desiredCount: 8)) { _ in
-                            AxisValueLabel().font(.caption2)
-                        }
-                    }
-                    .frame(height: 180)
                 }
+                content()
             }
         }
     }
@@ -223,155 +195,101 @@ struct StatisticsView: View {
         Text("No data for this period.")
             .font(.callout)
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 160)
+            .frame(maxWidth: .infinity, minHeight: 140)
     }
 
-    private func legendSwatch(_ title: String, color: Color) -> some View {
-        HStack(spacing: 5) {
-            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 10)
-            Text(title)
+    // MARK: Breakdowns
+
+    private var breakdownRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            statListCard("Outcome", rows: [
+                st.outcomeAnswered, st.outcomeCancelled, st.outcomeAgentCancel,
+                st.outcomeFailed, st.outcomeMissed
+            ])
+            statListCard("SIP vs WebRTC", rows: st.connectionCompare.map {
+                $0.detail.isEmpty ? $0.name : "\($0.name) · \($0.detail)"
+            }, empty: st.connectionCompare.isEmpty)
+            statListCard("Kommo", rows: kommoRows, empty: kommoRows.isEmpty, kommoDrill: true)
+            statListCard("Outbound Caller ID", rows: st.callerIds.map {
+                $0.detail.isEmpty ? $0.name : "\($0.name) · \($0.detail)"
+            }, empty: st.callerIds.isEmpty)
         }
     }
 
-    // MARK: breakdowns
-
-    private var breakdowns: some View {
-        VStack(spacing: 12) {
-            HStack(alignment: .top, spacing: 12) {
-                outcomeBreakdown
-                connectionCompare
-            }
-            HStack(alignment: .top, spacing: 12) {
-                amoCrm
-                callerIds
-            }
-        }
+    private var kommoRows: [String] {
+        if !state.main.amoCrmConfigured { return ["Kommo integration is disabled."] }
+        if st.crmLines.isEmpty { return [] }
+        return st.crmLines.map(\.name)
     }
 
-    private var outcomeBreakdown: some View {
+    private func statListCard(_ title: String, rows: [String], empty: Bool = false, kommoDrill: Bool = false) -> some View {
         Card {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionTitle("Outcome", systemImage: "list.bullet")
-                metricRow(st.outcomeAnswered, tint: .green)
-                metricRow(st.outcomeCancelled, tint: .secondary)
-                metricRow(st.outcomeAgentCancel, tint: .orange)
-                metricRow(st.outcomeFailed, tint: .red)
-                metricRow(st.outcomeMissed, tint: .red)
-            }
-        }
-    }
-
-    private var connectionCompare: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionTitle("SIP vs WebRTC", systemImage: "antenna.radiowaves.left.and.right")
-                if st.connectionCompare.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title).font(.headline)
+                if empty && rows.isEmpty {
                     Text("No data for this period.").font(.callout).foregroundStyle(.secondary)
-                }
-                ForEach(st.connectionCompare) { row in
-                    metricRow(row.detail.isEmpty ? row.name : "\(row.name)  ·  \(row.detail)", tint: .blue)
-                }
-            }
-        }
-    }
-
-    private var amoCrm: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionTitle("Kommo", systemImage: "link")
-                if !state.main.amoCrmConfigured {
-                    Text("Kommo integration is disabled.").font(.callout).foregroundStyle(.secondary)
-                } else if st.crmLines.isEmpty {
-                    Text("No data for this period.").font(.callout).foregroundStyle(.secondary)
-                }
-                ForEach(st.crmLines) { row in
-                    Button { state.drillDownHistory(row.detail) } label: {
-                        metricRow(row.name, tint: .green)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show these calls in Call History")
-                }
-            }
-        }
-    }
-
-    private var callerIds: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 8) {
-                sectionTitle("Outbound Caller ID", systemImage: "person.crop.rectangle")
-                if st.callerIds.isEmpty {
-                    Text("No outbound calls with Caller ID.").font(.callout).foregroundStyle(.secondary)
-                }
-                ForEach(st.callerIds) { row in
-                    metricRow(row.detail.isEmpty ? row.name : "\(row.name)  ·  \(row.detail)", tint: .indigo)
-                }
-            }
-        }
-    }
-
-    private var topNumbers: some View {
-        Card {
-            VStack(alignment: .leading, spacing: 4) {
-                sectionTitle("Top numbers", systemImage: "number", caption: "Click a row to open it in Call History")
-                if st.topNumbers.isEmpty {
-                    Text("No calls in this period.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 6)
-                }
-                ForEach(Array(st.topNumbers.enumerated()), id: \.element.id) { index, row in
-                    Button {
-                        state.drillDownHistory("all", phoneNumber: row.phoneNumber.isEmpty ? row.name : row.phoneNumber)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Text("\(index + 1)")
-                                .font(.caption.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(.secondary)
-                                .frame(width: 18, alignment: .trailing)
-                            Text(row.name)
-                                .font(.body.weight(.medium))
-                            Spacer()
-                            Text(row.detail)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                            Image(systemName: "chevron.right")
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { idx, text in
+                        if kommoDrill, idx < st.crmLines.count, state.main.amoCrmConfigured {
+                            Button { state.drillDownHistory(st.crmLines[idx].detail) } label: {
+                                metricLine(text)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            metricLine(text)
                         }
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 6)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    if index < st.topNumbers.count - 1 {
-                        Divider().padding(.leading, 36)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func sectionTitle(_ title: String, systemImage: String, caption: String = "") -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(title).font(.headline)
-            Spacer()
-            if !caption.isEmpty {
-                Text(caption).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-        }
-    }
-
-    private func metricRow(_ text: String, tint: Color) -> some View {
+    private func metricLine(_ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Circle().fill(tint).frame(width: 7, height: 7).padding(.top, 1)
+            Circle().fill(accent.opacity(0.85)).frame(width: 5, height: 5)
             Text(text.isEmpty ? "—" : text)
                 .font(.callout)
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 2)
+    }
+
+    private var topNumbers: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Top numbers").font(.headline)
+                Text("Click a row for Call History")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if st.topNumbers.isEmpty {
+                    Text("No calls in this period.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                } else {
+                    ForEach(Array(st.topNumbers.enumerated()), id: \.element.id) { index, row in
+                        Button {
+                            state.drillDownHistory("all", phoneNumber: row.phoneNumber.isEmpty ? row.name : row.phoneNumber)
+                        } label: {
+                            HStack {
+                                Text("\(index + 1).")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 22, alignment: .trailing)
+                                Text(row.name).font(.callout.weight(.medium))
+                                Spacer()
+                                Text(row.detail).font(.callout).foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if index < st.topNumbers.count - 1 { Divider() }
+                    }
+                }
+            }
+        }
     }
 }

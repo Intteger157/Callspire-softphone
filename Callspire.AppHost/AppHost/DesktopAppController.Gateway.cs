@@ -215,9 +215,22 @@ namespace Softphone.AppHost
         {
             var item = _callerIdItems.FirstOrDefault(i => i.Number == number);
             UiThread.BeginInvoke(() => ViewModel.SelectedCallerId = item ?? ViewModel.SelectedCallerId);
-            if (item == null || _settings.SelectedOutboundCallerId == item.Number) return;
-            _settings.SelectedOutboundCallerId = item.Number;
-            try { AppDataHelper.SaveSettings(_settings); } catch { }
+            if (item == null) return;
+
+            // Re-read disk: theme and other fields may have been written by ThemePreferences / IPC without updating _settings.
+            var settings = LoadSettingsWithMigrations();
+            if (settings.SelectedOutboundCallerId == item.Number)
+            {
+                _settings = settings;
+                return;
+            }
+            settings.SelectedOutboundCallerId = item.Number;
+            try
+            {
+                SaveSettings(settings);
+                _settings = settings;
+            }
+            catch { }
         }
 
         internal bool IsOwnOutboundCallerId(string? number)
