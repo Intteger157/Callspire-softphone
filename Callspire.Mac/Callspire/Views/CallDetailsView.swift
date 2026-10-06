@@ -64,9 +64,13 @@ struct CallDetailsView: View {
                         .font(.system(size: 24, weight: .semibold, design: .rounded))
                         .textSelection(.enabled)
                     Button { Pasteboard.copy(d.phoneNumber) } label: {
-                        Image(systemName: "doc.on.doc").font(.system(size: 12))
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 26, height: 26)
+                            .background(Circle().fill(Color.primary.opacity(0.07)))
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.plain)
                     .help("Copy number")
                 }
                 HStack(spacing: 8) {
@@ -274,19 +278,7 @@ struct CallDetailsView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Button {
-                let number = d.phoneNumber
-                close()
-                // The line / Caller ID sheet is presented from the same window; let this sheet dismiss first.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    state.placeCall(number: number, forceSelection: true)
-                }
-            } label: {
-                Label("Call back", systemImage: "phone.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.green)
-            .disabled(!state.main.canCall)
+            OutboundCallButton(phoneNumber: d.phoneNumber, title: "Call back", prominent: true, onBeforeCall: { player?.stop() })
 
             Spacer()
             Button("Close") { close() }.keyboardShortcut(.cancelAction)

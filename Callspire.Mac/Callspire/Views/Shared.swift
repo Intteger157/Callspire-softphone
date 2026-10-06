@@ -278,6 +278,87 @@ enum Pasteboard {
     }
 }
 
+// MARK: - Outbound call (history / call details)
+
+/// Green call control: dropdown of PBX Gateway Caller IDs when assigned, otherwise a direct call or line sheet.
+struct OutboundCallButton: View {
+    @EnvironmentObject var state: AppState
+    let phoneNumber: String
+    var title: String = "Call"
+    var compact: Bool = false
+    var prominent: Bool = false
+    var onBeforeCall: (() -> Void)?
+
+    private var enabled: Bool { state.main.canPlaceOutbound }
+
+    var body: some View {
+        Group {
+            if state.main.showSplitCallButtons {
+                callButton(forceSelection: true)
+            } else if state.main.hasGatewayCallerIds {
+                Menu {
+                    ForEach(state.main.callerIds) { item in
+                        Button(callerMenuLabel(item)) {
+                            startCall(callerId: item.number, forceSelection: false)
+                        }
+                    }
+                    if state.main.callerIds.count > 1 {
+                        Divider()
+                        Button("Choose line & number…") {
+                            startCall(forceSelection: true)
+                        }
+                    }
+                } label: {
+                    labelContent
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+            } else {
+                callButton(forceSelection: true)
+            }
+        }
+        .disabled(!enabled)
+        .help(enabled ? "Call \(phoneNumber)" : "No line connected")
+    }
+
+    @ViewBuilder
+    private func callButton(forceSelection: Bool) -> some View {
+        Button { startCall(forceSelection: forceSelection) } label: {
+            labelContent
+        }
+        .buttonStyle(prominent ? .borderedProminent : .plain)
+        .tint(prominent ? .green : nil)
+    }
+
+    @ViewBuilder
+    private var labelContent: some View {
+        if compact {
+            Image(systemName: "phone.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 28, height: 28)
+                .background(enabled ? Color.green : Color.gray.opacity(0.45), in: Circle())
+        } else {
+            Label(title, systemImage: "phone.fill")
+        }
+    }
+
+    private func callerMenuLabel(_ item: CallerIdItem) -> String {
+        if !item.displayText.isEmpty { return item.displayText }
+        if !item.name.isEmpty { return "\(item.name)  \(item.number)" }
+        return item.number
+    }
+
+    private func startCall(callerId: String? = nil, forceSelection: Bool) {
+        onBeforeCall?()
+        if prominent {
+            state.scheduleOutboundCall(number: phoneNumber, forceSelection: forceSelection, callerId: callerId)
+        } else {
+            state.placeCall(number: phoneNumber, forceSelection: forceSelection, callerId: callerId)
+        }
+    }
+}
+
 extension Date {
     var historyStamp: String {
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd HH:mm:ss"; return f.string(from: self)

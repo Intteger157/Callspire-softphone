@@ -36,6 +36,14 @@ struct MainView: View {
                 CallDetailsView(details: details).environmentObject(state)
             }
         }
+        .onChange(of: state.callDetails != nil) { open in
+            if !open {
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 280_000_000)
+                    state.flushPendingOutboundCall()
+                }
+            }
+        }
         .onChange(of: state.call?.sessionId) { id in
             if id != nil { openWindow(id: "call") }
         }

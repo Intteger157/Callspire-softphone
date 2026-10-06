@@ -132,6 +132,16 @@ struct MainState: Codable {
     var statistics: StatisticsState = StatisticsState()
 }
 
+extension MainState {
+    /// Dialer green button — needs a number in the field.
+    var canDialFromKeypad: Bool { canCall }
+
+    /// History / Call Details — any online line, no active call window required in the number field.
+    var canPlaceOutbound: Bool { anyOnline && !hasActiveCall }
+
+    var hasGatewayCallerIds: Bool { showCallerIdPicker && !callerIds.isEmpty }
+}
+
 struct CallState: Codable {
     var sessionId: String = ""
     var callerDisplay: String = ""

@@ -49,6 +49,7 @@ final class AppState: ObservableObject {
     private var connectGeneration = 0
     private var sidecarLifecycleStarted = false
     private var pendingProtocolUrls: [String] = []
+    private var pendingOutboundCall: (number: String, forceSelection: Bool, callerId: String?)?
     private var connectionReply: ((ConnectionSelectionResult) -> Void)?
     private var leadReply: ((LeadSelectionResult) -> Void)?
     private var kommoReply: ((Int64?) -> Void)?
@@ -336,14 +337,34 @@ final class AppState: ObservableObject {
         Task { try? await ipc.requestVoid("setPhoneNumber", params: ["value": value]) }
     }
 
-    /// `forceSelection`: ask for line / Caller ID even with one line (calls from history).
-    func placeCall(number: String? = nil, slot: String? = nil, forceSelection: Bool = false) {
+    /// Queue an outbound call after Call Details (or another sheet) finishes dismissing.
+    func scheduleOutboundCall(number: String, forceSelection: Bool = true, callerId: String? = nil) {
+        let target = number.trimmingCharacters(in: .whitespaces)
+        guard !target.isEmpty, main.canPlaceOutbound else { return }
+        pendingOutboundCall = (target, forceSelection, callerId)
+        callDetails = nil
+    }
+
+    func flushPendingOutboundCall() {
+        guard callDetails == nil, connectionPicker == nil,
+              let pending = pendingOutboundCall else { return }
+        pendingOutboundCall = nil
+        placeCall(number: pending.number, forceSelection: pending.forceSelection, callerId: pending.callerId)
+    }
+
+    /// `forceSelection`: server-side line / Caller ID sheet (both lines or explicit pick).
+    /// Pass `callerId` when the user already chose from a local menu (history popover).
+    func placeCall(number: String? = nil, slot: String? = nil, forceSelection: Bool = false, callerId: String? = nil) {
         let target = (number ?? main.phoneNumber).trimmingCharacters(in: .whitespaces)
         guard !target.isEmpty else { return }
         Task {
             struct P: Codable { var number: String; var slot: String?; var forceSelection: Bool }
-            do { try await ipc.requestVoid("placeCall", params: P(number: target, slot: slot, forceSelection: forceSelection), timeout: 120) }
-            catch { showError("Call failed", error) }
+            do {
+                if let callerId, !callerId.isEmpty {
+                    try await ipc.requestVoid("selectCallerId", params: ["number": callerId])
+                }
+                try await ipc.requestVoid("placeCall", params: P(number: target, slot: slot, forceSelection: forceSelection), timeout: 120)
+            } catch { showError("Call failed", error) }
         }
     }
 

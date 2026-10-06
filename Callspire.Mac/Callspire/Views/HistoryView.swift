@@ -28,7 +28,7 @@ struct HistoryView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { state.openHistoryDetails(item) }
                         .contextMenu {
-                            Button("Call…") { state.placeCall(number: item.phoneNumber, forceSelection: true) }
+                            Button("Call…") { state.placeCall(number: item.phoneNumber, forceSelection: state.main.showSplitCallButtons) }
                             Button("Details…") { state.openHistoryDetails(item) }
                             Button("Copy Number") { Pasteboard.copy(item.phoneNumber) }
                             Button("Use in Dialer") {
@@ -120,18 +120,7 @@ private struct HistoryRow: View {
                     .foregroundStyle(statusColor)
             }
 
-            Button {
-                state.placeCall(number: item.phoneNumber, forceSelection: true)
-            } label: {
-                Image(systemName: "phone.fill")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 28, height: 28)
-                    .background(state.main.canCall ? Color.green : Color.gray.opacity(0.45), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .disabled(!state.main.canCall)
-            .help("Call back")
+            OutboundCallButton(phoneNumber: item.phoneNumber, compact: true)
         }
         .padding(.vertical, 2)
     }

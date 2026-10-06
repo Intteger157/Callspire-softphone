@@ -164,7 +164,7 @@ struct DialerView: View {
     }
 
     private var canDial: Bool {
-        state.main.canCall && !state.main.phoneNumber.trimmingCharacters(in: .whitespaces).isEmpty
+        state.main.canDialFromKeypad && !state.main.phoneNumber.trimmingCharacters(in: .whitespaces).isEmpty
     }
 }
 
