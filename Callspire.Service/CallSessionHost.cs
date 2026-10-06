@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Softphone.AppHost;
@@ -137,6 +138,33 @@ namespace Softphone.Service
                 return Task.FromResult<object?>(null);
             });
             _ipc.Register("getActiveCall", _ => Describe());
+
+            // WPF "speaker" button: list / switch in-call audio devices.
+            _ipc.Register("callAudioDevices", async (p, _) =>
+            {
+                var s = Resolve(p, throwIfMissing: true)!;
+                var devices = await s.ViewModel.EnumerateAudioDevicesAsync().ConfigureAwait(false);
+                return new
+                {
+                    isWebRtc = s.ViewModel.IsWebRtc,
+                    inputs = devices.Where(d => d.IsInput).Select(d => new { id = d.Id, label = d.Label }).ToList(),
+                    outputs = devices.Where(d => !d.IsInput).Select(d => new { id = d.Id, label = d.Label }).ToList(),
+                };
+            });
+            _ipc.Register("switchCallAudioDevices", async (p, _) =>
+            {
+                var s = Resolve(p, throwIfMissing: true)!;
+                var args = p.HasValue ? IpcJson.Deserialize<SwitchAudioParams>(p.Value) : null;
+                await s.ViewModel.SwitchAudioDevicesAsync(args?.InputId, args?.OutputId).ConfigureAwait(false);
+                return null;
+            });
+        }
+
+        private sealed class SwitchAudioParams
+        {
+            public string? SessionId { get; set; }
+            public string? InputId { get; set; }
+            public string? OutputId { get; set; }
         }
 
         private Task<object?> Verb(System.Text.Json.JsonElement? p, Func<CallViewModel, Task> action)

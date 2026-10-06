@@ -26,6 +26,83 @@ namespace Softphone.AppHost
         public bool IsGatewayConfigured => _gateway != null;
         public IReadOnlyList<CallerIdItem> CallerIds => _callerIdItems;
 
+        /// <summary>Raised (any thread) when the gateway client is created/disposed — hosts re-project status.</summary>
+        public event Action? GatewayStateChanged;
+
+        /// <summary>WPF Settings "Callspire PBX Gateway" status line.</summary>
+        public string GatewayStatusText
+        {
+            get
+            {
+                var s = _settings;
+                if (!s.EnableMikoPbxCdr) return "Disabled";
+                if (string.IsNullOrWhiteSpace(s.MikoPbxCdrServiceUrl)) return "Service URL is not set";
+                if (string.IsNullOrWhiteSpace(s.MikoPbxExtension)) return "Extension is not set";
+                if (string.IsNullOrWhiteSpace(s.MikoPbxCdrTokenEncrypted)) return "Not authorized";
+                return _gateway != null ? "Connected" : "Not connected";
+            }
+        }
+
+        /// <summary>
+        /// WPF <c>MikoPbxCdrAuthorizeButton_Click</c>: persist URL/extension, enable the module and return the browser
+        /// login URL (<c>{url}/login?callback=callspire://cdr-auth</c>). The gateway redirects back with
+        /// <c>callspire://cdr-auth?token=…</c>, handled by <see cref="HandleCdrAuthToken"/>.
+        /// </summary>
+        public string BeginGatewayAuthorization(string serviceUrl, string extension)
+        {
+            string url = (serviceUrl ?? "").Trim().TrimEnd('/');
+            if (string.IsNullOrEmpty(url) || url == "https:" || url == "https://"
+                || !Uri.TryCreate(url, UriKind.Absolute, out var u) || (u.Scheme != "https" && u.Scheme != "http"))
+                throw new ArgumentException("Please enter the PBX Gateway service URL first.");
+
+            var s = LoadSettingsWithMigrations();
+            s.EnableMikoPbxCdr = true;
+            s.MikoPbxCdrServiceUrl = url;
+            s.MikoPbxExtension = string.IsNullOrWhiteSpace(extension) ? s.MikoPbxExtension : extension.Trim();
+            SaveSettings(s);
+
+            string loginUrl = $"{url}/login?callback={Uri.EscapeDataString("callspire://cdr-auth")}";
+            Log($"[PBX Gateway] Opening browser for authorization: {loginUrl}");
+            GatewayStateChanged?.Invoke();
+            return loginUrl;
+        }
+
+        /// <summary>WPF <c>MainWindow.HandleCdrAuthToken</c>: store the JWT and (re)initialize the gateway client.</summary>
+        public void HandleCdrAuthToken(string token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return;
+            Log($"[PBX Gateway] Auth token received (length={token.Length})");
+            try
+            {
+                var s = LoadSettingsWithMigrations();
+                s.MikoPbxCdrTokenEncrypted = TokenEncryption.Encrypt(token.Trim());
+                s.EnableMikoPbxCdr = true;
+                SaveSettings(s);
+                InitializeGateway(s);
+                _shell?.BringToForeground();
+                Log("[PBX Gateway] Token saved and service initialized");
+            }
+            catch (Exception ex)
+            {
+                Log($"[PBX Gateway] Error saving token: {ex.Message}");
+            }
+            GatewayStateChanged?.Invoke();
+        }
+
+        /// <summary>WPF <c>ClearMikoPbxCdrSettingsButton_Click</c>: remove URL, extension and token; dispose the client.</summary>
+        public void ClearGatewaySettings()
+        {
+            var s = LoadSettingsWithMigrations();
+            s.EnableMikoPbxCdr = false;
+            s.MikoPbxCdrServiceUrl = null;
+            s.MikoPbxCdrTokenEncrypted = null;
+            s.MikoPbxExtension = null;
+            SaveSettings(s);
+            InitializeGateway(s);
+            Log("[PBX Gateway] Settings cleared");
+            GatewayStateChanged?.Invoke();
+        }
+
         private void InitializeGateway(AppSettings settings)
         {
             StopCallerIdRetryTimer();
@@ -66,6 +143,7 @@ namespace Softphone.AppHost
             {
                 Log($"[PBX Gateway] Init error: {ex.Message}");
             }
+            GatewayStateChanged?.Invoke();
         }
 
         private void DisposeGateway()

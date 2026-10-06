@@ -183,6 +183,26 @@ namespace Softphone.Service.Contracts
         public long? KommoLeadId { get; init; }
         public string? KommoSubdomain { get; init; }
         public bool CanRetryKommo { get; init; }
+        /// <summary>Deep link to the lead in Kommo (WPF "Record added to" → open lead), when known.</summary>
+        public string? KommoLeadUrl { get; init; }
+        /// <summary>Kommo account web base URL (for contact links), when the subdomain is configured.</summary>
+        public string? KommoWebBaseUrl { get; init; }
+        /// <summary>"PBX Server" / "Local client recording (WAV)" when a recording was uploaded; null otherwise.</summary>
+        public string? KommoUploadedRecordingSource { get; init; }
+        /// <summary>Kommo recordings are fetched by the PBX Gateway (vs. uploaded from this computer).</summary>
+        public bool KommoGatewayUpload { get; init; }
+        /// <summary>Local-mode upload of the client recording is enabled.</summary>
+        public bool KommoLocalUpload { get; init; }
+        /// <summary>The CRM "Send result" section should be shown (WPF <c>UpdateCrmManualUploadSectionVisibility</c>).</summary>
+        public bool ShowCrmSendSection { get; init; }
+    }
+
+    /// <summary>Swift → C# <c>getKommoContactName</c> result (WPF "AmoCRM contact name" row).</summary>
+    public sealed class KommoContactLookupDto
+    {
+        public string? Name { get; init; }
+        public long? ContactId { get; init; }
+        public string? Error { get; init; }
     }
 
     /// <summary>Recording prepared for playback in Swift (WAV/MP3 path; non-native formats transcoded via ffmpeg).</summary>

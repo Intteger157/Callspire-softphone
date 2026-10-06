@@ -87,3 +87,45 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  release-macos:
+    name: macOS app (DMG)
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+          global-json-file: global.json
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Build Callspire.app + DMG (unsigned)
+        run: bash Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --ci
+
+      - name: Rename release assets
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [[ "$VERSION" == v* ]]; then VERSION="${VERSION#v}"; fi
+          APP="$(find publish/macos -name 'Callspire.app' -type d | head -1)"
+          test -n "$APP"
+          ditto -c -k --keepParent "$APP" "Callspire-${VERSION}-macos-arm64-unsigned.zip"
+          if [[ -f publish/macos/Callspire-arm64.dmg ]]; then
+            mv publish/macos/Callspire-arm64.dmg "Callspire-${VERSION}-macos-arm64-unsigned.dmg"
+          fi
+          ls -la Callspire-${VERSION}-macos-arm64-* || true
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            Callspire-*-macos-arm64-unsigned.zip
+            Callspire-*-macos-arm64-unsigned.dmg
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: false

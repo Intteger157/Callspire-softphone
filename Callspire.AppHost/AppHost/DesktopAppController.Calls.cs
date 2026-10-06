@@ -370,6 +370,13 @@ namespace Softphone.AppHost
         /// </summary>
         public void HandleProtocolUrl(string url)
         {
+            // callspire://cdr-auth?token=… — PBX Gateway browser login callback (WPF App.HandleCallspireProtocol).
+            if (TryExtractCdrAuthToken(url, out var cdrToken))
+            {
+                HandleCdrAuthToken(cdrToken);
+                return;
+            }
+
             string? number = ExtractNumberFromUrl(url);
             if (string.IsNullOrWhiteSpace(number)) return;
             Log($"[Controller] click-to-call: {number}");
@@ -393,6 +400,33 @@ namespace Softphone.AppHost
                 if (_pendingClickToCall.Count > 0) next = _pendingClickToCall.Dequeue();
             }
             if (next != null) _ = PlaceCallAsync(next);
+        }
+
+        internal static bool TryExtractCdrAuthToken(string url, out string token)
+        {
+            token = "";
+            if (string.IsNullOrWhiteSpace(url)) return false;
+            try
+            {
+                var uri = new Uri(url);
+                if (!string.Equals(uri.Scheme, "callspire", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(uri.Host, "cdr-auth", StringComparison.OrdinalIgnoreCase))
+                    return false;
+                foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = pair.Split('=', 2);
+                    if (kv.Length == 2 && kv[0] == "token")
+                    {
+                        token = Uri.UnescapeDataString(kv[1]);
+                        return token.Length > 0;
+                    }
+                }
+                return true; // cdr-auth without a token: swallow, never treat as a phone number
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         internal static string? ExtractNumberFromUrl(string url)

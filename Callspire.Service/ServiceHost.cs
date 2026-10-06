@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Softphone.AppHost;
+using Softphone.AppHost.ViewModels;
 using Softphone.Platform;
 using Softphone.Service.Contracts;
 using Softphone.Service.Ipc;
@@ -134,6 +135,18 @@ namespace Softphone.Service
             });
             _ipc.Register("reconnectFromSettings", async (_, _) => { await _controller.ReconnectFromSettingsAsync().ConfigureAwait(false); return null; });
 
+            // ── PBX Gateway (WPF Integrations panel: Authorize / Clear settings) ──
+            _ipc.Register("gatewayAuthorize", p =>
+            {
+                string loginUrl;
+                try { loginUrl = _controller.BeginGatewayAuthorization(Str(p, "url") ?? "", Str(p, "extension") ?? ""); }
+                catch (ArgumentException ex) { throw new IpcException(ex.Message, "bad_request"); }
+                SettingsViewModel.OpenExternal(loginUrl);
+                return new { loginUrl };
+            });
+            _ipc.Register("gatewayClear", _ => { _controller.ClearGatewaySettings(); return null; });
+            _ipc.Register("gatewayStatus", _ => new { connected = _controller.IsGatewayConfigured, statusText = _controller.GatewayStatusText });
+
             // ── history ──
             _ipc.Register("refreshHistory", _ => { _controller.RefreshHistory(); return null; });
             _ipc.Register("clearHistory", _ => { _controller.ClearHistory(); return null; });
@@ -145,6 +158,18 @@ namespace Softphone.Service
                     "answered" => CallStatisticsDrillDown.Answered,
                     "unanswered" => CallStatisticsDrillDown.Unanswered,
                     "missed" => CallStatisticsDrillDown.Missed,
+                    "failed" => CallStatisticsDrillDown.Failed,
+                    "cancelled" => CallStatisticsDrillDown.Cancelled,
+                    "incoming" => CallStatisticsDrillDown.Incoming,
+                    "outgoing" => CallStatisticsDrillDown.Outgoing,
+                    "crmnotlinked" => CallStatisticsDrillDown.CrmNotLinked,
+                    "crmlinkedtolead" => CallStatisticsDrillDown.CrmLinkedToLead,
+                    "crmsenttocontact" => CallStatisticsDrillDown.CrmSentToContact,
+                    "crmwithrecording" => CallStatisticsDrillDown.CrmWithRecording,
+                    "crmnorecording" => CallStatisticsDrillDown.CrmNoRecording,
+                    "crmuploadedtoamo" => CallStatisticsDrillDown.CrmUploadedToAmo,
+                    "crmrecordingnotinamo" => CallStatisticsDrillDown.CrmRecordingNotInAmo,
+                    "crmuploadproblems" => CallStatisticsDrillDown.CrmUploadProblems,
                     _ => CallStatisticsDrillDown.All,
                 };
                 _controller.SetHistoryDrillDown(drill, Str(p, "phoneNumber"));

@@ -46,6 +46,7 @@ namespace Softphone.Service
             vm.Statistics.TopNumbers.CollectionChanged += OnCollectionChanged;
             vm.Statistics.ConnectionOptions.CollectionChanged += OnCollectionChanged;
             calls.ActiveCallChanged += Schedule;
+            controller.GatewayStateChanged += Schedule;
             ThemePreferences.ConfiguredModeChanged += _ => Schedule();
         }
 
@@ -65,7 +66,7 @@ namespace Softphone.Service
 
         /// <summary>Must run on the dispatcher thread.</summary>
         public MainStateDto Build()
-            => MainStateDto.From(_controller.ViewModel, _calls.HasActiveCall, ThemePreferences.GetConfiguredMode().ToString().ToLowerInvariant());
+            => MainStateDto.From(_controller, _calls.HasActiveCall, ThemePreferences.GetConfiguredMode().ToString().ToLowerInvariant());
 
         public Task<MainStateDto> BuildAsync() => _dispatcher.InvokeAsync(Build);
 

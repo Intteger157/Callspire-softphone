@@ -1,140 +1,149 @@
 import SwiftUI
+import AppKit
+import Combine
 
+/// Settings window — WPF SettingsWindow parity (Connection / Audio / General / Appearance / Advanced / Integrations / About).
+/// The editor works on a local `draft`; snapshots pushed by the sidecar only replace it while nothing is dirty
+/// (gateway fields are merged regardless because Authorize / Clear mutate them server-side).
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
-    @State private var panel: Panel = .connection
-    @State private var saveError: String?
+    @Environment(\.dismiss) private var dismiss
 
-    enum Panel: String, CaseIterable, Identifiable, Hashable {
-        case connection, secondary, audio, kommo, appearance, advanced, about
-        var id: String { rawValue }
-        var title: String {
-            switch self {
-            case .connection: return "Connection"
-            case .secondary: return "Second line"
-            case .audio: return "Audio"
-            case .kommo: return "Kommo & Gateway"
-            case .appearance: return "Appearance"
-            case .advanced: return "Advanced"
-            case .about: return "About"
-            }
-        }
-        var symbol: String {
-            switch self {
-            case .connection: return "cable.connector"
-            case .secondary: return "phone.fill"
-            case .audio: return "speaker.wave.2.fill"
-            case .kommo: return "cloud.fill"
-            case .appearance: return "paintbrush.fill"
-            case .advanced: return "gearshape.fill"
-            case .about: return "info.circle.fill"
-            }
-        }
-    }
+    @State private var panel: AppState.SettingsPanel = .connection
+    @State private var draft = SettingsDto()
+    @State private var baseline = SettingsFields()
+    @State private var loaded = false
+    @State private var busy = false
+    @State private var message: StatusMessage?
+
+    struct StatusMessage: Equatable { var text: String; var isError: Bool }
+
+    private var isDirty: Bool { draft.asFields() != baseline }
 
     var body: some View {
         NavigationSplitView {
-            List(Panel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
-                Label(p.title, systemImage: p.symbol).tag(p)
+            VStack(spacing: 0) {
+                List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
+                    Label(p.title, systemImage: p.symbol).tag(p)
+                }
+                .listStyle(.sidebar)
+                Divider()
+                HStack {
+                    Button("Close") { closeWindow() }
+                        .buttonStyle(.plain).foregroundStyle(.red)
+                    Spacer()
+                }
+                .padding(12)
             }
-            .navigationSplitViewColumnWidth(200)
+            .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
         } detail: {
             ScrollView {
                 Group {
-                    switch panel {
-                    case .connection: ConnectionPanel(isSecondary: false)
-                    case .secondary: ConnectionPanel(isSecondary: true)
-                    case .audio: AudioPanel()
-                    case .kommo: KommoPanel()
-                    case .appearance: AppearancePanel()
-                    case .advanced: AdvancedPanel()
-                    case .about: AboutPanel()
+                    if !loaded {
+                        HStack { ProgressView().controlSize(.small); Text("Loading settings…").foregroundStyle(.secondary) }
+                            .frame(maxWidth: .infinity, minHeight: 200)
+                    } else {
+                        switch panel {
+                        case .connection: ConnectionPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onTest: test)
+                        case .audio: AudioPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
+                        case .general: GeneralPanel(draft: $draft, busy: busy, onSave: save)
+                        case .appearance: AppearancePanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
+                        case .advanced: AdvancedPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
+                        case .integrations: IntegrationsPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onMessage: { message = $0 })
+                        case .about: AboutPanel(info: state.settings)
+                        }
                     }
                 }
-                .padding()
+                .padding(24)
+                .frame(maxWidth: 900, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .safeAreaInset(edge: .bottom) {
-                HStack {
-                    if let err = saveError ?? (state.settings.statusIsError ? state.settings.statusText : nil) {
-                        Text(err).foregroundStyle(.red).font(.caption)
-                    } else if !state.settings.statusText.isEmpty {
-                        Text(state.settings.statusText).foregroundStyle(.green).font(.caption)
+                if let message {
+                    HStack(spacing: 8) {
+                        Image(systemName: message.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                            .foregroundStyle(message.isError ? Color.red : Color.green)
+                        Text(message.text).font(.callout).lineLimit(2)
+                        Spacer()
+                        Button { self.message = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                     }
-                    Spacer()
-                    Button("Save") {
-                        Task { saveError = await state.saveSettings() }
-                    }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(state.settings.isBusy)
+                    .padding(10)
+                    .background(.bar)
                 }
-                .padding()
-                .background(.bar)
             }
+            .navigationTitle(panel.title)
         }
-        .onAppear { state.openSettings() }
-    }
-}
-
-struct FieldLabel: View {
-    let title: String
-    var body: some View { Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
-}
-
-struct ConnectionPanel: View {
-    @EnvironmentObject var state: AppState
-    var isSecondary: Bool
-    private var s: Binding<SettingsDto> { $state.settings }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(isSecondary ? "Second line" : "Main connection").font(.title2.bold())
-            HStack {
-                VStack(alignment: .leading) { FieldLabel(title: "Display name"); TextField("", text: isSecondary ? s.secondaryName : s.mainName) }
-                VStack(alignment: .leading) {
-                    FieldLabel(title: "Transport")
-                    Picker("", selection: isSecondary ? s.secondaryTransport : s.mainTransport) {
-                        ForEach(state.settings.transportOptions) { Text($0.label).tag($0.key) }
-                    }
-                }
-            }
-            let isWebRtc = (isSecondary ? state.settings.secondaryTransport : state.settings.mainTransport).lowercased() == "webrtc"
-            if isWebRtc {
-                FieldLabel(title: "WebSocket URI"); TextField("wss://…", text: isSecondary ? s.secondaryWsUri : s.mainWsUri)
-                HStack {
-                    VStack(alignment: .leading) { FieldLabel(title: "Username"); TextField("", text: isSecondary ? s.secondaryWebRtcUsername : s.mainWebRtcUsername) }
-                    VStack(alignment: .leading) { FieldLabel(title: "Password"); SecureField("", text: isSecondary ? s.secondaryWebRtcPassword : s.mainWebRtcPassword) }
-                }
-                FieldLabel(title: "TURN URI"); TextField("", text: isSecondary ? s.secondaryTurnUri : s.mainTurnUri)
-                HStack {
-                    VStack(alignment: .leading) { FieldLabel(title: "TURN username"); TextField("", text: isSecondary ? s.secondaryTurnUsername : s.mainTurnUsername) }
-                    VStack(alignment: .leading) { FieldLabel(title: "TURN password"); SecureField("", text: isSecondary ? s.secondaryTurnPassword : s.mainTurnPassword) }
-                }
+        .navigationTitle("Softphone Settings")
+        .task { await reload() }
+        .onChange(of: state.settingsOpenRequest) { _ in
+            panel = state.settingsInitialPanel
+            Task { await reload() }
+        }
+        .onReceive(state.$settings.dropFirst()) { fresh in
+            guard loaded else { return }
+            if !isDirty {
+                draft = fresh
+                baseline = fresh.asFields()
             } else {
-                HStack {
-                    VStack(alignment: .leading) { FieldLabel(title: "Server"); TextField("", text: isSecondary ? s.secondaryServer : s.mainServer) }
-                    if isSecondary {
-                        VStack(alignment: .leading) { FieldLabel(title: "RTP server"); TextField("", text: s.secondaryRtpServer) }
-                    } else {
-                        VStack(alignment: .leading) { FieldLabel(title: "Port"); TextField("", text: s.mainPort) }
-                    }
-                }
-                HStack {
-                    VStack(alignment: .leading) { FieldLabel(title: "Username"); TextField("", text: isSecondary ? s.secondaryUsername : s.mainUsername) }
-                    VStack(alignment: .leading) { FieldLabel(title: "Password"); SecureField("", text: isSecondary ? s.secondaryPassword : s.mainPassword) }
-                }
-                Toggle("TLS", isOn: isSecondary ? s.secondaryUseTls : s.mainUseTls)
-                Toggle("SRTP", isOn: isSecondary ? s.secondaryUseSrtp : s.mainUseSrtp)
-            }
-            HStack {
-                Button("Test reachability") {
-                    Task {
-                        struct T: Codable { var secondary: Bool; var fields: SettingsFields }
-                        try? await state.ipc.requestVoid("testConnection", params: T(secondary: isSecondary, fields: state.settings.asFields()))
-                    }
-                }
-                Spacer()
+                // Authorize / Clear on the gateway change these without going through the editor.
+                draft.gatewayEnabled = fresh.gatewayEnabled
+                draft.gatewayUrl = fresh.gatewayUrl
+                draft.gatewayToken = fresh.gatewayToken
+                draft.gatewayExtension = fresh.gatewayExtension
+                draft.kommoOAuth = fresh.kommoOAuth
+                baseline.gatewayEnabled = fresh.gatewayEnabled
+                baseline.gatewayUrl = fresh.gatewayUrl
+                baseline.gatewayToken = fresh.gatewayToken
+                baseline.gatewayExtension = fresh.gatewayExtension
             }
         }
-        .textFieldStyle(.roundedBorder)
+        .onAppear { panel = state.settingsInitialPanel }
+    }
+
+    // MARK: actions
+
+    private func reload() async {
+        if let s = await state.loadSettings() {
+            draft = s
+            baseline = s.asFields()
+            loaded = true
+        }
+    }
+
+    private func save(_ successText: String) {
+        busy = true
+        message = nil
+        Task {
+            let err = await state.saveSettings(draft)
+            busy = false
+            if let err {
+                message = StatusMessage(text: err, isError: true)
+            } else {
+                message = StatusMessage(text: successText, isError: false)
+                if let s = await state.loadSettings() { draft = s; baseline = s.asFields() }
+            }
+        }
+    }
+
+    private func test(secondary: Bool) {
+        busy = true
+        Task {
+            let r = await state.testConnection(secondary: secondary, draft: draft)
+            busy = false
+            if let r { message = StatusMessage(text: r.statusText, isError: r.isError) }
+        }
+    }
+
+    private func closeWindow() {
+        if isDirty {
+            let alert = NSAlert()
+            alert.messageText = "Discard unsaved changes?"
+            alert.informativeText = "You have edited settings that were not saved."
+            alert.addButton(withTitle: "Discard")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() != .alertFirstButtonReturn { return }
+        }
+        dismiss()
+        NSApp.keyWindow?.close()
     }
 }

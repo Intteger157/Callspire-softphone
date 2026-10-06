@@ -33,6 +33,19 @@ Callspire.Mac/Scripts/package-dmg.sh --arch arm64
 
 The published sidecar is copied into `Callspire.app/Contents/MacOS/Service/` by the Xcode post-build script.
 
+## CI (GitHub Actions)
+
+On every push, workflow **Build** (`/.github/workflows/build.yml`) publishes:
+
+- Windows desktop (`callspire-windows-x64` artifact)
+- macOS `Callspire.app` as an unsigned zip (`callspire-macos-arm64-unsigned`)
+
+Download the zip from the Actions run → unzip → first launch: **right-click → Open** (unsigned build).
+
+Tag `v*` triggers **Release** (`release.yml`): Windows Inno Setup installer + macOS unsigned `.zip` / `.dmg` on the GitHub Release page.
+
+Production Mac builds with notarization: run locally with `package-dmg.sh --sign "Developer ID Application: …"`.
+
 ## IPC (NDJSON over `~/Library/Application Support/Callspire/service.sock`)
 
 See `Callspire.Service/ServiceHost.cs` for the method table (`placeCall`, `getSettings`, `webRtcCreateHost`, …).

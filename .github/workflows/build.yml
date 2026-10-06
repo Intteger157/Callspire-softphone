@@ -44,9 +44,9 @@ jobs:
           path: publish/windows
           retention-days: 30
 
-  # ─── macOS sidecar ────────────────────────────────────────────────────────
+  # ─── macOS app (SwiftUI + embedded sidecar) ───────────────────────────────
   build-macos:
-    name: macOS Service sidecar
+    name: macOS app
     runs-on: macos-latest
 
     steps:
@@ -58,12 +58,29 @@ jobs:
           dotnet-version: '8.0.x'
           global-json-file: global.json
 
-      - name: Publish Callspire.Service (osx-arm64)
-        run: bash Callspire.Mac/Scripts/build-service.sh arm64 Release
+      - name: Install XcodeGen
+        run: brew install xcodegen
 
-      - name: Upload macOS sidecar
+      - name: Build Callspire.app (unsigned, CI)
+        run: bash Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --ci
+
+      - name: Zip .app for artifact download
+        run: |
+          APP="$(find publish/macos -name 'Callspire.app' -type d | head -1)"
+          test -n "$APP"
+          ditto -c -k --keepParent "$APP" publish/macos/Callspire-macos-arm64-unsigned.zip
+
+      - name: Upload macOS app (.zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: callspire-macos-arm64-unsigned
+          path: publish/macos/Callspire-macos-arm64-unsigned.zip
+          retention-days: 30
+
+      - name: Upload macOS sidecar (Service folder only)
         uses: actions/upload-artifact@v4
         with:
           name: callspire-macos-service-arm64
           path: publish/macos/Service
           retention-days: 30
+          if-no-files-found: ignore

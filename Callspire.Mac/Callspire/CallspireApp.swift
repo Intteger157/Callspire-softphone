@@ -11,36 +11,68 @@ struct CallspireApp: App {
         Window("Callspire", id: "main") {
             MainView()
                 .environmentObject(state)
-                .frame(minWidth: 980, minHeight: 640)
+                .frame(minWidth: 900, minHeight: 600)
                 .onAppear {
                     appDelegate.state = state
                     state.start()
                 }
         }
-        .windowStyle(.automatic)
-        .defaultSize(width: 1180, height: 720)
+        .defaultSize(width: 1120, height: 720)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { state.openSettings() }.keyboardShortcut(",", modifiers: .command)
             }
+            CommandGroup(after: .windowArrangement) {
+                Button("Logs") { state.openLogs() }.keyboardShortcut("l", modifiers: [.command, .shift])
+            }
+            CommandGroup(replacing: .newItem) { }
         }
 
-        Window("Call", id: "call") {
-            if let call = state.call {
-                CallView(info: call)
-                    .environmentObject(state)
-                    .frame(minWidth: 320, minHeight: 520)
-            } else {
-                Color.clear
+        // Active call — a separate small window like WPF CallWindow. Opened/closed from AppState.
+        Window("Active Call", id: "call") {
+            Group {
+                if let call = state.call {
+                    CallView(info: call)
+                        .environmentObject(state)
+                } else {
+                    Color.clear.frame(width: 380, height: 560)
+                }
             }
+            .background(WindowAccessor { win in
+                state.callWindow = win
+                win.titlebarAppearsTransparent = true
+                win.isMovableByWindowBackground = true
+            })
         }
         .windowResizability(.contentSize)
+        .defaultPosition(.topTrailing)
 
-        Settings {
+        Window("Softphone Settings", id: "settings") {
             SettingsView()
                 .environmentObject(state)
-                .frame(minWidth: 820, minHeight: 560)
+                .frame(minWidth: 860, minHeight: 600)
         }
+        .defaultSize(width: 980, height: 680)
+
+        Window("Logs", id: "logs") {
+            LogView()
+                .environmentObject(state)
+                .frame(minWidth: 640, minHeight: 400)
+        }
+        .defaultSize(width: 860, height: 520)
+    }
+}
+
+/// Gives SwiftUI content access to its hosting NSWindow (used to close the call window programmatically).
+struct WindowAccessor: NSViewRepresentable {
+    var onWindow: (NSWindow) -> Void
+    func makeNSView(context: Context) -> NSView {
+        let v = NSView()
+        DispatchQueue.main.async { if let w = v.window { onWindow(w) } }
+        return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { if let w = nsView.window { onWindow(w) } }
     }
 }
 
@@ -67,9 +99,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { NSApp.windows.first?.makeKeyAndOrderFront(nil) }
+        if !flag { NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true })?.makeKeyAndOrderFront(nil) }
         return true
     }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
         Task { @MainActor in state?.stop() }
@@ -82,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fd = open(lockPath, O_CREAT | O_RDWR, 0o600)
         if fd >= 0 {
             if flock(fd, LOCK_EX | LOCK_NB) != 0 {
-                // Another instance: activate it via the sidecar socket is not available yet — just abort.
+                // Another instance is running; macOS already routed the URL/reopen to it via Launch Services.
                 NSApp.terminate(nil)
             }
         }

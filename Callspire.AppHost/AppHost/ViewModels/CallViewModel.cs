@@ -339,6 +339,69 @@ namespace Softphone.AppHost.ViewModels
 
         public void ToggleKeypad() => IsKeypadVisible = !IsKeypadVisible;
 
+        // ───────────────────────── audio devices (WPF "speaker" button) ─────────────────────────
+
+        /// <summary>One selectable in-call audio device. WebRTC: browser deviceId; SIP: PortAudio index as string.</summary>
+        public sealed record CallAudioDevice(string Id, string Label, bool IsInput);
+
+        /// <summary>
+        /// WPF <c>SpeakerButton_Click</c>: lists microphones/speakers for the running call. WebRTC calls ask the
+        /// engine (<c>enumerateDevices</c>); SIP calls on macOS/Linux enumerate PortAudio devices (Windows SIP calls
+        /// cannot switch mid-call with WASAPI — an empty list is returned).
+        /// </summary>
+        public async Task<IReadOnlyList<CallAudioDevice>> EnumerateAudioDevicesAsync()
+        {
+            var list = new List<CallAudioDevice>();
+            try
+            {
+                if (_useWebRtc)
+                {
+                    if (_webRtc == null) return list;
+                    var devices = await _webRtc.EnumerateAudioDevicesAsync().ConfigureAwait(false);
+                    foreach (var d in devices)
+                    {
+                        bool input = string.Equals(d.Kind, "audioinput", StringComparison.OrdinalIgnoreCase);
+                        bool output = string.Equals(d.Kind, "audiooutput", StringComparison.OrdinalIgnoreCase);
+                        if (!input && !output) continue;
+                        string label = string.IsNullOrWhiteSpace(d.Label) ? (input ? "Microphone" : "Speaker") + $" {d.DeviceId[..Math.Min(6, d.DeviceId.Length)]}" : d.Label;
+                        list.Add(new CallAudioDevice(d.DeviceId, label, input));
+                    }
+                }
+                else if (!OperatingSystem.IsWindows() && PortAudioRuntime.IsAvailable)
+                {
+                    list.Add(new CallAudioDevice("-1", "System default", true));
+                    list.Add(new CallAudioDevice("-1", "System default", false));
+                    foreach (var d in PortAudioRuntime.EnumerateDevices())
+                    {
+                        if (d.IsInput) list.Add(new CallAudioDevice(d.Index.ToString(), d.IsDefaultInput ? $"{d.Name} (default)" : d.Name, true));
+                        if (d.IsOutput) list.Add(new CallAudioDevice(d.Index.ToString(), d.IsDefaultOutput ? $"{d.Name} (default)" : d.Name, false));
+                    }
+                }
+            }
+            catch (Exception ex) { Log($"enumerate audio devices failed: {ex.Message}"); }
+            return list;
+        }
+
+        /// <summary>Apply the devices chosen in the in-call picker. <c>null</c> keeps the current device.</summary>
+        public async Task SwitchAudioDevicesAsync(string? inputId, string? outputId)
+        {
+            try
+            {
+                if (_useWebRtc)
+                {
+                    if (_webRtc != null) await _webRtc.SwitchAudioDeviceAsync(inputId, outputId).ConfigureAwait(false);
+                }
+                else if (_sip != null)
+                {
+                    int? mic = int.TryParse(inputId, out var m) && m >= 0 ? m : null;
+                    int? spk = int.TryParse(outputId, out var s) && s >= 0 ? s : null;
+                    _sip.ChangeAudioDevices(mic, spk);
+                }
+                AddDetail($"Audio devices switched (input={inputId ?? "keep"}, output={outputId ?? "keep"})");
+            }
+            catch (Exception ex) { Log($"switch audio devices failed: {ex.Message}"); throw; }
+        }
+
         /// <summary>Called by the view when the window is closed by the OS / user without pressing hang up.</summary>
         public void OnViewClosed()
         {

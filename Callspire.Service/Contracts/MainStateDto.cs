@@ -135,9 +135,12 @@ namespace Softphone.Service.Contracts
         public IReadOnlyList<StatsRowDto> ConnectionCompare { get; init; } = Array.Empty<StatsRowDto>();
         public IReadOnlyList<StatsRowDto> CallerIds { get; init; } = Array.Empty<StatsRowDto>();
         public IReadOnlyList<StatsRowDto> TopNumbers { get; init; } = Array.Empty<StatsRowDto>();
+        /// <summary>WPF StatsCrm* lines (Name = text, Detail = drill-down key for <c>setHistoryDrillDown</c>).</summary>
+        public IReadOnlyList<StatsRowDto> CrmLines { get; init; } = Array.Empty<StatsRowDto>();
 
         public static StatisticsDto From(StatisticsViewModel vm) => new()
         {
+            CrmLines = BuildCrmLines(vm.Report?.Crm),
             PeriodOptions = StatisticsViewModel.PeriodOptions,
             DirectionOptions = StatisticsViewModel.DirectionOptions,
             ConnectionOptions = vm.ConnectionOptions.ToList(),
@@ -157,6 +160,20 @@ namespace Softphone.Service.Contracts
             CallerIds = vm.CallerIds.Select(StatsRowDto.From).ToList(),
             TopNumbers = vm.TopNumbers.Select(StatsRowDto.From).ToList(),
         };
+
+        // Mirrors MainWindow.BindStatistics (WPF) — same wording so both desktops read identically.
+        private static IReadOnlyList<StatsRowDto> BuildCrmLines(Softphone.CallCrmStatistics? crm)
+        {
+            if (crm == null) return Array.Empty<StatsRowDto>();
+            return new[]
+            {
+                new StatsRowDto { Name = $"Attached to AmoCRM lead: {crm.LinkedToLead} / {crm.TotalCompleted}", Detail = "crmlinkedtolead" },
+                new StatsRowDto { Name = crm.SentToContact > 0 ? $"Sent to AmoCRM contact (no lead): {crm.SentToContact} / {crm.TotalCompleted}" : "Sent to AmoCRM contact (no lead): none", Detail = "crmsenttocontact" },
+                new StatsRowDto { Name = $"Local recording saved: {crm.WithRecording} / {crm.TotalCompleted}", Detail = "crmwithrecording" },
+                new StatsRowDto { Name = crm.WithRecording > 0 ? $"Sent to AmoCRM: {crm.UploadedToAmo} / {crm.WithRecording}" : "Sent to AmoCRM: — (no recordings)", Detail = "crmuploadedtoamo" },
+                new StatsRowDto { Name = crm.RecordingNotInAmo > 0 ? $"Recording not in AmoCRM: {crm.RecordingNotInAmo} (failed {crm.UploadFailed}, cancelled {crm.UploadCancelled})" : "Recording not in AmoCRM: none", Detail = "crmrecordingnotinamo" },
+            };
+        }
     }
 
     public sealed class MainStateDto
@@ -178,6 +195,12 @@ namespace Softphone.Service.Contracts
         public bool AmoCrmOnline { get; init; }
         public bool HasActiveCall { get; init; }
         public string ThemeMode { get; init; } = "system";
+        /// <summary>PBX Gateway client is initialized (URL + extension + token present).</summary>
+        public bool GatewayConnected { get; init; }
+        public string GatewayStatusText { get; init; } = "";
+        /// <summary>Kommo runs through the PBX Gateway (vs. local Kommo API).</summary>
+        public bool KommoGatewayMode { get; init; }
+        public string KommoWebBaseUrl { get; init; } = "";
 
         public ConnectionStatusDto Main { get; init; } = new();
         public ConnectionStatusDto Secondary { get; init; } = new();
@@ -185,8 +208,12 @@ namespace Softphone.Service.Contracts
         public IReadOnlyList<HistoryItemDto> History { get; init; } = Array.Empty<HistoryItemDto>();
         public StatisticsDto Statistics { get; init; } = new();
 
-        public static MainStateDto From(MainViewModel vm, bool hasActiveCall, string themeMode) => new()
+        public static MainStateDto From(DesktopAppController controller, bool hasActiveCall, string themeMode)
         {
+            var vm = controller.ViewModel;
+            var s = controller.Settings;
+            return new MainStateDto
+            {
             PhoneNumber = vm.PhoneNumber, CanCall = vm.CanCall, AccountText = vm.AccountText, AccountToolTip = vm.AccountToolTip,
             AnyOnline = vm.AnyOnline, ShowSplitCallButtons = vm.ShowSplitCallButtons,
             SplitPrimaryLabel = vm.SplitPrimaryLabel, SplitSecondaryLabel = vm.SplitSecondaryLabel,
@@ -194,10 +221,14 @@ namespace Softphone.Service.Contracts
             SelectedCallerId = vm.SelectedCallerId?.Number, HistoryFilterHint = vm.HistoryFilterHint,
             AmoCrmConfigured = vm.AmoCrmConfigured, AmoCrmStatusText = vm.AmoCrmStatusText, AmoCrmOnline = vm.AmoCrmOnline,
             HasActiveCall = hasActiveCall, ThemeMode = themeMode,
+            GatewayConnected = controller.IsGatewayConfigured, GatewayStatusText = controller.GatewayStatusText,
+            KommoGatewayMode = s.EnableAmoCrmIntegration && string.Equals(s.AmoCrmRecordingUploadSource?.Trim(), "gateway", StringComparison.OrdinalIgnoreCase),
+            KommoWebBaseUrl = AmoCrmAccountUrl.TryBuildWebBaseUrl(s.AmoCrmSubdomain) ?? "",
             Main = ConnectionStatusDto.From(vm.Main), Secondary = ConnectionStatusDto.From(vm.Secondary),
             CallerIds = vm.CallerIds.Select(CallerIdDto.From).ToList(),
             History = vm.History.Select(HistoryItemDto.From).ToList(),
             Statistics = StatisticsDto.From(vm.Statistics),
-        };
+            };
+        }
     }
 }

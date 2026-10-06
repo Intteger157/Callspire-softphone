@@ -152,9 +152,10 @@ namespace Softphone.Service
                 string clientId = "", clientSecret = "", redirect = "";
                 if (p.HasValue)
                 {
-                    if (p.Value.TryGetProperty("clientId", out var a)) clientId = a.GetString() ?? "";
-                    if (p.Value.TryGetProperty("clientSecret", out var b)) clientSecret = b.GetString() ?? "";
-                    if (p.Value.TryGetProperty("redirectUri", out var c)) redirect = c.GetString() ?? "";
+                    // Accept both the short names and the SettingsFields names (Swift may send the whole editor payload).
+                    clientId = StrAny(p.Value, "clientId", "kommoClientId");
+                    clientSecret = StrAny(p.Value, "clientSecret", "kommoClientSecret");
+                    redirect = StrAny(p.Value, "redirectUri", "kommoRedirectUri");
                 }
                 var error = await _oauth.AuthorizeAsync(clientId, clientSecret, redirect).ConfigureAwait(false);
                 if (error == null) _dispatcher.Post(() => { Reload(); PushChanged(); });
@@ -193,6 +194,15 @@ namespace Softphone.Service
 
             vm.Theme = Choice(SettingsViewModel.ThemeOptions, f.Theme);
             vm.CallRecording = f.CallRecording; vm.WebRtcDebug = f.WebRtcDebug;
+        }
+
+        private static string StrAny(JsonElement obj, params string[] names)
+        {
+            if (obj.ValueKind != JsonValueKind.Object) return "";
+            foreach (var n in names)
+                if (obj.TryGetProperty(n, out var v) && v.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(v.GetString()))
+                    return v.GetString()!;
+            return "";
         }
 
         private static ChoiceOption Choice(IReadOnlyList<ChoiceOption> options, string? key)

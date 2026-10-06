@@ -100,6 +100,7 @@ struct StatisticsState: Codable {
     var connectionCompare: [StatsRow] = []
     var callerIds: [StatsRow] = []
     var topNumbers: [StatsRow] = []
+    var crmLines: [StatsRow] = []
 }
 
 struct MainState: Codable {
@@ -120,6 +121,10 @@ struct MainState: Codable {
     var amoCrmOnline: Bool = false
     var hasActiveCall: Bool = false
     var themeMode: String = "system"
+    var gatewayConnected: Bool = false
+    var gatewayStatusText: String = ""
+    var kommoGatewayMode: Bool = false
+    var kommoWebBaseUrl: String = ""
     var main: ConnectionStatus = ConnectionStatus()
     var secondary: ConnectionStatus = ConnectionStatus()
     var callerIds: [CallerIdItem] = []
@@ -177,7 +182,7 @@ struct KommoOAuthStatus: Codable {
     var error: String?
 }
 
-struct SettingsFields: Codable {
+struct SettingsFields: Codable, Equatable {
     var mainName = "", mainTransport = "Sip", mainServer = "", mainPort = "5060"
     var mainUsername = "", mainPassword = ""
     var mainUseTls = false, mainUseSrtp = false
@@ -199,8 +204,7 @@ struct SettingsFields: Codable {
 }
 
 struct SettingsDto: Codable {
-    var fields: SettingsFields = SettingsFields()
-    // Flattened overlay — C# SettingsDto inherits fields. We decode both via a custom decoder? Easier: duplicate keys at top level.
+    // C# SettingsDto inherits SettingsFieldsDto, so the editable fields are flattened at the top level.
     var mainName = "", mainTransport = "Sip", mainServer = "", mainPort = "5060"
     var mainUsername = "", mainPassword = ""
     var mainUseTls = false, mainUseSrtp = false
@@ -280,6 +284,79 @@ struct CallDetails: Codable {
     var kommoLeadId: Int64?
     var kommoSubdomain: String?
     var canRetryKommo = false
+    var kommoLeadUrl: String?
+    var kommoWebBaseUrl: String?
+    var kommoUploadedRecordingSource: String?
+    var kommoGatewayUpload = false
+    var kommoLocalUpload = false
+    var showCrmSendSection = false
+
+    var directionText: String { isIncoming ? "Incoming" : "Outgoing" }
+    var endedByText: String {
+        switch endedBy.lowercased() {
+        case "localuser": return "Local User (You)"
+        case "remoteparty": return "Remote Party"
+        default: return "Unknown"
+        }
+    }
+    var statusText: String {
+        switch status.lowercased() {
+        case "ended": return wasAnswered ? "Completed · \(endedBy.lowercased() == "localuser" ? "You hung up" : "Remote hung up")" : "No answer"
+        case "connected": return "Connected"
+        case "calling": return "In progress"
+        case "failed": return "Failed"
+        case "cancelled": return "Cancelled"
+        case "missed": return "Missed"
+        default: return status
+        }
+    }
+    var ringbackDurationText: String {
+        guard let s = ringbackStart, let e = ringbackEnd else { return "—" }
+        let sec = e.timeIntervalSince(s)
+        return sec >= 0 ? String(format: "%.1f seconds", sec) : "—"
+    }
+}
+
+struct KommoContactLookup: Codable {
+    var name: String?
+    var contactId: Int64?
+    var error: String?
+}
+
+struct CallAudioDeviceItem: Codable, Identifiable, Hashable {
+    var id: String
+    var label: String
+}
+
+struct CallAudioDevices: Codable {
+    var isWebRtc = false
+    var inputs: [CallAudioDeviceItem] = []
+    var outputs: [CallAudioDeviceItem] = []
+}
+
+struct GatewayStatus: Codable {
+    var connected = false
+    var statusText = ""
+}
+
+struct TestConnectionResult: Codable {
+    var statusText = ""
+    var isError = false
+}
+
+struct UpdateCheckResult: Codable {
+    var status = ""
+    var available = false
+    var url = ""
+}
+
+struct HistoryKey: Codable {
+    var phoneNumber: String
+    var callTime: Date
+}
+
+struct LogSnapshot: Codable {
+    var lines: [String] = []
 }
 
 struct ConnectionSelectionRequest: Codable {
