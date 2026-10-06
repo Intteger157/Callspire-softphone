@@ -125,6 +125,28 @@ namespace Softphone.AppHost
             RefreshStatistics();
         }
 
+        /// <summary>
+        /// After saving integration/general settings: refresh gateway, Kommo and labels without tearing down SIP/WebRTC.
+        /// </summary>
+        public async Task ApplySavedSettingsWithoutReconnectAsync(AppSettings settings)
+        {
+            _settings = settings;
+
+            if (_shell?.HasActiveCallWindow == true || IsAnySipInCall())
+            {
+                Log("[Controller] ApplySavedSettingsWithoutReconnectAsync: active call, deferring full apply");
+                UiThread.BeginInvoke(() => ViewModel.Main.Update("Settings saved. Applied after current call ends.", ViewModel.Main.IsOnline));
+                _reconnectPendingAfterCall = true;
+                return;
+            }
+
+            ApplyConnectionNames();
+            UpdateAccountInfo();
+            InitializeGateway(settings);
+            await InitializeLocalKommoAsync(settings).ConfigureAwait(false);
+            RefreshStatistics();
+        }
+
         private bool _reconnectPendingAfterCall;
 
         /// <summary>Manual reconnect of one line (status-dot click).</summary>

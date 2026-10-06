@@ -314,7 +314,7 @@ struct AppearancePanel: View {
                     .frame(width: 240)
                 }
             } footer: {
-                Text("Applied immediately. System follows the setting in macOS System Settings.")
+                Text("Saved as soon as you pick a theme (no Save button). System follows macOS appearance.")
             }
         }
         .formStyle(.grouped)

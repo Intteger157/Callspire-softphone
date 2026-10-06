@@ -495,14 +495,19 @@ final class AppState: ObservableObject {
     }
 
     /// Validates + saves + reconnects in shared code. Returns an error message or nil.
-    func saveSettings(_ draft: SettingsDto) async -> String? {
-        struct R: Codable { var error: String? }
+    struct SaveSettingsResult {
+        var error: String?
+        var reconnecting: Bool
+    }
+
+    func saveSettings(_ draft: SettingsDto) async -> SaveSettingsResult {
+        struct R: Codable { var error: String?; var reconnecting: Bool? }
         do {
             let r = try await ipc.request("saveSettings", params: draft.asFields(), as: R.self, timeout: 120)
             if r.error == nil { _ = await loadSettings() }
-            return r.error
+            return SaveSettingsResult(error: r.error, reconnecting: r.reconnecting ?? false)
         } catch {
-            return error.localizedDescription
+            return SaveSettingsResult(error: error.localizedDescription, reconnecting: false)
         }
     }
 
@@ -524,9 +529,19 @@ final class AppState: ObservableObject {
 
     func stopRingtone() { Task { try? await ipc.requestVoid("stopRingtone") } }
 
-    func setTheme(_ key: String) {
+    @MainActor
+    func setTheme(_ key: String) async -> Bool {
         applyTheme(key)
-        Task { try? await ipc.requestVoid("setTheme", params: ["theme": key]) }
+        guard ipc.isConnected else { return false }
+        do {
+            try await ipc.requestVoid("setTheme", params: ["theme": key], timeout: 15)
+            var s = settings
+            s.theme = key
+            settings = s
+            return true
+        } catch {
+            return false
+        }
     }
 
     func checkForUpdates() async -> UpdateCheckResult? {
@@ -535,8 +550,17 @@ final class AppState: ObservableObject {
     }
 
     func openUpdateUrl() { Task { try? await ipc.requestVoid("openUpdateUrl") } }
-    func openLogsFolder() { Task { try? await ipc.requestVoid("openLogsFolder") } }
-    func openRecordingsFolder() { Task { try? await ipc.requestVoid("openRecordingsFolder") } }
+    func openLogsFolder() { revealInFinder(settings.logsFolder) }
+    func openRecordingsFolder() { revealInFinder(settings.recordingsFolder) }
+
+    /// Opens a folder in Finder. The .NET sidecar's `open` call drops paths that contain spaces.
+    func revealInFinder(_ path: String) {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let url = URL(fileURLWithPath: trimmed, isDirectory: true)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
     func openExternal(_ target: String) {
         if let url = URL(string: target), url.scheme != nil { NSWorkspace.shared.open(url) }
         else { Task { try? await ipc.requestVoid("openExternal", params: ["target": target]) } }

@@ -239,6 +239,14 @@ namespace Softphone.AppHost.ViewModels
                     ThemePreferences.SetConfiguredMode(ThemePreferences.ParseMode(value.Key)); // live preview via shell
             }
         }
+
+        /// <summary>Sync editor theme after macOS <c>setTheme</c> IPC (disk already updated).</summary>
+        public void SyncThemeFromDisk(ChoiceOption option)
+        {
+            if (string.Equals(_theme.Key, option.Key, StringComparison.OrdinalIgnoreCase)) return;
+            _theme = option;
+            OnPropertyChanged(nameof(Theme));
+        }
         public bool CallRecording { get => _callRecording; set => Set(ref _callRecording, value); }
         public bool WebRtcDebug { get => _webRtcDebug; set => Set(ref _webRtcDebug, value); }
         public string RecordingsFolder { get => _recordingsFolder; private set => Set(ref _recordingsFolder, value); }
@@ -411,31 +419,48 @@ namespace Softphone.AppHost.ViewModels
 
         // ───────────────────────── save ─────────────────────────
 
-        /// <summary>Validate, persist to settings.json and reconnect. Returns null on success or an error message.</summary>
-        public async Task<string?> SaveAsync()
+        /// <summary>Result of <see cref="SaveAsync"/> for IPC hosts (Mac shell status line).</summary>
+        public sealed class SaveResult
+        {
+            public string? Error { get; init; }
+            public bool TelephonyReconnect { get; init; }
+        }
+
+        /// <summary>Validate, persist to settings.json and reconnect when telephony fields changed.</summary>
+        public async Task<SaveResult> SaveAsync()
         {
             var error = Validate();
-            if (error != null) { SetStatus(error, error: true); return error; }
+            if (error != null) { SetStatus(error, error: true); return new SaveResult { Error = error }; }
 
-            var s = DesktopAppController.LoadSettingsWithMigrations(); // start from disk to keep unknown fields
+            var before = DesktopAppController.LoadSettingsWithMigrations();
+            var s = DesktopAppController.LoadSettingsWithMigrations();
             ApplyTo(s);
+            var telephonyReconnect = SettingsSavePolicy.RequiresTelephonyReconnect(before, s);
 
             try
             {
                 _controller.SaveSettings(s);
                 _settings = s;
                 PlatformRingtone.Configure(s);
-                SetStatus("Settings saved. Reconnecting…");
                 IsBusy = true;
-                await _controller.ReconnectFromSettingsAsync().ConfigureAwait(false);
+                if (telephonyReconnect)
+                {
+                    SetStatus("Settings saved. Reconnecting…");
+                    await _controller.ReconnectFromSettingsAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    SetStatus("Settings saved.");
+                    await _controller.ApplySavedSettingsWithoutReconnectAsync(s).ConfigureAwait(false);
+                }
                 SetStatus("Settings saved.");
-                return null;
+                return new SaveResult { TelephonyReconnect = telephonyReconnect };
             }
             catch (Exception ex)
             {
                 AppLog.Log($"[SettingsVM] save failed: {ex}");
                 SetStatus($"Save failed: {ex.Message}", error: true);
-                return ex.Message;
+                return new SaveResult { Error = ex.Message };
             }
             finally
             {
@@ -671,12 +696,21 @@ namespace Softphone.AppHost.ViewModels
         {
             try
             {
+                if (string.IsNullOrWhiteSpace(target)) return;
                 if (OperatingSystem.IsWindows())
+                {
                     Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
-                else if (OperatingSystem.IsMacOS())
-                    Process.Start("open", target);
-                else
-                    Process.Start("xdg-open", target);
+                    return;
+                }
+
+                // ArgumentList quotes paths that contain spaces (e.g. "Application Support").
+                var psi = new ProcessStartInfo
+                {
+                    FileName = OperatingSystem.IsMacOS() ? "/usr/bin/open" : "xdg-open",
+                    UseShellExecute = false
+                };
+                psi.ArgumentList.Add(target);
+                Process.Start(psi);
             }
             catch (Exception ex)
             {

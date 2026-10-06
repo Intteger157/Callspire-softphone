@@ -73,10 +73,20 @@ struct SettingsView: View {
             scheduleReload(restartSidecar: false)
         }
         .onChange(of: draft.theme) { theme in
-            // Theme previews immediately and is persisted by setTheme — it never makes the form dirty.
             guard loaded, theme != baseline.theme else { return }
-            baseline.theme = theme
-            state.setTheme(theme)
+            let previous = baseline.theme
+            Task {
+                let ok = await state.setTheme(theme)
+                await MainActor.run {
+                    if ok {
+                        baseline.theme = theme
+                        message = StatusMessage(text: "Appearance saved.", isError: false)
+                    } else {
+                        draft.theme = previous
+                        message = StatusMessage(text: "Could not save appearance.", isError: true)
+                    }
+                }
+            }
         }
         .onReceive(state.$settings.dropFirst()) { fresh in
             guard loaded else { return }
@@ -181,14 +191,14 @@ struct SettingsView: View {
     private func save() {
         busy = true
         message = nil
-        let reconnects = panel == .connection
         Task {
-            let err = await state.saveSettings(draft)
+            let result = await state.saveSettings(draft)
             busy = false
-            if let err {
+            if let err = result.error {
                 message = StatusMessage(text: err, isError: true)
             } else {
-                message = StatusMessage(text: reconnects ? "Saved. Reconnecting…" : "Settings saved.", isError: false)
+                let text = result.reconnecting ? "Saved. Reconnecting…" : "Settings saved."
+                message = StatusMessage(text: text, isError: false)
                 if let s = await state.loadSettings() { draft = s; baseline = s.asFields() }
             }
         }

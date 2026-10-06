@@ -87,9 +87,9 @@ namespace Softphone.Service
                 var fields = p.HasValue ? IpcJson.Deserialize<SettingsFieldsDto>(p.Value) : null;
                 if (fields == null) throw new IpcException("settings payload is required", "bad_request");
                 Apply(Vm, fields);
-                var error = await Vm.SaveAsync().ConfigureAwait(false);
-                if (error == null) _dispatcher.Post(Reload);
-                return new { error };
+                var result = await Vm.SaveAsync().ConfigureAwait(false);
+                if (result.Error == null) _dispatcher.Post(Reload);
+                return new { error = result.Error, reconnecting = result.TelephonyReconnect && result.Error == null };
             }));
 
             _ipc.Register("testConnection", (p, _) => _dispatcher.RunAsync<object?>(async () =>
@@ -140,12 +140,21 @@ namespace Softphone.Service
             }));
             _ipc.Register("stopRingtone", _ => { Softphone.Audio.PlatformRingtone.Stop(); return null; });
 
-            _ipc.Register("setTheme", p =>
+            _ipc.Register("setTheme", p => _dispatcher.InvokeAsync<object?>(() =>
             {
                 var key = p.HasValue && p.Value.TryGetProperty("theme", out var t) ? t.GetString() : null;
-                ThemePreferences.SetConfiguredMode(ThemePreferences.ParseMode(key));
+                var mode = ThemePreferences.ParseMode(key);
+                ThemePreferences.SetConfiguredMode(mode);
+                if (_vm != null)
+                {
+                    var themeKey = mode.ToString().ToLowerInvariant();
+                    var picked = SettingsViewModel.ThemeOptions.FirstOrDefault(o =>
+                        string.Equals(o.Key, themeKey, StringComparison.OrdinalIgnoreCase))
+                        ?? SettingsViewModel.ThemeOptions[0];
+                    _vm.SyncThemeFromDisk(picked);
+                }
                 return null;
-            });
+            }));
 
             _ipc.Register("kommoAuthorize", async (p, ct) =>
             {
