@@ -18,8 +18,8 @@ OutputBaseFilename=Callspire-{#MyAppVersion}-win-arm64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-ArchitecturesAllowed=arm64compatible
-ArchitecturesInstallIn64BitMode=arm64compatible
+ArchitecturesAllowed=arm64
+ArchitecturesInstallIn64BitMode=arm64
 UninstallDisplayIcon={app}\Callspire.exe
 
 [Languages]
