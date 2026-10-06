@@ -46,6 +46,8 @@ final class AppState: ObservableObject {
     @Published var logStreaming = false
 
     private var connectTask: Task<Void, Never>?
+    private var connectGeneration = 0
+    private var sidecarLifecycleStarted = false
     private var pendingProtocolUrls: [String] = []
     private var connectionReply: ((ConnectionSelectionResult) -> Void)?
     private var leadReply: ((LeadSelectionResult) -> Void)?
@@ -106,15 +108,62 @@ final class AppState: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Idempotent: safe from MainView, Settings, and Retry.
     func start() {
         guard !InstanceBroker.isSecondaryForwarder else { return }
+        guard !sidecarLifecycleStarted else { return }
+        sidecarLifecycleStarted = true
         registerIpcHandlers()
+        wireIpcConnectionCallbacks()
+        webRtc.attach(ipc: ipc)
+        launchSidecarProcess()
+    }
+
+    private func wireIpcConnectionCallbacks() {
+        ipc.onDisconnected = { [weak self] in
+            Task { @MainActor in self?.handleIpcDisconnected() }
+        }
+    }
+
+    /// Stop IPC, relaunch Callspire.Service, and reconnect (Settings Retry).
+    func restartSidecar() async {
+        guard !InstanceBroker.isSecondaryForwarder else { return }
+        if !sidecarLifecycleStarted {
+            start()
+            return
+        }
+        connectTask?.cancel()
+        ipc.disconnect()
+        sidecar.stop()
+        connected = false
+        settingsLoaded = false
+        statusLine = "Restarting Callspire.Service…"
+        try? FileManager.default.removeItem(atPath: socketPath)
+        launchSidecarProcess()
+    }
+
+    private func launchSidecarProcess() {
         sidecar.onCrash = { [weak self] in self?.statusLine = "Service crashed — restarting…" }
         do { try sidecar.start(socketPath: socketPath) }
-        catch { statusLine = "Cannot start Callspire.Service: \(error.localizedDescription)" }
+        catch {
+            statusLine = "Cannot start Callspire.Service: \(error.localizedDescription)"
+            return
+        }
+        beginConnectLoop()
+    }
+
+    private func beginConnectLoop() {
+        connectGeneration += 1
         connectTask?.cancel()
-        connectTask = Task { await connectLoop() }
-        webRtc.attach(ipc: ipc)
+        let generation = connectGeneration
+        connectTask = Task { await connectLoop(generation: generation) }
+    }
+
+    private func handleIpcDisconnected() {
+        guard sidecarLifecycleStarted else { return }
+        connected = false
+        statusLine = "Disconnected — reconnecting…"
+        beginConnectLoop()
     }
 
     func stop() {
@@ -124,24 +173,25 @@ final class AppState: ObservableObject {
         webRtc.destroy()
     }
 
-    private func connectLoop() async {
+    private func connectLoop(generation: Int) async {
         for _ in 0..<80 {
-            if Task.isCancelled { return }
+            if Task.isCancelled || generation != connectGeneration { return }
+            if statusLine == "Starting…" || statusLine.hasPrefix("Restarting") || statusLine.hasPrefix("Disconnected") {
+                statusLine = "Waiting for Callspire.Service…"
+            }
             do {
                 try ipc.connect(path: socketPath)
+                if Task.isCancelled || generation != connectGeneration {
+                    ipc.disconnect(silent: true)
+                    return
+                }
                 connected = true
                 statusLine = "Connected"
                 ipc.onEvent = { [weak self] name, data in
                     Task { @MainActor in self?.handleEvent(name, data) }
                 }
-                ipc.onDisconnected = { [weak self] in
-                    Task { @MainActor in
-                        self?.connected = false
-                        self?.statusLine = "Disconnected — reconnecting…"
-                        self?.connectTask = Task { await self?.connectLoop() }
-                    }
-                }
                 _ = try? await ipc.request("ping", as: Ping.self)
+                if generation != connectGeneration { return }
                 await refreshState()
                 if logStreaming { await loadLogSnapshot() }
                 flushPendingProtocolUrls()
@@ -151,7 +201,9 @@ final class AppState: ObservableObject {
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
-        statusLine = "Could not connect to Callspire.Service"
+        if generation == connectGeneration {
+            statusLine = "Could not connect to Callspire.Service"
+        }
     }
 
     private struct Ping: Codable { var pong: Bool?; var version: String?; var pid: Int? }

@@ -58,6 +58,10 @@ targets:
           if [ -d "$SERVICE_SRC" ]; then
             mkdir -p "$DEST"
             rsync -a --delete "$SERVICE_SRC/" "$DEST/"
+            if [ -f "$DEST/Callspire.Service" ]; then
+              chmod +x "$DEST/Callspire.Service"
+              codesign --force --sign - "$DEST/Callspire.Service" 2>/dev/null || true
+            fi
           else
             echo "warning: $SERVICE_SRC missing — run Callspire.Mac/Scripts/build-service.sh first"
           fi

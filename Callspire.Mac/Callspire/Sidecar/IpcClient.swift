@@ -13,9 +13,17 @@ final class IpcClient {
     var onEvent: ((String, AnyJSON?) -> Void)?
     var onDisconnected: (() -> Void)?
     private(set) var isConnected = false
+    private var connectedPath: String?
+    /// When true, EOF/cancel from an intentional reconnect must not spawn another connect loop.
+    private var suppressDisconnectNotify = false
 
     func connect(path: String) throws {
-        disconnect()
+        var alreadyOnPath = false
+        queue.sync {
+            alreadyOnPath = isConnected && connectedPath == path
+        }
+        if alreadyOnPath { return }
+        disconnect(silent: true)
         let sock = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard sock >= 0 else { throw IpcError.disconnected }
 
@@ -40,6 +48,7 @@ final class IpcClient {
         }
         fd = sock
         isConnected = true
+        connectedPath = path
         let source = DispatchSource.makeReadSource(fileDescriptor: sock, queue: queue)
         source.setEventHandler { [weak self] in self?.readAvailable() }
         source.setCancelHandler { Darwin.close(sock) }
@@ -47,12 +56,15 @@ final class IpcClient {
         readSource = source
     }
 
-    func disconnect() {
+    /// - Parameter silent: When `true` (default), do not invoke ``onDisconnected`` (reconnect in progress).
+    func disconnect(silent: Bool = true) {
         queue.sync {
+            suppressDisconnectNotify = silent
             readSource?.cancel()
             readSource = nil
             if fd >= 0 { Darwin.close(fd); fd = -1 }
             isConnected = false
+            connectedPath = nil
             let leftover = pending
             pending.removeAll()
             leftover.values.forEach { $0(.failure(IpcError.disconnected)) }
@@ -127,7 +139,12 @@ final class IpcClient {
         let n = Darwin.read(fd, &tmp, tmp.count)
         if n <= 0 {
             isConnected = false
-            DispatchQueue.main.async { self.onDisconnected?() }
+            connectedPath = nil
+            let notify = !suppressDisconnectNotify
+            suppressDisconnectNotify = false
+            if notify {
+                DispatchQueue.main.async { self.onDisconnected?() }
+            }
             return
         }
         buffer.append(contentsOf: tmp.prefix(n))

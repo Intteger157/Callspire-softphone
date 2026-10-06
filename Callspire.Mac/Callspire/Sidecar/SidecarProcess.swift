@@ -59,8 +59,13 @@ final class SidecarProcess {
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("Callspire.Service/bin/Debug/net8.0/Callspire.Service"),
         ]
-        if let found = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) {
-            return found
+        for url in candidates where FileManager.default.fileExists(atPath: url.path) {
+            if !FileManager.default.isExecutableFile(atPath: url.path) {
+                try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+            }
+            if FileManager.default.isExecutableFile(atPath: url.path) {
+                return url
+            }
         }
         let tried = candidates.map(\.path).joined(separator: "\n")
         throw NSError(

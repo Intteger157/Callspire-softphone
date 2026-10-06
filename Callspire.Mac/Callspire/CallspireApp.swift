@@ -19,7 +19,6 @@ struct CallspireApp: App {
                 .frame(minWidth: 900, minHeight: 600)
                 .onAppear {
                     appDelegate.attach(state: state)
-                    state.start()
                 }
         }
         .defaultSize(width: 1120, height: 720)
@@ -90,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func attach(state: AppState) {
         self.state = state
+        state.start()
         let queued = pendingOpenUrls
         pendingOpenUrls.removeAll()
         for url in queued { state.handleUrl(url) }
@@ -139,7 +139,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if InstanceBroker.isSecondaryForwarder {
             NSApp.setActivationPolicy(.prohibited)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 20) { exit(0) }
+            let myPid = ProcessInfo.processInfo.processIdentifier
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.callspire.softphone") {
+                if app.processIdentifier != myPid {
+                    app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    break
+                }
+            }
+            exit(0)
             return
         }
         NSApp.setActivationPolicy(.regular)

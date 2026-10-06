@@ -13,6 +13,7 @@ struct SettingsView: View {
     @State private var loaded = false
     @State private var busy = false
     @State private var message: StatusMessage?
+    @State private var reloadTask: Task<Void, Never>?
 
     struct StatusMessage: Equatable { var text: String; var isError: Bool }
 
@@ -46,7 +47,7 @@ struct SettingsView: View {
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
-                            Button("Retry") { Task { await reload() } }
+                            Button("Retry") { scheduleReload(restartSidecar: true) }
                                 .keyboardShortcut(.defaultAction)
                         }
                     }
@@ -63,13 +64,13 @@ struct SettingsView: View {
             }
             .navigationTitle(panel.title)
         }
-        .task { await reload() }
+        .task { scheduleReload(restartSidecar: false) }
         .onChange(of: state.connected) { connected in
-            if connected && !loaded { Task { await reload() } }
+            if connected && !loaded { scheduleReload(restartSidecar: false) }
         }
         .onChange(of: state.settingsOpenRequest) { _ in
             panel = state.settingsInitialPanel
-            Task { await reload() }
+            scheduleReload(restartSidecar: false)
         }
         .onChange(of: draft.theme) { theme in
             // Theme previews immediately and is persisted by setTheme — it never makes the form dirty.
@@ -94,7 +95,10 @@ struct SettingsView: View {
                 baseline.gatewayExtension = fresh.gatewayExtension
             }
         }
-        .onAppear { panel = state.settingsInitialPanel }
+        .onAppear {
+            panel = state.settingsInitialPanel
+            state.start()
+        }
     }
 
     @ViewBuilder
@@ -141,14 +145,26 @@ struct SettingsView: View {
 
     // MARK: - Actions
 
-    private func reload() async {
+    private func scheduleReload(restartSidecar: Bool) {
+        reloadTask?.cancel()
+        reloadTask = Task { await reload(restartSidecar: restartSidecar) }
+    }
+
+    private func reload(restartSidecar: Bool) async {
         loaded = false
         message = nil
+        if restartSidecar {
+            await state.restartSidecar()
+        } else {
+            state.start()
+        }
         if !state.connected {
             for _ in 0..<40 where !state.connected {
+                if Task.isCancelled { return }
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
         }
+        if Task.isCancelled { return }
         if let s = await state.loadSettings() {
             draft = s
             baseline = s.asFields()
