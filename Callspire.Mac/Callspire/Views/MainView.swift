@@ -5,34 +5,72 @@ struct MainView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.openWindow) private var openWindow
 
+    private enum SidebarItem: Hashable {
+        case nav(AppState.NavItem)
+        case settings
+        case logs
+    }
+
+    @State private var selection: SidebarItem = .nav(.dialer)
+
     var body: some View {
         NavigationSplitView {
-            sidebar
-                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
-        } detail: {
-            Group {
-                switch state.selectedNav {
-                case .dialer: DialerView()
-                case .history: HistoryView()
-                case .statistics: StatisticsView()
+            List(selection: $selection) {
+                Section {
+                    accountRow
+                }
+
+                Section {
+                    ForEach(AppState.NavItem.allCases) { item in
+                        Label {
+                            Text(item.title)
+                        } icon: {
+                            Image(systemName: selection == .nav(item) ? item.symbolSelected : item.symbol)
+                                .symbolRenderingMode(.hierarchical)
+                        }
+                        .tag(SidebarItem.nav(item))
+                    }
+                }
+
+                Section {
+                    Label("Settings", systemImage: "gearshape")
+                        .tag(SidebarItem.settings)
+                    Label("Logs", systemImage: "text.alignleft")
+                        .tag(SidebarItem.logs)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("Softphone")
-            .navigationSubtitle(state.main.accountText)
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 250)
+        } detail: {
+            detail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .navigationTitle(detailTitle)
         .toolbar {
             ToolbarItem(placement: .automatic) {
-                HStack(spacing: 6) {
-                    StatusDot(tone: state.main.anyOnline ? .online : (state.connected ? .offline : .error))
-                    Text(state.main.accountText.isEmpty ? state.statusLine : state.main.accountText)
-                        .font(.callout).foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                StatusPill(
+                    text: state.main.accountText.isEmpty ? state.statusLine : state.main.accountText,
+                    tone: state.main.anyOnline ? .online : (state.connected ? .offline : .error)
+                )
                 .help(state.main.accountToolTip.isEmpty ? state.statusLine : state.main.accountToolTip)
             }
         }
-        // Modals the sidecar can request at any time.
+        .onChange(of: selection) { item in
+            switch item {
+            case .nav(let nav):
+                state.selectedNav = nav
+            case .settings:
+                state.openSettings()
+                // Keep main nav selection visually stable after opening Settings window.
+                selection = .nav(state.selectedNav)
+            case .logs:
+                state.openLogs()
+                selection = .nav(state.selectedNav)
+            }
+        }
+        .onChange(of: state.selectedNav) { nav in
+            if case .nav = selection { selection = .nav(nav) }
+        }
         .alert(item: $state.alert) { a in
             Alert(title: Text(a.title), message: Text(a.text), dismissButton: .default(Text("OK")))
         }
@@ -49,65 +87,57 @@ struct MainView: View {
         .sheet(item: Binding(get: { state.callDetails.map { Identified($0) } }, set: { if $0 == nil { state.callDetails = nil } })) { wrap in
             CallDetailsView(details: wrap.value).environmentObject(state)
         }
-        // Window openers: AppState bumps a counter / sets `call`; these observers turn that into openWindow().
         .onChange(of: state.call?.sessionId) { id in
             if id != nil { openWindow(id: "call") }
         }
         .onChange(of: state.settingsOpenRequest) { _ in openWindow(id: "settings") }
         .onChange(of: state.logsOpenRequest) { _ in openWindow(id: "logs") }
+        .onAppear { selection = .nav(state.selectedNav) }
     }
 
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            List(selection: Binding(get: { state.selectedNav }, set: { if let v = $0 { state.selectedNav = v } })) {
-                Section {
-                    ForEach(AppState.NavItem.allCases) { item in
-                        Label(item.title, systemImage: item.symbol).tag(item)
-                    }
-                } header: {
-                    accountHeader
-                }
-            }
-            .listStyle(.sidebar)
-
-            Divider()
-            VStack(alignment: .leading, spacing: 2) {
-                sidebarButton("Settings", symbol: "gearshape") { state.openSettings() }
-                sidebarButton("Logs", symbol: "doc.text") { state.openLogs() }
-            }
-            .padding(8)
+    @ViewBuilder
+    private var detail: some View {
+        switch state.selectedNav {
+        case .dialer: DialerView()
+        case .history: HistoryView()
+        case .statistics: StatisticsView()
         }
     }
 
-    private var accountHeader: some View {
+    private var detailTitle: String {
+        switch state.selectedNav {
+        case .dialer: return "Callspire"
+        case .history: return "Call History"
+        case .statistics: return "Call Statistics"
+        }
+    }
+
+    private var accountRow: some View {
         HStack(spacing: 10) {
             ZStack {
-                Circle().fill(Color.accentColor).frame(width: 34, height: 34)
-                Text(initial).font(.headline).foregroundStyle(.white)
+                Circle()
+                    .fill(Color.accentColor.opacity(0.85))
+                    .frame(width: 28, height: 28)
+                Text(initial)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white)
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(state.main.main.displayName.isEmpty ? "Callspire" : state.main.main.displayName)
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
                 Text(state.main.main.text.isEmpty ? state.statusLine : state.main.main.text)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-        .padding(.vertical, 6)
-        .textCase(nil)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
     }
 
     private var initial: String {
         let name = state.main.main.displayName.trimmingCharacters(in: .whitespaces)
-        return String((name.isEmpty ? "S" : name).prefix(1)).uppercased()
-    }
-
-    private func sidebarButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: symbol)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8).padding(.vertical, 6)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        return String((name.isEmpty ? "C" : name).prefix(1)).uppercased()
     }
 }

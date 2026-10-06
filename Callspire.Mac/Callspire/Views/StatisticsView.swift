@@ -15,17 +15,18 @@ struct StatisticsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
-                    SectionHeader(title: "Call Statistics", subtitle: subtitle)
+                    if !st.periodHint.isEmpty {
+                        Text(st.periodHint).font(.callout).foregroundStyle(.secondary)
+                    }
                     Spacer()
-                    Button { state.exportStatisticsCsv() } label: { Label("Export CSV", systemImage: "square.and.arrow.up") }
-                        .disabled(!st.hasReport)
+                    Button { state.exportStatisticsCsv() } label: {
+                        Label("Export CSV", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(!st.hasReport)
                 }
 
                 filters
 
-                if !st.periodHint.isEmpty {
-                    Text(st.periodHint).font(.callout).foregroundStyle(.secondary)
-                }
                 if st.hasLegacyUnknownConnection {
                     Label("Some older calls have no connection information and are counted under “Unknown”.", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.secondary)
@@ -55,11 +56,6 @@ struct StatisticsView: View {
             if let f = st.customFrom { customFrom = f }
             if let t = st.customTo { customTo = t }
         }
-    }
-
-    private var subtitle: String {
-        let period = st.periodOptions.indices.contains(st.periodIndex) ? st.periodOptions[st.periodIndex].lowercased() : "selected period"
-        return "Operational analytics from the \(period) of call history"
     }
 
     // MARK: filters

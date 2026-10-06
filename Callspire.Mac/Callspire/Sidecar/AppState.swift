@@ -50,7 +50,7 @@ final class AppState: ObservableObject {
     private var leadReply: ((LeadSelectionResult) -> Void)?
     private var kommoReply: ((Int64?) -> Void)?
 
-    enum NavItem: String, CaseIterable, Identifiable {
+    enum NavItem: String, CaseIterable, Identifiable, Hashable {
         case dialer, history, statistics
         var id: String { rawValue }
         var title: String {
@@ -62,9 +62,16 @@ final class AppState: ObservableObject {
         }
         var symbol: String {
             switch self {
-            case .dialer: return "circle.grid.3x3.fill"
-            case .history: return "clock.arrow.circlepath"
-            case .statistics: return "chart.bar.xaxis"
+            case .dialer: return "phone"
+            case .history: return "clock"
+            case .statistics: return "chart.bar"
+            }
+        }
+        var symbolSelected: String {
+            switch self {
+            case .dialer: return "phone.fill"
+            case .history: return "clock.fill"
+            case .statistics: return "chart.bar.fill"
             }
         }
     }
@@ -85,11 +92,11 @@ final class AppState: ObservableObject {
         }
         var symbol: String {
             switch self {
-            case .connection: return "antenna.radiowaves.left.and.right"
+            case .connection: return "network"
             case .audio: return "speaker.wave.2"
             case .general: return "gearshape"
-            case .appearance: return "paintpalette"
-            case .advanced: return "chevron.left.forwardslash.chevron.right"
+            case .appearance: return "paintbrush"
+            case .advanced: return "slider.horizontal.3"
             case .integrations: return "link"
             case .about: return "info.circle"
             }

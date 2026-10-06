@@ -1,50 +1,63 @@
 import SwiftUI
 
-/// Call History page — WPF parity: title, optional drill-down filter chip, red "Clear History",
-/// one card per call (direction icon, number, transport badge, time, duration, status, call button).
+/// Call History — native List + SF Symbols.
 struct HistoryView: View {
     @EnvironmentObject var state: AppState
     @State private var confirmClear = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                SectionHeader(title: "Call History")
-                Spacer()
-                Button(role: .destructive) { confirmClear = true } label: {
-                    Text("Clear History").foregroundStyle(.red)
-                }
-                .disabled(state.main.history.isEmpty)
-            }
-            if let hint = state.main.historyFilterHint, !hint.isEmpty {
-                HStack(spacing: 8) {
-                    Label(hint, systemImage: "line.3.horizontal.decrease.circle").font(.callout)
-                    Button("Show all") { state.clearHistoryFilter() }.controlSize(.small)
-                }
-                .padding(8)
-                .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
-            }
-
+        Group {
             if state.main.history.isEmpty {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "clock.arrow.circlepath").font(.system(size: 40)).foregroundStyle(.tertiary)
-                    Text("No calls yet").foregroundStyle(.secondary)
+                VStack(spacing: 10) {
+                    Image(systemName: "clock")
+                        .font(.system(size: 40, weight: .light))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.tertiary)
+                    Text("No Calls Yet")
+                        .font(.title3.weight(.medium))
+                    Text("Completed calls will appear here.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
                 }
-                .frame(maxWidth: .infinity)
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(state.main.history) { item in
-                            HistoryRow(item: item)
+                List(state.main.history) { item in
+                    HistoryRow(item: item)
+                        .contentShape(Rectangle())
+                        .onTapGesture { state.openHistoryDetails(item) }
+                        .contextMenu {
+                            Button("Call") { state.placeCall(number: item.phoneNumber) }
+                            Button("Details…") { state.openHistoryDetails(item) }
+                            Button("Copy Number") { Pasteboard.copy(item.phoneNumber) }
+                            Button("Use in Dialer") {
+                                state.setPhone(item.phoneNumber)
+                                state.selectedNav = .dialer
+                            }
                         }
-                    }
-                    .padding(.bottom, 12)
                 }
+                .listStyle(.inset)
             }
         }
-        .padding(20)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let hint = state.main.historyFilterHint, !hint.isEmpty {
+                HStack(spacing: 8) {
+                    Label(hint, systemImage: "line.3.horizontal.decrease.circle")
+                        .font(.callout)
+                    Spacer()
+                    Button("Show All") { state.clearHistoryFilter() }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(.bar)
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button("Clear History", role: .destructive) { confirmClear = true }
+                    .disabled(state.main.history.isEmpty)
+            }
+        }
         .confirmationDialog("Clear all call history?", isPresented: $confirmClear, titleVisibility: .visible) {
             Button("Clear History", role: .destructive) { state.clearHistory() }
             Button("Cancel", role: .cancel) { }
@@ -57,75 +70,64 @@ struct HistoryView: View {
 private struct HistoryRow: View {
     @EnvironmentObject var state: AppState
     let item: HistoryItem
-    @State private var hover = false
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Image(systemName: directionSymbol)
+                .symbolRenderingMode(.hierarchical)
                 .font(.title3)
                 .foregroundStyle(item.isMissed ? Color.red : (item.isIncoming ? Color.accentColor : Color.green))
-                .frame(width: 28)
+                .frame(width: 24)
+
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Text(item.phoneNumberDisplay.isEmpty ? item.phoneNumber : item.phoneNumberDisplay)
-                        .font(.body.weight(.semibold))
+                        .font(.body.weight(.medium))
                     TransportBadge(label: item.transportLabel, isWebRtc: item.isWebRtc)
-                    if !item.connectionLabel.isEmpty {
-                        Text(item.connectionLabel).font(.caption2).foregroundStyle(.secondary)
-                    }
                     if item.hasRecording {
-                        Image(systemName: "waveform").font(.caption2).foregroundStyle(.secondary).help("Recording available")
+                        Image(systemName: "waveform")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("Recording available")
                     }
                 }
-                HStack(spacing: 8) {
-                    Text(item.callTimeText.isEmpty ? item.callTime.historyStamp : item.callTimeText)
-                        .font(.caption).foregroundStyle(.secondary)
-                    if let cid = item.outboundCallerId, !cid.isEmpty {
-                        Text("via \(cid)").font(.caption).foregroundStyle(.secondary)
-                    }
-                    if !item.crmStatus.isEmpty {
-                        Text(item.crmStatus).font(.caption).foregroundStyle(.secondary)
-                    }
-                }
+                Text(item.callTimeText.isEmpty ? item.callTime.historyStamp : item.callTimeText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 3) {
-                Text(item.durationText).font(.caption).foregroundStyle(.secondary)
-                Text(item.status).font(.caption).foregroundStyle(statusColor)
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(item.durationText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Text(item.status)
+                    .font(.caption)
+                    .foregroundStyle(statusColor)
             }
+
             Button {
                 state.setPhone(item.phoneNumber)
                 state.placeCall(number: item.phoneNumber)
             } label: {
                 Image(systemName: "phone.fill")
+                    .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 32, height: 32)
-                    .background(state.main.canCall ? Color.green : Color.gray.opacity(0.5), in: Circle())
+                    .frame(width: 28, height: 28)
+                    .background(state.main.canCall ? Color.green : Color.gray.opacity(0.45), in: Circle())
             }
             .buttonStyle(.plain)
             .disabled(!state.main.canCall)
             .help("Call back")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(hover ? Color.accentColor.opacity(0.6) : Color(nsColor: .separatorColor), lineWidth: 1))
-        )
-        .contentShape(Rectangle())
-        .onHover { hover = $0 }
-        .onTapGesture { state.openHistoryDetails(item) }
-        .contextMenu {
-            Button("Call") { state.placeCall(number: item.phoneNumber) }
-            Button("Details…") { state.openHistoryDetails(item) }
-            Button("Copy number") { Pasteboard.copy(item.phoneNumber) }
-            Button("Use in dialer") { state.setPhone(item.phoneNumber); state.selectedNav = .dialer }
-        }
+        .padding(.vertical, 2)
     }
 
     private var directionSymbol: String {
-        if item.isMissed { return "phone.arrow.down.left" }
-        return item.isIncoming ? "phone.arrow.down.left" : "phone.arrow.up.right"
+        if item.isMissed { return "phone.arrow.down.left.fill" }
+        return item.isIncoming ? "phone.arrow.down.left.fill" : "phone.arrow.up.right.fill"
     }
 
     private var statusColor: Color {

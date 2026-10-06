@@ -47,7 +47,7 @@ struct CallspireApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.topTrailing)
 
-        Window("Softphone Settings", id: "settings") {
+        Window("Settings", id: "settings") {
             SettingsView()
                 .environmentObject(state)
                 .frame(minWidth: 860, minHeight: 600)

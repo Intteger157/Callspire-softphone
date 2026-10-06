@@ -1,154 +1,184 @@
 import SwiftUI
 
-/// Dialer page — mirrors the WPF MainWindow dialer: line status rows, Kommo status, number field,
-/// Caller ID picker, 3×4 keypad and the green call button (split into two when both lines are up).
+/// Native macOS dialer — compact centered pad, system controls, SF Symbols.
 struct DialerView: View {
     @EnvironmentObject var state: AppState
     @FocusState private var numberFocused: Bool
-    private let keys = [["1","2","3"],["4","5","6"],["7","8","9"],["*","0","#"]]
+
+    private let keys: [(String, String?)] = [
+        ("1", nil), ("2", "ABC"), ("3", "DEF"),
+        ("4", "GHI"), ("5", "JKL"), ("6", "MNO"),
+        ("7", "PQRS"), ("8", "TUV"), ("9", "WXYZ"),
+        ("*", nil), ("0", "+"), ("#", nil),
+    ]
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 18) {
-                Spacer(minLength: 24)
-                statusRows
+        VStack(spacing: 0) {
+            statusBar
+                .padding(.top, 12)
+                .padding(.horizontal, 20)
 
+            Spacer(minLength: 12)
+
+            VStack(spacing: 16) {
                 if let banner = state.main.sipAuthFailureText, !banner.isEmpty {
                     Label(banner, systemImage: "exclamationmark.triangle.fill")
-                        .font(.callout).foregroundStyle(.red)
+                        .font(.callout)
+                        .foregroundStyle(.red)
                         .padding(10)
-                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                        .frame(maxWidth: MacTheme.contentMaxWidth)
+                        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
 
                 numberField
-
-                if state.main.showCallerIdPicker && !state.main.callerIds.isEmpty {
-                    VStack(spacing: 4) {
-                        Text("Caller ID").font(.caption).foregroundStyle(.secondary)
-                        Picker("", selection: Binding(
-                            get: { state.main.selectedCallerId ?? state.main.callerIds.first?.number ?? "" },
-                            set: { state.selectCallerId($0) }
-                        )) {
-                            ForEach(state.main.callerIds) { c in Text(c.displayText).tag(c.number) }
-                        }
-                        .labelsHidden()
-                        .frame(width: 260)
-                    }
-                }
-
+                callerIdPicker
                 keypad
-
-                HStack(spacing: 16) {
-                    if state.main.showSplitCallButtons {
-                        callButton(state.main.splitPrimaryLabel, slot: "main")
-                        callButton(state.main.splitSecondaryLabel, slot: "secondary")
-                    } else {
-                        callButton(nil, slot: nil)
-                    }
-                }
-                .padding(.top, 4)
-                Spacer(minLength: 24)
+                callActions
             }
-            .frame(maxWidth: 440)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 24)
+            .frame(maxWidth: MacTheme.contentMaxWidth)
+
+            Spacer(minLength: 20)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { numberFocused = true }
     }
 
-    // MARK: pieces
+    // MARK: - Status
 
-    private var statusRows: some View {
+    private var statusBar: some View {
         VStack(alignment: .leading, spacing: 6) {
-            statusRow(state.main.main, slot: "main")
+            connectionChip(state.main.main, slot: "main")
             if state.main.secondary.isConfigured {
-                statusRow(state.main.secondary, slot: "secondary")
+                connectionChip(state.main.secondary, slot: "secondary")
             }
             if state.main.amoCrmConfigured {
-                HStack(spacing: 6) {
-                    Text("AmoCRM:").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    StatusDot(tone: state.main.amoCrmOnline ? .online : .warning)
-                    Text(state.main.amoCrmStatusText).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle")
+                        .foregroundStyle(.secondary)
+                    Text("AmoCRM")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    StatusPill(
+                        text: state.main.amoCrmStatusText.isEmpty ? (state.main.amoCrmOnline ? "Connected" : "Offline") : state.main.amoCrmStatusText,
+                        tone: state.main.amoCrmOnline ? .online : .warning
+                    )
+                    Spacer(minLength: 0)
                 }
             }
         }
     }
 
-    private func statusRow(_ c: ConnectionStatus, slot: String) -> some View {
-        HStack(spacing: 6) {
-            Text("\(c.label.isEmpty ? (slot == "main" ? "Main" : "Secondary") : c.label):")
-                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            StatusDot(tone: c.isError ? .error : (c.isOnline ? .online : .offline))
-            Text(c.text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            Button { state.reconnect(slot: slot) } label: {
-                Image(systemName: "arrow.clockwise").font(.caption)
+    private func connectionChip(_ c: ConnectionStatus, slot: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: c.isWebRtc ? "wifi" : "phone")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+            Text(c.label.isEmpty ? (slot == "main" ? "Main" : "Secondary") : c.label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            StatusPill(
+                text: c.text.isEmpty ? (c.isOnline ? "Connected" : "Not connected") : c.text,
+                tone: c.isError ? .error : (c.isOnline ? .online : .offline)
+            )
+            Spacer(minLength: 0)
+            Button {
+                state.reconnect(slot: slot)
+            } label: {
+                Image(systemName: "arrow.clockwise")
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
+            .buttonStyle(.borderless)
             .help("Reconnect")
+            .controlSize(.small)
         }
     }
+
+    // MARK: - Number
 
     private var numberField: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                TextField("Enter the number", text: Binding(
-                    get: { state.main.phoneNumber },
-                    set: { state.setPhone($0) }
-                ))
-                .textFieldStyle(.plain)
-                .font(.system(size: 24, weight: .light))
-                .multilineTextAlignment(.center)
-                .focused($numberFocused)
-                .onSubmit { state.placeCall() }
+        HStack(spacing: 8) {
+            TextField("Enter the number", text: Binding(
+                get: { state.main.phoneNumber },
+                set: { state.setPhone($0) }
+            ))
+            .textFieldStyle(.plain)
+            .font(.system(size: 26, weight: .light, design: .rounded))
+            .multilineTextAlignment(.center)
+            .focused($numberFocused)
+            .onSubmit { state.placeCall() }
 
-                Button {
-                    if !state.main.phoneNumber.isEmpty { state.setPhone(String(state.main.phoneNumber.dropLast())) }
-                } label: {
-                    Image(systemName: "delete.left").font(.title3)
+            Button {
+                if !state.main.phoneNumber.isEmpty {
+                    state.setPhone(String(state.main.phoneNumber.dropLast()))
                 }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .opacity(state.main.phoneNumber.isEmpty ? 0.3 : 1)
-                .help("Backspace")
+            } label: {
+                Image(systemName: "delete.left.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 32)
-            Rectangle().fill(Color.accentColor).frame(height: 2).padding(.horizontal, 24)
+            .buttonStyle(.plain)
+            .opacity(state.main.phoneNumber.isEmpty ? 0.25 : 1)
+            .disabled(state.main.phoneNumber.isEmpty)
+            .help("Backspace")
         }
-        .frame(maxWidth: 300)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    @ViewBuilder
+    private var callerIdPicker: some View {
+        if state.main.showCallerIdPicker && !state.main.callerIds.isEmpty {
+            Picker("Caller ID", selection: Binding(
+                get: { state.main.selectedCallerId ?? state.main.callerIds.first?.number ?? "" },
+                set: { state.selectCallerId($0) }
+            )) {
+                ForEach(state.main.callerIds) { c in
+                    Text(c.displayText).tag(c.number)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: 280)
+        }
+    }
+
+    // MARK: - Keypad / Call
+
     private var keypad: some View {
-        VStack(spacing: 10) {
-            ForEach(keys, id: \.self) { row in
-                HStack(spacing: 14) {
-                    ForEach(row, id: \.self) { k in
-                        Button { state.setPhone(state.main.phoneNumber + k) } label: {
-                            Text(k)
-                                .font(.system(size: 22, weight: .medium))
-                                .frame(width: 56, height: 56)
-                                .background(Circle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
-                                .contentShape(Circle())
+        let rows = stride(from: 0, to: keys.count, by: 3).map { Array(keys[$0..<min($0 + 3, keys.count)]) }
+        return VStack(spacing: 10) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 12) {
+                    ForEach(row, id: \.0) { key in
+                        KeypadKey(label: key.0, letters: key.1) {
+                            state.setPhone(state.main.phoneNumber + key.0)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
         }
     }
 
-    private func callButton(_ title: String?, slot: String?) -> some View {
-        Button { state.placeCall(slot: slot) } label: {
-            VStack(spacing: 2) {
-                Image(systemName: "phone.fill").font(.system(size: 22, weight: .semibold))
-                if let title, !title.isEmpty { Text(title).font(.caption2).lineLimit(1) }
+    private var callActions: some View {
+        HStack(spacing: 20) {
+            if state.main.showSplitCallButtons {
+                CallActionButton(title: state.main.splitPrimaryLabel, enabled: state.main.canCall) {
+                    state.placeCall(slot: "main")
+                }
+                .keyboardShortcut(.defaultAction)
+                CallActionButton(title: state.main.splitSecondaryLabel, enabled: state.main.canCall) {
+                    state.placeCall(slot: "secondary")
+                }
+                .keyboardShortcut(.return, modifiers: .shift)
+            } else {
+                CallActionButton(enabled: state.main.canCall) {
+                    state.placeCall()
+                }
+                .keyboardShortcut(.defaultAction)
+                .help(state.main.canCall ? "Call" : "No connection")
             }
-            .foregroundStyle(.white)
-            .frame(width: title == nil ? 60 : 84, height: 60)
-            .background(state.main.canCall ? Color.green : Color.gray.opacity(0.5), in: title == nil ? AnyShape(Circle()) : AnyShape(Capsule()))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!state.main.canCall)
-        .keyboardShortcut(slot == "secondary" ? KeyboardShortcut(.return, modifiers: .shift) : .defaultAction)
-        .help(state.main.canCall ? "Call" : "No connection")
+        .padding(.top, 4)
     }
 }

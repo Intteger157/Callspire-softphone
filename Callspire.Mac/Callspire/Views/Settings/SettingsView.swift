@@ -2,9 +2,7 @@ import SwiftUI
 import AppKit
 import Combine
 
-/// Settings window — WPF SettingsWindow parity (Connection / Audio / General / Appearance / Advanced / Integrations / About).
-/// The editor works on a local `draft`; snapshots pushed by the sidecar only replace it while nothing is dirty
-/// (gateway fields are merged regardless because Authorize / Clear mutate them server-side).
+/// Settings window — macOS System Settings style (sidebar + Form).
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
@@ -22,41 +20,34 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationSplitView {
-            VStack(spacing: 0) {
-                List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
-                    Label(p.title, systemImage: p.symbol).tag(p)
-                }
-                .listStyle(.sidebar)
-                Divider()
-                HStack {
-                    Button("Close") { closeWindow() }
-                        .buttonStyle(.plain).foregroundStyle(.red)
-                    Spacer()
-                }
-                .padding(12)
+            List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
+                Label(p.title, systemImage: p.symbol).tag(p)
             }
+            .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 220)
+            .safeAreaInset(edge: .bottom) {
+                Button("Close", role: .cancel) { closeWindow() }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
         } detail: {
-            ScrollView {
-                Group {
-                    if !loaded {
-                        HStack { ProgressView().controlSize(.small); Text("Loading settings…").foregroundStyle(.secondary) }
-                            .frame(maxWidth: .infinity, minHeight: 200)
-                    } else {
-                        switch panel {
-                        case .connection: ConnectionPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onTest: test)
-                        case .audio: AudioPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
-                        case .general: GeneralPanel(draft: $draft, busy: busy, onSave: save)
-                        case .appearance: AppearancePanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
-                        case .advanced: AdvancedPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
-                        case .integrations: IntegrationsPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onMessage: { message = $0 })
-                        case .about: AboutPanel(info: state.settings)
-                        }
+            Group {
+                if !loaded {
+                    ProgressView("Loading settings…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    switch panel {
+                    case .connection: ConnectionPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onTest: test)
+                    case .audio: AudioPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
+                    case .general: GeneralPanel(draft: $draft, busy: busy, onSave: save)
+                    case .appearance: AppearancePanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
+                    case .advanced: AdvancedPanel(draft: $draft, info: state.settings, busy: busy, onSave: save)
+                    case .integrations: IntegrationsPanel(draft: $draft, info: state.settings, busy: busy, onSave: save, onMessage: { message = $0 })
+                    case .about: AboutPanel(info: state.settings)
                     }
                 }
-                .padding(24)
-                .frame(maxWidth: 900, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .safeAreaInset(edge: .bottom) {
                 if let message {
@@ -65,7 +56,9 @@ struct SettingsView: View {
                             .foregroundStyle(message.isError ? Color.red : Color.green)
                         Text(message.text).font(.callout).lineLimit(2)
                         Spacer()
-                        Button { self.message = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                        Button { self.message = nil } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(10)
                     .background(.bar)
@@ -73,7 +66,6 @@ struct SettingsView: View {
             }
             .navigationTitle(panel.title)
         }
-        .navigationTitle("Softphone Settings")
         .task { await reload() }
         .onChange(of: state.settingsOpenRequest) { _ in
             panel = state.settingsInitialPanel
@@ -85,7 +77,6 @@ struct SettingsView: View {
                 draft = fresh
                 baseline = fresh.asFields()
             } else {
-                // Authorize / Clear on the gateway change these without going through the editor.
                 draft.gatewayEnabled = fresh.gatewayEnabled
                 draft.gatewayUrl = fresh.gatewayUrl
                 draft.gatewayToken = fresh.gatewayToken
@@ -99,8 +90,6 @@ struct SettingsView: View {
         }
         .onAppear { panel = state.settingsInitialPanel }
     }
-
-    // MARK: actions
 
     private func reload() async {
         if let s = await state.loadSettings() {

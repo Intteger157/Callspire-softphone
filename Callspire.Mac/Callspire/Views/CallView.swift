@@ -1,77 +1,105 @@
 import SwiftUI
 import AppKit
 
-/// Active-call window — WPF CallWindow parity: caller, status, timer, optional inline DTMF keypad,
-/// mute / hold / speaker / keypad controls, red hang-up, and answer / reject for incoming calls.
+/// Active call — FaceTime-adjacent layout, system SF Symbols.
 struct CallView: View {
     @EnvironmentObject var state: AppState
     let info: CallWindowInfo
     @State private var showAudioDevices = false
 
     private var s: CallState { state.call?.state ?? info.state }
-    private let keys = [["1","2","3"],["4","5","6"],["7","8","9"],["*","0","#"]]
+    private let keys = ["1","2","3","4","5","6","7","8","9","*","0","#"]
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 6) {
+            VStack(spacing: 8) {
                 Text(s.callerDisplay.isEmpty ? info.phoneNumber : s.callerDisplay)
-                    .font(.system(size: 26, weight: .light))
+                    .font(.system(size: 28, weight: .light, design: .rounded))
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .textSelection(.enabled)
+                    .padding(.horizontal, 20)
+
                 Text(s.statusText)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(toneColor)
+
                 Text(s.timerText)
                     .font(.title3.monospacedDigit())
                     .foregroundStyle(toneColor)
+
                 HStack(spacing: 8) {
                     TransportBadge(label: info.transportLabel, isWebRtc: info.isWebRtc)
                     if !info.connectionLabel.isEmpty {
                         Text(info.connectionLabel).font(.caption).foregroundStyle(.secondary)
                     }
                     if s.isRecordingIndicatorVisible {
-                        Label("REC", systemImage: "record.circle").font(.caption.bold()).foregroundStyle(.red)
+                        Label("REC", systemImage: "record.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.red)
                     }
                 }
-                .padding(.top, 2)
             }
             .padding(.top, 28)
-            .padding(.horizontal, 24)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 16)
 
             if s.isKeypadVisible {
-                keypad.transition(.opacity.combined(with: .scale(scale: 0.95)))
-                Spacer(minLength: 12)
+                keypad
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                Spacer(minLength: 16)
             }
 
-            VStack(spacing: 18) {
+            VStack(spacing: 20) {
                 if s.showControls {
-                    HStack(spacing: 18) {
-                        RoundIconButton(symbol: s.isMuted ? "mic.slash.fill" : "mic.fill", active: s.isMuted, help: s.isMuted ? "Unmute" : "Mute") { state.callVerb("toggleMute") }
-                        RoundIconButton(symbol: s.isOnHold ? "play.fill" : "pause.fill", active: s.isOnHold, help: s.isOnHold ? "Resume" : "Hold") { state.callVerb("toggleHold") }
-                        RoundIconButton(symbol: "speaker.wave.2.fill", help: "Audio devices") { showAudioDevices = true }
-                        RoundIconButton(symbol: "circle.grid.3x3.fill", active: s.isKeypadVisible, help: "Keypad") {
+                    HStack(spacing: 16) {
+                        RoundIconButton(
+                            symbol: s.isMuted ? "mic.slash.fill" : "mic.fill",
+                            active: s.isMuted,
+                            help: s.isMuted ? "Unmute" : "Mute"
+                        ) { state.callVerb("toggleMute") }
+
+                        RoundIconButton(
+                            symbol: s.isOnHold ? "play.fill" : "pause.fill",
+                            active: s.isOnHold,
+                            help: s.isOnHold ? "Resume" : "Hold"
+                        ) { state.callVerb("toggleHold") }
+
+                        RoundIconButton(symbol: "speaker.wave.2.fill", help: "Audio devices") {
+                            showAudioDevices = true
+                        }
+
+                        RoundIconButton(
+                            symbol: "circle.grid.3x3.fill",
+                            active: s.isKeypadVisible,
+                            help: "Keypad"
+                        ) {
                             withAnimation(.easeInOut(duration: 0.15)) { state.callVerb("toggleKeypad") }
                         }
                     }
                 }
+
                 if s.showIncomingButtons {
                     HStack(spacing: 48) {
-                        RoundIconButton(symbol: "phone.fill", size: 64, fill: .green, foreground: .white, help: "Answer") { state.callVerb("answer") }
-                        RoundIconButton(symbol: "phone.down.fill", size: 64, fill: .red, foreground: .white, help: "Reject") { state.callVerb("reject") }
+                        RoundIconButton(symbol: "phone.fill", size: 64, fill: .green, foreground: .white, help: "Answer") {
+                            state.callVerb("answer")
+                        }
+                        RoundIconButton(symbol: "phone.down.fill", size: 64, fill: .red, foreground: .white, help: "Reject") {
+                            state.callVerb("reject")
+                        }
                     }
                 } else if s.showHangupButton {
-                    RoundIconButton(symbol: "phone.down.fill", size: 64, fill: .red, foreground: .white, help: "Hang up") { state.callVerb("hangup") }
-                        .keyboardShortcut(.escape, modifiers: [])
+                    RoundIconButton(symbol: "phone.down.fill", size: 64, fill: .red, foreground: .white, help: "Hang up") {
+                        state.callVerb("hangup")
+                    }
+                    .keyboardShortcut(.escape, modifiers: [])
                 }
             }
-            .padding(.bottom, 32)
+            .padding(.bottom, 28)
         }
         .frame(width: 380, height: s.isKeypadVisible ? 680 : 560)
         .animation(.easeInOut(duration: 0.15), value: s.isKeypadVisible)
-        .navigationTitle(info.windowTitle.isEmpty ? "Active Call" : info.windowTitle)
+        .background(MacTheme.windowFill)
         .sheet(isPresented: $showAudioDevices) {
             CallAudioDevicesSheet().environmentObject(state)
         }
@@ -88,18 +116,14 @@ struct CallView: View {
     }
 
     private var keypad: some View {
-        VStack(spacing: 10) {
-            ForEach(keys, id: \.self) { row in
-                HStack(spacing: 14) {
+        let rows = stride(from: 0, to: keys.count, by: 3).map { Array(keys[$0..<min($0 + 3, keys.count)]) }
+        return VStack(spacing: 10) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 12) {
                     ForEach(row, id: \.self) { k in
-                        Button { state.callVerb("sendDtmf", digit: k) } label: {
-                            Text(k)
-                                .font(.system(size: 20, weight: .medium))
-                                .frame(width: 54, height: 54)
-                                .background(Circle().strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1))
-                                .contentShape(Circle())
+                        KeypadKey(label: k, size: 50) {
+                            state.callVerb("sendDtmf", digit: k)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -107,7 +131,6 @@ struct CallView: View {
     }
 }
 
-/// Speaker button → pick microphone / speaker for the running call (WPF SpeakerButton_Click parity).
 struct CallAudioDevicesSheet: View {
     @EnvironmentObject var state: AppState
     @Environment(\.dismiss) private var dismiss
@@ -119,19 +142,23 @@ struct CallAudioDevicesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Audio devices").font(.title3.weight(.semibold))
+            Text("Audio Devices").font(.title3.weight(.semibold))
             if let d = devices {
-                Picker("Microphone", selection: $input) {
-                    ForEach(d.inputs) { Text($0.label).tag($0.id) }
+                Form {
+                    Picker("Microphone", selection: $input) {
+                        ForEach(d.inputs) { Text($0.label).tag($0.id) }
+                    }
+                    Picker("Speaker", selection: $output) {
+                        ForEach(d.outputs) { Text($0.label).tag($0.id) }
+                    }
                 }
-                Picker("Speaker", selection: $output) {
-                    ForEach(d.outputs) { Text($0.label).tag($0.id) }
-                }
-                if d.isWebRtc {
-                    Text("Changes apply immediately to the current WebRTC call.").font(.caption).foregroundStyle(.secondary)
-                } else {
-                    Text("SIP audio is re-opened on the selected PortAudio devices.").font(.caption).foregroundStyle(.secondary)
-                }
+                .formStyle(.grouped)
+                .frame(height: 120)
+                Text(d.isWebRtc
+                     ? "Changes apply immediately to the current WebRTC call."
+                     : "SIP audio re-opens on the selected PortAudio devices.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else if let error {
                 Text(error).foregroundStyle(.red)
             } else {
@@ -143,7 +170,10 @@ struct CallAudioDevicesSheet: View {
                 Button("Apply") {
                     busy = true
                     Task {
-                        await state.switchCallAudioDevices(input: input.isEmpty ? nil : input, output: output.isEmpty ? nil : output)
+                        await state.switchCallAudioDevices(
+                            input: input.isEmpty ? nil : input,
+                            output: output.isEmpty ? nil : output
+                        )
                         busy = false
                         dismiss()
                     }
