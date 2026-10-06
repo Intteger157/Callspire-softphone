@@ -6,7 +6,11 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ARCH="${1:-arm64}"
 CONFIG="${2:-Release}"
-RID="osx-${ARCH}"
+case "$ARCH" in
+  arm64|aarch64) RID="osx-arm64" ;;
+  x86_64|amd64|x64) RID="osx-x64" ;;
+  *) RID="osx-${ARCH}" ;;
+esac
 OUT="$ROOT/publish/macos/Service"
 echo "Publishing Callspire.Service ($RID $CONFIG) → $OUT"
 dotnet publish "$ROOT/Callspire.Service/Callspire.Service.csproj" \

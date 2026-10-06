@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build Callspire.Service, generate the Xcode project (if xcodegen is installed), archive, optional DMG.
-# Usage (macOS):  Callspire.Mac/Scripts/package-dmg.sh [--arch arm64] [--sign "Developer ID Application: …"]
+# Usage (macOS):  Callspire.Mac/Scripts/package-dmg.sh [--arch arm64|x86_64] [--sign "Developer ID Application: …"]
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"

@@ -71,7 +71,16 @@ Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --sign "$CALLSPIRE_SIGN_IDENTI
 # then notarize + staple the .dmg with notarytool (Apple Developer account required)
 ```
 
-Tag `v*` triggers **Release** (`release.yml`): Windows Inno Setup installer + macOS unsigned `.zip` / `.dmg` on the GitHub Release page. The `.dmg` shows **Callspire.app** and an **Applications** folder shortcut (drag-to-install layout).
+Tag `v*` triggers **Release** (`release.yml`):
+
+| Asset | Platform |
+|-------|----------|
+| `Callspire-*-win-x64-setup.exe` | Windows Intel/AMD64 |
+| `Callspire-*-win-arm64-setup.exe` | Windows ARM64 |
+| `Callspire-*-macos-arm64-unsigned.{zip,dmg}` | macOS Apple Silicon |
+| `Callspire-*-macos-x64-unsigned.{zip,dmg}` | macOS Intel |
+
+CI **Build** (`build.yml`) publishes the same four targets as workflow artifacts on every push/PR. The `.dmg` shows **Callspire.app** and an **Applications** folder shortcut (drag-to-install layout).
 
 ## IPC (NDJSON over `~/Library/Application Support/Callspire/service.sock`)
 
