@@ -1,8 +1,8 @@
 import Foundation
+import AppKit
 import Darwin
 
 /// Forwards ``callspire://`` / ``tel:`` URLs from a secondary app launch to the running instance.
-/// Matches <c>CrossPlatformSingleInstance</c> socket paths in Callspire.Service.
 enum InstanceBroker {
     private static var lockFd: Int32 = -1
     private static var listenFd: Int32 = -1
@@ -17,11 +17,13 @@ enum InstanceBroker {
         return base.appendingPathComponent("Callspire", isDirectory: true)
     }
 
-    static var lockPath: String { supportDir.appendingPathComponent("instance.lock").path }
+    // Must differ from CrossPlatformSingleInstance (instance.lock / instance.sock): a leftover .NET
+    // Callspire or a manually started Callspire.Service would otherwise make the shell exit at launch.
+    static var lockPath: String { supportDir.appendingPathComponent("shell.lock").path }
 
     static var socketPath: String {
-        let sock = supportDir.appendingPathComponent("instance.sock").path
-        return sock.utf8.count < 100 ? sock : (NSTemporaryDirectory() + "callspire-instance.sock")
+        let sock = supportDir.appendingPathComponent("shell.sock").path
+        return sock.utf8.count < 100 ? sock : (NSTemporaryDirectory() + "callspire-shell.sock")
     }
 
     /// Call once at process start. Primary returns; secondary waits for ``forwardOpenUrlsAndExit`` or argv URLs.
@@ -32,12 +34,24 @@ enum InstanceBroker {
             isSecondaryForwarder = false
             return
         }
+        if !otherShellInstanceRunning() {
+            NSLog("[Callspire] %@ is locked but no other Callspire window app is running; starting as primary", lockPath)
+            isSecondaryForwarder = false
+            return
+        }
         isSecondaryForwarder = true
         let argvUrls = protocolUrlsFromLaunch()
         if !argvUrls.isEmpty {
             for url in argvUrls { _ = forward(url) }
             exit(0)
         }
+    }
+
+    private static func otherShellInstanceRunning() -> Bool {
+        let me = ProcessInfo.processInfo.processIdentifier
+        let bundleId = Bundle.main.bundleIdentifier ?? "com.callspire.softphone"
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+            .contains { $0.processIdentifier != me && !$0.isTerminated }
     }
 
     /// Browser / Launch Services URL delivery on a secondary instance.
