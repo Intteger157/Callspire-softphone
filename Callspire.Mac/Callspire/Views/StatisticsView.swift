@@ -176,7 +176,7 @@ struct StatisticsView: View {
         }
     }
 
-    private func chartCard<Content: View>(title: String, caption: String?, @ViewBuilder content: () -> Content) -> some View {
+    private func chartCard<Content: View>(title: String, caption: String?, @ViewBuilder content: @escaping () -> Content) -> some View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
