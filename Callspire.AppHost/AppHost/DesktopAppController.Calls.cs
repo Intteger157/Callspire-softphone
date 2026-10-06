@@ -20,7 +20,7 @@ namespace Softphone.AppHost
         /// Dial from the main dialer. When both lines are configured and <paramref name="slot"/> is null,
         /// the shell is asked which line to use.
         /// </summary>
-        public async Task PlaceCallAsync(string rawNumber, ConnectionSlot? slot = null, long? leadId = null, long? browserLeadId = null)
+        public async Task PlaceCallAsync(string rawNumber, ConnectionSlot? slot = null, long? leadId = null, long? browserLeadId = null, bool forceSelection = false)
         {
             string number = PhoneNumberHelper.NormalizeForDial(rawNumber);
             if (string.IsNullOrWhiteSpace(number))
@@ -40,9 +40,11 @@ namespace Softphone.AppHost
 
             if (slot == null)
             {
-                if (ViewModel.Main.IsConfigured && ViewModel.Secondary.IsConfigured)
+                bool bothLines = ViewModel.Main.IsConfigured && ViewModel.Secondary.IsConfigured;
+                bool pickCallerId = forceSelection && ViewModel.Main.IsConfigured && ViewModel.CallerIds.Count > 0;
+                if (bothLines || pickCallerId)
                 {
-                    var pick = await _shell.ShowConnectionSelectionAsync(BuildConnectionSelectionRequest()).ConfigureAwait(false);
+                    var pick = await _shell.ShowConnectionSelectionAsync(BuildConnectionSelectionRequest(number)).ConfigureAwait(false);
                     if (pick.Slot == null) return;
                     slot = pick.Slot;
                     if (!string.IsNullOrEmpty(pick.CallerId))

@@ -1543,7 +1543,9 @@ namespace Softphone
                     // phone.js вызывает wireSessionEvents → шлёт new_session, затем отдельно шлёт incoming.
                     // new_session уже перевёл нас в Ringing и заполнил session ids. Старый guard здесь отбрасывал
                     // второе событие → подписчики не получали incoming → PBX Originate (автоответ) переставал работать.
-                    if (_state == WebRtcCallState.Ringing
+                    // call_progress (our own 180 Ringing) can land between new_session and incoming and flip the
+                    // same incoming session to Calling — it is still this session's incoming phase, not a second call.
+                    if ((_state == WebRtcCallState.Ringing || _state == WebRtcCallState.Calling)
                         && !string.IsNullOrEmpty(_activeSessionId)
                         && !string.IsNullOrEmpty(_ringingSessionId)
                         && sessionId == _activeSessionId

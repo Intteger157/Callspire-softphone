@@ -18,17 +18,23 @@ struct MainView: View {
             Alert(title: Text(a.title), message: Text(a.text), dismissButton: .default(Text("OK")))
         }
         .sheet(item: $state.update) { u in UpdateAvailableSheet(info: u).environmentObject(state) }
-        .sheet(item: Binding(get: { state.connectionPicker.map { Identified($0) } }, set: { if $0 == nil { state.finishConnection(ConnectionSelectionResult()) } })) { wrap in
-            ConnectionSelectionSheet(request: wrap.value).environmentObject(state)
+        .sheet(isPresented: Binding(get: { state.connectionPicker != nil }, set: { if !$0 { state.finishConnection(ConnectionSelectionResult()) } })) {
+            if let request = state.connectionPicker {
+                ConnectionSelectionSheet(request: request).environmentObject(state)
+            }
         }
         .sheet(isPresented: Binding(get: { state.gatewayLeadPhone != nil }, set: { if !$0 { state.finishLead(LeadSelectionResult(proceed: false, cancelled: true, leadId: nil)) } })) {
             GatewayLeadSheet(phone: state.gatewayLeadPhone ?? "").environmentObject(state)
         }
-        .sheet(item: Binding(get: { state.kommoPicker.map { Identified($0) } }, set: { if $0 == nil { state.finishKommo(nil) } })) { wrap in
-            LeadSelectionView(request: wrap.value).environmentObject(state)
+        .sheet(isPresented: Binding(get: { state.kommoPicker != nil }, set: { if !$0 { state.finishKommo(nil) } })) {
+            if let request = state.kommoPicker {
+                LeadSelectionView(request: request).environmentObject(state)
+            }
         }
-        .sheet(item: Binding(get: { state.callDetails.map { Identified($0) } }, set: { if $0 == nil { state.callDetails = nil } })) { wrap in
-            CallDetailsView(details: wrap.value).environmentObject(state)
+        .sheet(isPresented: Binding(get: { state.callDetails != nil }, set: { if !$0 { state.callDetails = nil } })) {
+            if let details = state.callDetails {
+                CallDetailsView(details: details).environmentObject(state)
+            }
         }
         .onChange(of: state.call?.sessionId) { id in
             if id != nil { openWindow(id: "call") }

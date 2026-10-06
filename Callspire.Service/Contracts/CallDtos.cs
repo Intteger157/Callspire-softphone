@@ -64,12 +64,15 @@ namespace Softphone.Service.Contracts
         public string? Slot { get; set; }
         public long? LeadId { get; set; }
         public long? BrowserLeadId { get; set; }
+        /// <summary>Ask for line / Caller ID even with one line (call from history).</summary>
+        public bool ForceSelection { get; set; }
     }
 
     // ───────────────────────── modal prompts (C# → Swift requests) ─────────────────────────
 
     public sealed class ConnectionSelectionDto
     {
+        public string? PhoneNumber { get; init; }
         public bool HasMain { get; init; }
         public bool IsMainWebRtc { get; init; }
         public string? MainStatus { get; init; }
@@ -87,6 +90,7 @@ namespace Softphone.Service.Contracts
             foreach (var c in r.MainCallerIds) ids.Add(CallerIdDto.From(c));
             return new ConnectionSelectionDto
             {
+                PhoneNumber = r.PhoneNumber,
                 HasMain = r.HasMain, IsMainWebRtc = r.IsMainWebRtc, MainStatus = r.MainStatus, MainName = r.MainName,
                 HasSecondary = r.HasSecondary, IsSecondaryWebRtc = r.IsSecondaryWebRtc, SecondaryStatus = r.SecondaryStatus,
                 SecondaryName = r.SecondaryName, MainCallerIds = ids, SelectedCallerId = r.SelectedCallerId,

@@ -336,12 +336,13 @@ final class AppState: ObservableObject {
         Task { try? await ipc.requestVoid("setPhoneNumber", params: ["value": value]) }
     }
 
-    func placeCall(number: String? = nil, slot: String? = nil) {
+    /// `forceSelection`: ask for line / Caller ID even with one line (calls from history).
+    func placeCall(number: String? = nil, slot: String? = nil, forceSelection: Bool = false) {
         let target = (number ?? main.phoneNumber).trimmingCharacters(in: .whitespaces)
         guard !target.isEmpty else { return }
         Task {
-            struct P: Codable { var number: String; var slot: String? }
-            do { try await ipc.requestVoid("placeCall", params: P(number: target, slot: slot), timeout: 120) }
+            struct P: Codable { var number: String; var slot: String?; var forceSelection: Bool }
+            do { try await ipc.requestVoid("placeCall", params: P(number: target, slot: slot, forceSelection: forceSelection), timeout: 120) }
             catch { showError("Call failed", error) }
         }
     }

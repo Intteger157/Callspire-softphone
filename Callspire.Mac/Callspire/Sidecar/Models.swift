@@ -360,6 +360,7 @@ struct LogSnapshot: Codable {
 }
 
 struct ConnectionSelectionRequest: Codable {
+    var phoneNumber: String?
     var hasMain = false, isMainWebRtc = false
     var mainStatus: String?, mainName: String?
     var hasSecondary = false, isSecondaryWebRtc = false

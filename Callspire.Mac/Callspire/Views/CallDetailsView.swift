@@ -2,15 +2,15 @@ import SwiftUI
 import AVFoundation
 import AppKit
 
-/// WPF CallDetailsWindow parity: Call Information, Timing Information, AmoCRM block,
-/// "Send result to CRM" (Play / Retry), Technical Details with log filter tabs, Close.
+/// WPF CallDetailsWindow parity: call summary, call / timing info, Kommo block,
+/// "Send result to CRM" (Play / Retry), Technical Details with log filter tabs.
 struct CallDetailsView: View {
     @EnvironmentObject var state: AppState
     let details: CallDetails
 
     @State private var player: AVAudioPlayer?
     @State private var isPlaying = false
-    @State private var contactName: String = "Loading…"
+    @State private var contactName: String?
     @State private var contactError: String?
     @State private var retryBusy = false
     @State private var retryMessage: String?
@@ -21,128 +21,159 @@ struct CallDetailsView: View {
     private var d: CallDetails { state.callDetails ?? details }
 
     enum LogFilter: String, CaseIterable, Identifiable {
-        case all = "All Logs", amo = "AmoCRM Logs", webrtc = "WebRTC Logs", sip = "SIP Logs"
+        case all = "All", amo = "Kommo", webrtc = "WebRTC", sip = "SIP"
         var id: String { rawValue }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 20) {
+                    summary
                     HStack(alignment: .top, spacing: 16) {
-                        callInformation.frame(maxWidth: .infinity)
-                        timingInformation.frame(width: 300)
+                        callInformation
+                        timingInformation
                     }
-                    if d.kommoEnabled { amoCrm }
+                    if d.kommoEnabled { kommo }
                     if d.showCrmSendSection { sendToCrm }
                     technicalDetails
                 }
-                .padding(20)
+                .padding(24)
             }
             Divider()
-            HStack {
-                Button("Call back") {
-                    state.setPhone(d.phoneNumber)
-                    state.placeCall(number: d.phoneNumber)
-                    close()
-                }
-                .disabled(!state.main.canCall)
-                Spacer()
-                Button("Close") { close() }.keyboardShortcut(.cancelAction)
-            }
-            .padding(12)
+            footer
         }
-        .frame(minWidth: 760, idealWidth: 820, minHeight: 560, idealHeight: 640)
-        .navigationTitle("Call Details")
+        .frame(minWidth: 760, idealWidth: 820, minHeight: 600, idealHeight: 700)
         .task { await loadContactName() }
         .onDisappear { player?.stop() }
     }
 
-    // MARK: sections
+    // MARK: - Summary
 
-    private var callInformation: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Call Information").font(.headline)
-            Card {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Phone Number:").foregroundStyle(.secondary).frame(width: 150, alignment: .leading)
-                        Text(d.phoneNumber).fontWeight(.semibold).textSelection(.enabled)
-                        Button("Copy") { Pasteboard.copy(d.phoneNumber) }.buttonStyle(.link).font(.caption)
+    private var summary: some View {
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: directionSymbol)
+                .font(.system(size: 22, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 52, height: 52)
+                .background(Circle().fill(directionColor.gradient))
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(d.phoneNumber)
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .textSelection(.enabled)
+                    Button { Pasteboard.copy(d.phoneNumber) } label: {
+                        Image(systemName: "doc.on.doc").font(.system(size: 12))
                     }
-                    .font(.callout)
-                    if let cid = d.outboundCallerId, !cid.isEmpty {
-                        KeyValueRow(key: "Outbound CallerID:", value: cid, valueColor: .green)
+                    .buttonStyle(.borderless)
+                    .help("Copy number")
+                }
+                HStack(spacing: 8) {
+                    Text(d.callTime.formatted(date: .abbreviated, time: .shortened))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    TransportBadge(label: d.transportLabel, isWebRtc: d.transportLabel.lowercased().contains("webrtc"))
+                    if let name = d.connectionName, !name.isEmpty {
+                        Text(name).font(.caption).foregroundStyle(.secondary)
                     }
-                    KeyValueRow(key: "Call Time:", value: d.callTime.historyStamp)
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Direction:").foregroundStyle(.secondary).frame(width: 150, alignment: .leading)
-                        Text(d.directionText)
-                        TransportBadge(label: d.transportLabel, isWebRtc: d.transportLabel.lowercased().contains("webrtc"))
-                        if let name = d.connectionName, !name.isEmpty { Text(name).foregroundStyle(.secondary) }
-                    }
-                    .font(.callout)
-                    KeyValueRow(key: "Status:", value: d.statusText, valueColor: d.wasAnswered ? .green : .orange)
-                    KeyValueRow(key: "Duration:", value: d.durationText)
-                    KeyValueRow(key: "Was Answered:", value: d.wasAnswered ? "Yes" : "No", valueColor: d.wasAnswered ? .green : .red)
-                    KeyValueRow(key: "Call Ended By:", value: d.endedByText, valueColor: .accentColor)
                 }
             }
+
+            Spacer(minLength: 12)
+
+            VStack(alignment: .trailing, spacing: 6) {
+                StatusChip(text: d.wasAnswered ? "Answered" : "Not answered", color: d.wasAnswered ? .green : .orange)
+                Text(d.durationText.isEmpty ? "—" : d.durationText)
+                    .font(.title3.monospacedDigit().weight(.medium))
+            }
         }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(MacTheme.separator.opacity(0.6)))
+    }
+
+    private var directionSymbol: String {
+        if !d.wasAnswered && d.isIncoming { return "phone.down.fill" }
+        return d.isIncoming ? "phone.arrow.down.left.fill" : "phone.arrow.up.right.fill"
+    }
+
+    private var directionColor: Color {
+        if !d.wasAnswered { return d.isIncoming ? .red : .orange }
+        return d.isIncoming ? .blue : .green
+    }
+
+    // MARK: - Sections
+
+    private var callInformation: some View {
+        DetailSection(title: "Call") {
+            DetailRow("Direction", d.directionText)
+            if let cid = d.outboundCallerId, !cid.isEmpty {
+                DetailRow("Caller ID", cid, mono: true)
+            }
+            DetailRow("Status", d.statusText)
+            DetailRow("Ended by", d.endedByText)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private var timingInformation: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Timing Information").font(.headline)
-            Card {
-                VStack(alignment: .leading, spacing: 6) {
-                    KeyValueRow(key: "Ringback Duration:", value: d.ringbackDurationText, keyWidth: 130)
-                    KeyValueRow(key: "Ringback Start:", value: d.ringbackStart?.timeMillis ?? "—", keyWidth: 130)
-                    KeyValueRow(key: "Answer Time:", value: d.answerTime?.timeMillis ?? "—", keyWidth: 130)
+        DetailSection(title: "Timing") {
+            DetailRow("Started", d.callTime.timeMillis, mono: true)
+            DetailRow("Ringback", d.ringbackDurationText.isEmpty ? "—" : d.ringbackDurationText, mono: true)
+            DetailRow("Ringing from", d.ringbackStart?.timeMillis ?? "—", mono: true)
+            DetailRow("Answered at", d.answerTime?.timeMillis ?? "—", mono: true)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var kommo: some View {
+        DetailSection(title: "Kommo") {
+            DetailRow("Lead") {
+                if let id = d.kommoLeadId, let url = d.kommoLeadUrl, let link = URL(string: url) {
+                    Link(destination: link) {
+                        Label("Lead #\(id)", systemImage: "arrow.up.right.square")
+                    }
+                } else if let id = d.kommoLeadId {
+                    Text("Lead #\(id)")
+                } else {
+                    Text("Not attached to a lead").foregroundStyle(.secondary)
                 }
+            }
+            DetailRow("Contact") {
+                if let contactName {
+                    Text(contactName)
+                } else if let contactError {
+                    Text(contactError).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Looking up…").foregroundStyle(.secondary)
+                    }
+                }
+            }
+            DetailRow("Upload") {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(uploadStatusText).foregroundStyle(uploadColor)
+                    if let reason = d.kommoUploadReason, !reason.isEmpty {
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let src = d.kommoUploadedRecordingSource, !src.isEmpty {
+                DetailRow("Recording", src)
             }
         }
     }
 
-    private var amoCrm: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("AmoCRM").font(.headline)
-            Card {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Record added to:").foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
-                        if let id = d.kommoLeadId, let url = d.kommoLeadUrl, let link = URL(string: url) {
-                            Link("Lead #\(id)", destination: link)
-                        } else if let id = d.kommoLeadId {
-                            Text("Lead #\(id)")
-                        } else {
-                            Text("Not added to any lead").fontWeight(.medium)
-                        }
-                    }
-                    .font(.callout)
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("AmoCRM contact name:").foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
-                        if let contactError {
-                            Text(contactError).foregroundStyle(.secondary)
-                        } else {
-                            Text(contactName)
-                        }
-                    }
-                    .font(.callout)
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Recording upload status:").foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
-                        Text(d.kommoUploadStatus.isEmpty ? "—" : d.kommoUploadStatus).foregroundStyle(uploadColor)
-                    }
-                    .font(.callout)
-                    if let reason = d.kommoUploadReason, !reason.isEmpty {
-                        Text(reason).font(.caption).foregroundStyle(.secondary).padding(.leading, 170)
-                    }
-                    if let src = d.kommoUploadedRecordingSource, !src.isEmpty {
-                        KeyValueRow(key: "Uploaded recording:", value: src, keyWidth: 170)
-                    }
-                }
-            }
+    /// Gateway status strings carry an emoji prefix; colour carries that meaning here instead.
+    private var uploadStatusText: String {
+        let s = d.kommoUploadStatus.trimmingCharacters(in: .whitespaces)
+        guard !s.isEmpty else { return "—" }
+        for prefix in ["✅", "❌", "⚠️", "⏳"] where s.hasPrefix(prefix) {
+            return String(s.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
         }
+        return s
     }
 
     private var uploadColor: Color {
@@ -154,56 +185,66 @@ struct CallDetailsView: View {
     }
 
     private var sendToCrm: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Send result to CRM").font(.headline)
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Recording:").foregroundStyle(.secondary)
-                    if d.kommoGatewayUpload && !d.hasRecording {
-                        Text("Recording will be fetched from Miko PBX by Gateway")
-                    } else if d.hasRecording {
-                        Text((d.recordingFilePath as NSString?)?.lastPathComponent ?? "Local recording").lineLimit(1).truncationMode(.middle)
-                    } else {
-                        Text("No local recording").foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    Button(isPlaying ? "Stop" : "Play") { togglePlay() }
-                        .disabled(!d.hasRecording)
+        DetailSection(title: "Send result to CRM") {
+            HStack(spacing: 12) {
+                Button { togglePlay() } label: {
+                    Image(systemName: isPlaying ? "stop.fill" : "play.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 32, height: 32)
+                        .foregroundStyle(d.hasRecording ? Color.white : Color.secondary)
+                        .background(Circle().fill(d.hasRecording ? Color.accentColor : Color.primary.opacity(0.08)))
                 }
-                .font(.callout)
-                if let playError { Text(playError).font(.caption).foregroundStyle(.red) }
-                HStack(spacing: 12) {
-                    if d.canRetryKommo {
-                        Button {
-                            retryBusy = true; retryMessage = nil
-                            Task {
-                                let err = await state.retryKommo(d)
-                                retryMessage = err ?? (d.kommoGatewayUpload ? "Queued on PBX Gateway" : "Uploaded")
-                                retryBusy = false
-                            }
-                        } label: {
-                            HStack {
-                                if retryBusy { ProgressView().controlSize(.small) }
-                                Text(d.kommoGatewayUpload ? "Retry upload via Gateway" : "Retry upload")
-                            }
+                .buttonStyle(.plain)
+                .disabled(!d.hasRecording)
+                .help(isPlaying ? "Stop" : "Play recording")
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(recordingTitle).font(.callout.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                    Text(recordingSubtitle).font(.caption).foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 12)
+
+                if d.canRetryKommo {
+                    Button {
+                        retryBusy = true; retryMessage = nil
+                        Task {
+                            let err = await state.retryKommo(d)
+                            retryMessage = err ?? (d.kommoGatewayUpload ? "Queued on PBX Gateway" : "Uploaded")
+                            retryBusy = false
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.green)
-                        .disabled(retryBusy)
+                    } label: {
+                        HStack(spacing: 6) {
+                            if retryBusy { ProgressView().controlSize(.small) }
+                            Text(d.kommoGatewayUpload ? "Retry via Gateway" : "Retry upload")
+                        }
                     }
-                    if let retryMessage { Text(retryMessage).font(.caption).foregroundStyle(.secondary) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(retryBusy)
                 }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color.green.opacity(0.7), lineWidth: 1))
+            if let playError {
+                Text(playError).font(.caption).foregroundStyle(.red)
+            }
+            if let retryMessage {
+                Text(retryMessage).font(.caption).foregroundStyle(.secondary)
+            }
         }
+    }
+
+    private var recordingTitle: String {
+        if d.hasRecording { return (d.recordingFilePath as NSString?)?.lastPathComponent ?? "Local recording" }
+        return d.kommoGatewayUpload ? "Recording on Miko PBX" : "No local recording"
+    }
+
+    private var recordingSubtitle: String {
+        if d.hasRecording { return "Local recording" }
+        return d.kommoGatewayUpload ? "PBX Gateway fetches it from Miko PBX" : "Nothing to upload"
     }
 
     private var technicalDetails: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(spacing: 12) {
                 Text("Technical Details").font(.headline)
                 Spacer()
                 Picker("", selection: $logFilter) {
@@ -211,40 +252,66 @@ struct CallDetailsView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 380)
-                Button("Copy") { Pasteboard.copy(filteredLogs.joined(separator: "\n")) }
-                    .disabled(filteredLogs.isEmpty)
+                .frame(width: 260)
+                Button { Pasteboard.copy(filteredLogs.joined(separator: "\n")) } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                }
+                .disabled(filteredLogs.isEmpty)
             }
             ScrollView([.vertical, .horizontal]) {
                 Text(filteredLogs.isEmpty ? "No log entries for this filter." : filteredLogs.joined(separator: "\n"))
-                    .font(.system(.caption, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(filteredLogs.isEmpty ? .secondary : .primary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
+                    .padding(10)
             }
-            .frame(minHeight: 120, maxHeight: 220)
-            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(nsColor: .separatorColor)))
+            .frame(minHeight: 140, maxHeight: 240)
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MacTheme.separator.opacity(0.7)))
         }
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            Button {
+                let number = d.phoneNumber
+                close()
+                // The line / Caller ID sheet is presented from the same window; let this sheet dismiss first.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    state.placeCall(number: number, forceSelection: true)
+                }
+            } label: {
+                Label("Call back", systemImage: "phone.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.green)
+            .disabled(!state.main.canCall)
+
+            Spacer()
+            Button("Close") { close() }.keyboardShortcut(.cancelAction)
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
     }
 
     /// Same substring rules as WPF CallDetailsWindow.FilterLogs.
     private var filteredLogs: [String] {
         switch logFilter {
         case .all: return d.technicalDetails
-        case .amo: return d.technicalDetails.filter { $0.contains("AmoCrm") || $0.contains("AmoCRM") }
+        case .amo: return d.technicalDetails.filter { $0.contains("AmoCrm") || $0.contains("AmoCRM") || $0.contains("Kommo") }
         case .webrtc: return d.technicalDetails.filter { $0.contains("WebRtc") || $0.contains("WebRTC") || $0.contains("webrtc") }
         case .sip: return d.technicalDetails.filter { $0.contains("[Sip") || $0.contains("[SIP") || $0.contains("SIP") }
         }
     }
 
-    // MARK: actions
+    // MARK: - Actions
 
     private func loadContactName() async {
         guard d.kommoEnabled else { return }
         let r = await state.lookupKommoContact(d.phoneNumber)
         if let name = r.name, !name.isEmpty { contactName = name; contactError = nil }
-        else { contactError = r.error ?? "Contact not found in AmoCRM" }
+        else { contactError = r.error ?? "Not found in Kommo" }
     }
 
     private func togglePlay() {
@@ -272,5 +339,77 @@ struct CallDetailsView: View {
     private func close() {
         player?.stop()
         state.callDetails = nil
+    }
+}
+
+// MARK: - Building blocks
+
+private struct DetailSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title.uppercased())
+                .font(.caption.weight(.semibold))
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                content()
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(MacTheme.separator.opacity(0.6)))
+        }
+    }
+}
+
+private struct DetailRow<Value: View>: View {
+    let key: String
+    @ViewBuilder var value: () -> Value
+
+    init(_ key: String, @ViewBuilder value: @escaping () -> Value) {
+        self.key = key
+        self.value = value
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(key)
+                .foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+            value()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .font(.callout)
+    }
+}
+
+extension DetailRow where Value == AnyView {
+    init(_ key: String, _ text: String, mono: Bool = false) {
+        self.init(key) {
+            AnyView(
+                Text(text.isEmpty ? "—" : text)
+                    .font(mono ? .callout.monospacedDigit() : .callout)
+                    .textSelection(.enabled)
+            )
+        }
+    }
+}
+
+private struct StatusChip: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(text).font(.caption.weight(.medium))
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(color.opacity(0.15)))
+        .foregroundStyle(color)
     }
 }

@@ -102,54 +102,155 @@ struct UpdateAvailableSheet: View {
 
 // MARK: - Connection chooser (both lines online, Caller ID)
 
+/// Line + outbound Caller ID chooser. Shown when both lines are configured, or for history calls
+/// so the user always sees which number the call goes out from.
 struct ConnectionSelectionSheet: View {
     @EnvironmentObject var state: AppState
     let request: ConnectionSelectionRequest
     @State private var callerId: String = ""
+    @State private var slot: String = "main"
+
+    private var bothLines: Bool { request.hasMain && request.hasSecondary }
+    private var showsCallerIds: Bool { slot == "main" && !request.mainCallerIds.isEmpty }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Choose connection").font(.title3.weight(.semibold))
-            Text("Both lines are available. Pick which one should place this call.").font(.callout).foregroundStyle(.secondary)
-            if request.hasMain {
-                lineButton(title: request.mainName ?? "Primary", status: request.mainStatus, isWebRtc: request.isMainWebRtc) {
-                    state.finishConnection(ConnectionSelectionResult(slot: "main", callerId: callerId.isEmpty ? request.selectedCallerId : callerId))
+        VStack(alignment: .leading, spacing: 16) {
+            header
+
+            if bothLines {
+                VStack(alignment: .leading, spacing: 6) {
+                    sectionTitle("Line")
+                    lineRow(slot: "main", title: request.mainName ?? "Primary", status: request.mainStatus, isWebRtc: request.isMainWebRtc)
+                    lineRow(slot: "secondary", title: request.secondaryName ?? "Secondary", status: request.secondaryStatus, isWebRtc: request.isSecondaryWebRtc)
                 }
             }
-            if request.hasSecondary {
-                lineButton(title: request.secondaryName ?? "Secondary", status: request.secondaryStatus, isWebRtc: request.isSecondaryWebRtc) {
-                    state.finishConnection(ConnectionSelectionResult(slot: "secondary", callerId: nil))
+
+            if showsCallerIds {
+                VStack(alignment: .leading, spacing: 6) {
+                    sectionTitle("Call from")
+                    ScrollView {
+                        VStack(spacing: 4) {
+                            ForEach(request.mainCallerIds) { item in
+                                callerIdRow(item)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 240)
                 }
             }
-            if !request.mainCallerIds.isEmpty {
-                Picker("Caller ID (primary)", selection: $callerId) {
-                    ForEach(request.mainCallerIds) { Text($0.displayText).tag($0.number) }
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel", role: .cancel) { state.finishConnection(ConnectionSelectionResult()) }
+                    .keyboardShortcut(.cancelAction)
+                Button {
+                    state.finishConnection(ConnectionSelectionResult(
+                        slot: slot,
+                        callerId: slot == "main" ? (callerId.isEmpty ? request.selectedCallerId : callerId) : nil
+                    ))
+                } label: {
+                    Label("Call", systemImage: "phone.fill")
+                        .padding(.horizontal, 6)
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+                .keyboardShortcut(.defaultAction)
             }
-            HStack { Spacer(); Button("Cancel", role: .cancel) { state.finishConnection(ConnectionSelectionResult()) }.keyboardShortcut(.cancelAction) }
         }
-        .padding(20)
-        .onAppear { callerId = request.selectedCallerId ?? request.mainCallerIds.first?.number ?? "" }
+        .padding(22)
         .frame(width: 420)
+        .onAppear {
+            callerId = request.selectedCallerId ?? request.mainCallerIds.first?.number ?? ""
+            slot = request.hasMain ? "main" : "secondary"
+        }
     }
 
-    private func lineButton(title: String, status: String?, isWebRtc: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack {
-                Image(systemName: "phone.fill").foregroundStyle(Color.accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 6) { Text(title).fontWeight(.medium); TransportBadge(label: "", isWebRtc: isWebRtc) }
-                    if let status, !status.isEmpty { Text(status).font(.caption).foregroundStyle(.secondary) }
-                }
-                Spacer()
-                Image(systemName: "chevron.right").foregroundStyle(.tertiary)
+    private var header: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "phone.arrow.up.right.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(Color.green))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(request.phoneNumber.map { "Call \($0)" } ?? "Place call")
+                    .font(.title3.weight(.semibold))
+                    .lineLimit(1)
+                Text(bothLines ? "Choose the line and the number to call from." : "Choose the number to call from.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
-            .padding(10)
+        }
+    }
+
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.caption2.weight(.semibold))
+            .tracking(0.6)
+            .foregroundStyle(.secondary)
+    }
+
+    private func lineRow(slot value: String, title: String, status: String?, isWebRtc: Bool) -> some View {
+        SelectableRow(isSelected: slot == value) {
+            slot = value
+        } content: {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(title).font(.callout.weight(.medium))
+                    TransportBadge(label: "", isWebRtc: isWebRtc)
+                }
+                if let status, !status.isEmpty {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func callerIdRow(_ item: CallerIdItem) -> some View {
+        let title = !item.name.isEmpty ? item.name : (item.displayText.isEmpty ? item.number : item.displayText)
+        return SelectableRow(isSelected: callerId == item.number) {
+            callerId = item.number
+        } content: {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.callout.weight(.medium)).lineLimit(1)
+                if !item.number.isEmpty, !title.contains(item.number) {
+                    Text(item.number).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+/// Radio-style row used by pickers in sheets.
+struct SelectableRow<Content: View>: View {
+    let isSelected: Bool
+    let action: () -> Void
+    @ViewBuilder var content: () -> Content
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                content()
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(hover ? 0.06 : 0.03))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(isSelected ? Color.accentColor.opacity(0.5) : MacTheme.separator.opacity(0.5))
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color(nsColor: .separatorColor)))
+        .onHover { hover = $0 }
     }
 }
 

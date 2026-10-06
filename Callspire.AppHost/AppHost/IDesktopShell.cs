@@ -32,6 +32,7 @@ namespace Softphone.AppHost
     /// <summary>Data needed by the "which line to call from" picker.</summary>
     public sealed class ConnectionSelectionRequest
     {
+        public string? PhoneNumber { get; init; }
         public bool HasMain { get; init; }
         public bool IsMainWebRtc { get; init; }
         public string? MainStatus { get; init; }

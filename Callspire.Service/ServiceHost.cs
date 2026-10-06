@@ -122,7 +122,7 @@ namespace Softphone.Service
                 var args = p.HasValue ? IpcJson.Deserialize<PlaceCallParams>(p.Value) : null;
                 var number = args?.Number?.Trim();
                 if (string.IsNullOrWhiteSpace(number)) throw new IpcException("number is required", "bad_request");
-                await _controller.PlaceCallAsync(number, ParseSlot(args!.Slot), args.LeadId, args.BrowserLeadId).ConfigureAwait(false);
+                await _controller.PlaceCallAsync(number, ParseSlot(args!.Slot), args.LeadId, args.BrowserLeadId, args.ForceSelection).ConfigureAwait(false);
                 return null;
             });
             _ipc.Register("selectCallerId", p => { _controller.SelectCallerId(Str(p, "number")); return null; });

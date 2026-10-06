@@ -28,7 +28,7 @@ struct HistoryView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { state.openHistoryDetails(item) }
                         .contextMenu {
-                            Button("Call") { state.placeCall(number: item.phoneNumber) }
+                            Button("Call…") { state.placeCall(number: item.phoneNumber, forceSelection: true) }
                             Button("Details…") { state.openHistoryDetails(item) }
                             Button("Copy Number") { Pasteboard.copy(item.phoneNumber) }
                             Button("Use in Dialer") {
@@ -121,8 +121,7 @@ private struct HistoryRow: View {
             }
 
             Button {
-                state.setPhone(item.phoneNumber)
-                state.placeCall(number: item.phoneNumber)
+                state.placeCall(number: item.phoneNumber, forceSelection: true)
             } label: {
                 Image(systemName: "phone.fill")
                     .font(.system(size: 12, weight: .semibold))

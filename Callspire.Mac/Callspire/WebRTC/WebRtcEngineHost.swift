@@ -12,9 +12,22 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
     private var loadContinuation: CheckedContinuation<Bool, Never>?
     private var loadSettling = false
     private var appNapActivity: NSObjectProtocol?
+    private var eventQueue: AsyncStream<String>.Continuation?
+    private var eventPump: Task<Void, Never>?
 
     func attach(ipc: IpcClient) {
         self.ipc = ipc
+        guard eventPump == nil else { return }
+        // JsSIP events must reach WebRtcService in emission order (new_session → incoming → call_progress …);
+        // awaiting each IPC reply keeps the sidecar from processing them concurrently.
+        var continuation: AsyncStream<String>.Continuation?
+        let stream = AsyncStream<String> { continuation = $0 }
+        eventQueue = continuation
+        eventPump = Task { [weak self] in
+            for await body in stream {
+                try? await self?.ipc?.requestVoid("webRtcEngineEvent", params: ["json": body], timeout: 10)
+            }
+        }
     }
 
     func createHost(url: String, enableDevTools: Bool) async -> Bool {
@@ -115,7 +128,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         if let s = message.body as? String { body = s }
         else if let data = try? JSONSerialization.data(withJSONObject: message.body), let s = String(data: data, encoding: .utf8) { body = s }
         else { return }
-        Task { try? await ipc?.requestVoid("webRtcEngineEvent", params: ["json": body]) }
+        eventQueue?.yield(body)
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

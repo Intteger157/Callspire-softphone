@@ -342,8 +342,9 @@ namespace Softphone.AppHost
             UiThread.BeginInvoke(() => ViewModel.AnyOnline = ViewModel.Main.IsOnline || ViewModel.Secondary.IsOnline);
 
         /// <summary>Snapshot used by the connection picker.</summary>
-        public ConnectionSelectionRequest BuildConnectionSelectionRequest() => new()
+        public ConnectionSelectionRequest BuildConnectionSelectionRequest(string? phoneNumber = null) => new()
         {
+            PhoneNumber = phoneNumber,
             HasMain = ViewModel.Main.IsConfigured,
             IsMainWebRtc = ViewModel.Main.IsWebRtc,
             MainStatus = ViewModel.Main.Text,

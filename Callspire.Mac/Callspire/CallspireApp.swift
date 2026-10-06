@@ -45,6 +45,7 @@ struct CallspireApp: App {
             .background(WindowAccessor { win in
                 state.callWindow = win
                 win.titlebarAppearsTransparent = true
+                win.titleVisibility = .hidden
                 win.isMovableByWindowBackground = true
             })
         }
