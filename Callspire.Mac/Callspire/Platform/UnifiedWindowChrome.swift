@@ -1,9 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// Telegram-style window chrome: the title bar is transparent and content extends under it,
-/// so the traffic lights sit on the same backdrop as the floating panels.
-/// Views reserve `MacTheme.titleBarInset` at the top so controls do not collide with the buttons.
+/// Telegram-style window chrome: no title bar material, content fills the whole window and the
+/// traffic lights float over the left panel. Pair with `.windowStyle(.hiddenTitleBar)` on the scene.
+/// Content that lives under the buttons reserves `MacTheme.trafficLightsInset` at the top.
 struct UnifiedWindowChrome: ViewModifier {
     var movableByBackground = true
     var onWindow: ((NSWindow) -> Void)? = nil
@@ -15,20 +15,18 @@ struct UnifiedWindowChrome: ViewModifier {
                 win.titlebarAppearsTransparent = true
                 win.titleVisibility = .hidden
                 win.isMovableByWindowBackground = movableByBackground
-                win.backgroundColor = NSColor.windowBackgroundColor
+                win.backgroundColor = NSColor(MacTheme.chromeFill)
                 onWindow?(win)
             })
     }
 }
 
-/// Outer layout for a floating-panel window: band for the traffic lights, gaps between panels,
-/// neutral chrome backdrop. Apply once at the root of each window's content.
+/// Outer layout for a floating-panel window: a uniform inset on all four sides, panels reach the
+/// top edge so the traffic lights sit on the first panel, and the gaps show the chrome backdrop.
 struct FloatingChromeLayout: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .padding(.horizontal, MacTheme.chromeInset)
-            .padding(.bottom, MacTheme.chromeInset)
-            .padding(.top, MacTheme.titleBarInset)
+            .padding(MacTheme.chromeInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(MacTheme.chromeFill)
             .ignoresSafeArea()

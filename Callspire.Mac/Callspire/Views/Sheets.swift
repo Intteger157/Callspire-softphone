@@ -65,8 +65,10 @@ struct LogView: View {
             Button { state.openLogsFolder() } label: { Label("Open Folder", systemImage: "folder") }
         }
         .labelStyle(.iconOnly)
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
+        // Single panel: leave room for the traffic lights on the left of the header row.
+        .padding(.leading, MacTheme.trafficLightsWidth)
+        .padding(.trailing, 16)
+        .padding(.top, 10)
         .padding(.bottom, 8)
     }
 

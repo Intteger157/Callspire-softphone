@@ -23,6 +23,7 @@ struct CallspireApp: App {
                 }
         }
         .defaultSize(width: 1120, height: 720)
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { state.openSettings() }.keyboardShortcut(",", modifiers: .command)
@@ -45,6 +46,7 @@ struct CallspireApp: App {
             }
             .unifiedWindowChrome { win in state.callWindow = win }
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
         .defaultPosition(.topTrailing)
 
@@ -55,6 +57,7 @@ struct CallspireApp: App {
                 .unifiedWindowChrome()
         }
         .defaultSize(width: 980, height: 680)
+        .windowStyle(.hiddenTitleBar)
 
         Window("Logs", id: "logs") {
             LogView()
@@ -63,6 +66,7 @@ struct CallspireApp: App {
                 .unifiedWindowChrome()
         }
         .defaultSize(width: 860, height: 520)
+        .windowStyle(.hiddenTitleBar)
     }
 }
 

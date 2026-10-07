@@ -5,8 +5,9 @@ import AppKit
 
 /// Surface + accent policy for every Callspire.Mac window.
 ///
-/// Surfaces (neutral, follow light/dark automatically):
-///   • `chromeFill` — window backdrop; the traffic lights and panel gaps sit on it.
+/// Surfaces (explicit light/dark pairs — the system `window`/`control` colours collapse into one
+/// black in dark mode, so Telegram-style floating panels need their own contrast):
+///   • `chromeFill` — window backdrop; the traffic lights and panel gaps sit on it (darkest).
 ///   • `panelFill`  — elevated floating panels (rail, content column, settings sidebar).
 ///   • `contentFill` — scrollable text areas inside a panel (log monospace view).
 ///
@@ -22,16 +23,24 @@ enum MacTheme {
     static let chromeInset: CGFloat = 10
     static let panelGap: CGFloat = 10
     static let panelCorner: CGFloat = 14
-    /// Height of the transparent title bar band (traffic lights) that content must not cover.
-    static let titleBarInset: CGFloat = 38
+    /// Vertical room for the traffic lights floating over the first panel.
+    static let trafficLightsInset: CGFloat = 36
+    /// Horizontal room for the traffic lights when a single panel spans the window.
+    static let trafficLightsWidth: CGFloat = 74
 
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
-    static let chromeFill = Color(nsColor: .windowBackgroundColor)
-    static let panelFill = Color(nsColor: .controlBackgroundColor)
-    static let contentFill = Color(nsColor: .textBackgroundColor)
+    static let chromeFill = dynamic(light: NSColor(white: 0.90, alpha: 1), dark: NSColor(white: 0.07, alpha: 1))
+    static let panelFill = dynamic(light: NSColor(white: 1.00, alpha: 1), dark: NSColor(white: 0.14, alpha: 1))
+    static let contentFill = dynamic(light: NSColor(white: 0.98, alpha: 1), dark: NSColor(white: 0.11, alpha: 1))
     static let separator = Color(nsColor: .separatorColor)
     static let quaternary = Color(nsColor: .quaternaryLabelColor)
+
+    private static func dynamic(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        })
+    }
 
     /// Primary-action accent (see type comment). Alias keeps call sites self-documenting.
     static let actionAccent = Color.accentColor

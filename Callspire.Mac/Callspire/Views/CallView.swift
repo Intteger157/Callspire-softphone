@@ -24,7 +24,7 @@ struct CallView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.top, MacTheme.titleBarInset)
+                .padding(.top, MacTheme.trafficLightsInset)
                 .padding(.horizontal, 24)
 
             Spacer(minLength: 18)
@@ -46,7 +46,7 @@ struct CallView: View {
         .frame(width: 340, height: s.isKeypadVisible ? 660 : 540)
         .animation(.easeInOut(duration: 0.18), value: s.isKeypadVisible)
         .animation(.easeInOut(duration: 0.18), value: s.showControls)
-        .background(MacTheme.windowFill)
+        .background(MacTheme.panelFill)
         .ignoresSafeArea()
         .sheet(isPresented: $showAudioDevices) {
             CallAudioDevicesSheet().environmentObject(state)

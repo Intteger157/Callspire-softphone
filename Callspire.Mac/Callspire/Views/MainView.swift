@@ -75,7 +75,9 @@ struct MainView: View {
                 state.openLogs()
             }
         }
-        .padding(.vertical, 12)
+        // Traffic lights float over the top of this panel (Telegram layout).
+        .padding(.top, MacTheme.trafficLightsInset)
+        .padding(.bottom, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
