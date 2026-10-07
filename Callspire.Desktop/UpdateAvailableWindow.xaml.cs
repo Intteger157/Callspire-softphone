@@ -15,7 +15,8 @@ namespace Softphone
 {
     public partial class UpdateAvailableWindow : Window
     {
-        private UpdateInfo _updateInfo;
+        private UpdateCheckResult _bundle;
+        private UpdateInfo? _updateInfo;
         private string _currentVersion;
         private readonly bool _isMandatory;
 
@@ -24,30 +25,36 @@ namespace Softphone
         private string? _downloadedFilePath;
         private CancellationTokenSource? _downloadCts;
         
-        // Конструктор для собственного сервера обновлений
         public UpdateAvailableWindow(
-            UpdateInfo updateInfo,
+            UpdateCheckResult bundle,
             string currentVersion)
         {
-            // Убеждаемся, что resources темы загружены ДО InitializeComponent()
-            // (DynamicResource/Resource lookup может произойти во время загрузки XAML).
             EnsureResourcesLoaded();
             InitializeComponent();
             
             NativeWindowAppearanceManager.Attach(this);
-            _updateInfo = updateInfo;
+            _bundle = bundle;
             _currentVersion = currentVersion;
-            _isMandatory = updateInfo.Mandatory;
+            _isMandatory = (bundle.Server?.Mandatory ?? false) || (bundle.GitHub?.Mandatory ?? false);
             
+            ConfigureSourceButtons();
             LoadUpdateInfo();
 
             Closing += UpdateAvailableWindow_Closing;
             
-            // Если обновление обязательное, скрываем кнопку "Update Later"
             if (_isMandatory)
             {
                 LaterButton.Visibility = Visibility.Collapsed;
             }
+        }
+
+        private void ConfigureSourceButtons()
+        {
+            bool hasServer = UpdateCheckResult.IsNewerThanCurrent(_bundle.Server, _currentVersion);
+            bool hasGitHub = UpdateCheckResult.IsNewerThanCurrent(_bundle.GitHub, _currentVersion);
+
+            ServerUpdateButton.Visibility = hasServer ? Visibility.Visible : Visibility.Collapsed;
+            GitHubUpdateButton.Visibility = hasGitHub ? Visibility.Visible : Visibility.Collapsed;
         }
         
         /// <summary>
@@ -117,34 +124,56 @@ namespace Softphone
         {
             try
             {
-                if (_updateInfo == null) return;
-                
+                var display = _bundle.NewestAvailable(_currentVersion);
+                if (display == null)
+                    return;
+
                 CurrentVersionTextBlock.Text = $"Current version: {_currentVersion}";
-                
-                string latestVersion = _updateInfo.Version.TrimStart('v', 'V');
+
+                string latestVersion = display.Version.TrimStart('v', 'V');
                 LatestVersionTextBlock.Text = $"Latest version: {latestVersion}";
-                
-                if (!string.IsNullOrEmpty(_updateInfo.Notes))
+
+                var notesParts = new System.Collections.Generic.List<string>();
+                if (UpdateCheckResult.IsNewerThanCurrent(_bundle.GitHub, _currentVersion)
+                    && !string.IsNullOrWhiteSpace(_bundle.GitHub!.Notes))
                 {
-                    ReleaseNotesContentTextBlock.Text = _updateInfo.Notes;
+                    notesParts.Add("GitHub:\n" + _bundle.GitHub.Notes);
                 }
-                else
+                if (UpdateCheckResult.IsNewerThanCurrent(_bundle.Server, _currentVersion)
+                    && !string.IsNullOrWhiteSpace(_bundle.Server!.Notes))
+                {
+                    notesParts.Add("Update server:\n" + _bundle.Server.Notes);
+                }
+                if (notesParts.Count == 0 && !string.IsNullOrWhiteSpace(display.Notes))
+                {
+                    ReleaseNotesContentTextBlock.Text = display.Notes!;
+                }
+                else if (notesParts.Count == 0)
                 {
                     ReleaseNotesContentTextBlock.Text = "No release notes available.";
                 }
-                
-                if (_isMandatory)
+                else
                 {
-                    UpdateMessageTextBlock.Text = "A mandatory update is available!";
+                    ReleaseNotesContentTextBlock.Text = string.Join("\n\n", notesParts);
                 }
+
+                UpdateMessageTextBlock.Text = _isMandatory
+                    ? "A mandatory update is available!"
+                    : "A new version is available. Choose where to download.";
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[UpdateAvailableWindow] Error loading update info: {ex.Message}");
             }
         }
-        
-        private void UpdateButton_Click(object sender, RoutedEventArgs e)
+
+        private void GitHubUpdateButton_Click(object sender, RoutedEventArgs e)
+            => BeginDownloadFromSource(_bundle.GitHub);
+
+        private void ServerUpdateButton_Click(object sender, RoutedEventArgs e)
+            => BeginDownloadFromSource(_bundle.Server);
+
+        private void BeginDownloadFromSource(UpdateInfo? source)
         {
             if (_readyToInstall)
             {
@@ -158,8 +187,23 @@ namespace Softphone
                 return;
             }
 
+            if (source == null)
+            {
+                CustomMessageBox.Show(
+                    "This update source is not available.",
+                    "Update",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Information,
+                    this);
+                return;
+            }
+
+            _updateInfo = source;
             _ = DownloadAndPrepareUpdateAsync();
         }
+        
+        private void UpdateButton_Click(object sender, RoutedEventArgs e)
+            => BeginDownloadFromSource(_updateInfo);
 
         private void UpdateAvailableWindow_Closing(object? sender, CancelEventArgs e)
         {
@@ -182,7 +226,7 @@ namespace Softphone
             try
             {
                 // Проверяем наличие URL для скачивания
-                if (string.IsNullOrWhiteSpace(_updateInfo.Url))
+                if (_updateInfo == null || string.IsNullOrWhiteSpace(_updateInfo.Url))
                 {
                     CustomMessageBox.Show(
                         "Download URL is missing in update information.",
@@ -194,7 +238,7 @@ namespace Softphone
                 }
                 
                 string downloadUrl = _updateInfo.Url;
-                string? expectedSha256 = _updateInfo.Sha256;
+                string? expectedSha256 = _updateInfo.PlatformSha256 ?? _updateInfo.Sha256;
                 string fileName = Path.GetFileName(new Uri(downloadUrl).LocalPath);
                 if (string.IsNullOrWhiteSpace(fileName))
                 {
@@ -215,8 +259,8 @@ namespace Softphone
                 _downloadCts = new CancellationTokenSource();
 
                 LaterButton.IsEnabled = false;
-                UpdateButton.IsEnabled = true;
-                UpdateButton.Content = "Stop downloading";
+                GitHubUpdateButton.IsEnabled = false;
+                ServerUpdateButton.IsEnabled = false;
                 DownloadProgressPanel.Visibility = Visibility.Visible;
                 DownloadProgressBar.Value = 0;
                 DownloadStatusTextBlock.Text = "Downloading update...";
@@ -252,8 +296,11 @@ namespace Softphone
 
                 LaterButton.IsEnabled = true;
                 LaterButton.Content = "Close";
+                GitHubUpdateButton.IsEnabled = false;
+                ServerUpdateButton.IsEnabled = false;
+                UpdateButton.Visibility = Visibility.Visible;
                 UpdateButton.IsEnabled = true;
-                UpdateButton.Content = "Start";
+                UpdateButton.Content = "Start installer";
             }
             catch (OperationCanceledException)
             {
@@ -331,6 +378,9 @@ namespace Softphone
 
             LaterButton.IsEnabled = true;
             LaterButton.Content = "Update Later";
+            GitHubUpdateButton.IsEnabled = true;
+            ServerUpdateButton.IsEnabled = true;
+            UpdateButton.Visibility = Visibility.Collapsed;
             UpdateButton.IsEnabled = true;
             UpdateButton.Content = "Update Now";
         }

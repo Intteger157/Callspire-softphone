@@ -87,7 +87,7 @@ struct UpdateAvailableSheet: View {
             HStack {
                 Spacer()
                 Button("Later") { state.update = nil }.keyboardShortcut(.cancelAction)
-                Button("Download") {
+                Button("Download from GitHub") {
                     if let u = URL(string: info.url) { NSWorkspace.shared.open(u) } else { state.openUpdateUrl() }
                     state.update = nil
                 }

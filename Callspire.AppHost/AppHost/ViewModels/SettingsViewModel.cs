@@ -658,20 +658,50 @@ namespace Softphone.AppHost.ViewModels
             UiThread.BeginInvoke(() => { UpdateStatus = "Checking…"; UpdateAvailable = false; });
             try
             {
-                var info = await UpdateService.CheckForUpdateAsync(forceCheck: true).ConfigureAwait(false);
-                UiThread.BeginInvoke(() =>
+                if (OperatingSystem.IsMacOS())
                 {
-                    if (info == null)
+                    var gh = await GitHubUpdateService.CheckForUpdateAsync(forceCheck: true).ConfigureAwait(false);
+                    UiThread.BeginInvoke(() =>
                     {
-                        UpdateStatus = "You are up to date.";
-                    }
-                    else
+                        if (gh == null)
+                        {
+                            UpdateStatus = "You are up to date (GitHub Releases).";
+                            UpdateAvailable = false;
+                            UpdateUrl = "";
+                        }
+                        else
+                        {
+                            UpdateStatus = $"GitHub: version {gh.Version} is available."
+                                + (string.IsNullOrWhiteSpace(gh.Notes) ? "" : $"\n{gh.Notes}");
+                            UpdateUrl = gh.PlatformUrl ?? gh.Url ?? "";
+                            UpdateAvailable = !string.IsNullOrWhiteSpace(UpdateUrl);
+                        }
+                    });
+                }
+                else
+                {
+                    var bundle = await UpdateService.CheckAllSourcesAsync(forceCheck: true).ConfigureAwait(false);
+                    var current = UpdateService.GetCurrentVersion();
+                    UiThread.BeginInvoke(() =>
                     {
-                        UpdateStatus = $"Version {info.Version} is available." + (string.IsNullOrWhiteSpace(info.Notes) ? "" : $"\n{info.Notes}");
-                        UpdateUrl = info.PlatformUrl ?? "";
+                        if (!bundle.HasUpgrade(current))
+                        {
+                            UpdateStatus = "You are up to date.";
+                            UpdateAvailable = false;
+                            UpdateUrl = "";
+                            return;
+                        }
+
+                        var parts = new System.Collections.Generic.List<string>();
+                        if (UpdateCheckResult.IsNewerThanCurrent(bundle.GitHub, current))
+                            parts.Add($"GitHub {bundle.GitHub!.Version}");
+                        if (UpdateCheckResult.IsNewerThanCurrent(bundle.Server, current))
+                            parts.Add($"Update server {bundle.Server!.Version}");
+                        UpdateStatus = "Available: " + string.Join(", ", parts);
+                        UpdateUrl = bundle.GitHub?.Url ?? bundle.Server?.Url ?? "";
                         UpdateAvailable = !string.IsNullOrWhiteSpace(UpdateUrl);
-                    }
-                });
+                    });
+                }
             }
             catch (Exception ex)
             {

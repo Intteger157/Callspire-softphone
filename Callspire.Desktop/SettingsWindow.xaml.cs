@@ -2751,15 +2751,11 @@ namespace Softphone
                 
                 MainWindow.Log("[SettingsWindow] Manual update check initiated");
                 
-                // Используем новый сервис обновлений через собственный сервер
-                // forceCheck = true, чтобы проверить независимо от времени последней проверки
-                var updateInfo = await UpdateService.CheckForUpdateAsync(forceCheck: true);
-                
-                if (updateInfo != null)
-                {
-                    // Новая версия доступна
-                    string currentVersion = UpdateService.GetCurrentVersion();
+                var updateBundle = await UpdateService.CheckAllSourcesAsync(forceCheck: true);
+                string currentVersion = UpdateService.GetCurrentVersion();
 
+                if (updateBundle.HasUpgrade(currentVersion))
+                {
                     // If already open, bring to front (do not block Settings/Main windows).
                     var existing = Application.Current?.Windows.OfType<UpdateAvailableWindow>().FirstOrDefault();
                     if (existing != null)
@@ -2775,7 +2771,7 @@ namespace Softphone
                         return;
                     }
 
-                    var updateWindow = new UpdateAvailableWindow(updateInfo, currentVersion);
+                    var updateWindow = new UpdateAvailableWindow(updateBundle, currentVersion);
                     updateWindow.Show();
                     try
                     {
@@ -2786,7 +2782,6 @@ namespace Softphone
                 }
                 else
                 {
-                    string currentVersion = UpdateService.GetCurrentVersion();
                     CustomMessageBox.Show($"You are using the latest version ({currentVersion}).", 
                         "No Updates Available", MessageBoxButton.OK, MessageBoxImage.Information, this);
                 }

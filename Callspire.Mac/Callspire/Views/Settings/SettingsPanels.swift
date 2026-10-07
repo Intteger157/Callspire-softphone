@@ -546,7 +546,7 @@ struct AboutPanel: View {
                 LabeledContent("Software update") {
                     HStack {
                         if result?.available ?? info.updateAvailable {
-                            Button("Download") { state.openUpdateUrl() }
+                            Button("Download from GitHub") { state.openUpdateUrl() }
                                 .buttonStyle(.borderedProminent)
                         }
                         Button {
@@ -561,7 +561,7 @@ struct AboutPanel: View {
                 }
             } footer: {
                 let status = result?.status ?? info.updateStatus
-                Text(status.isEmpty ? "Callspire checks for updates once a day at launch." : status)
+                Text(status.isEmpty ? "Updates come from public GitHub Releases (Intteger157/Callspire-softphone)." : status)
             }
         }
         .formStyle(.grouped)

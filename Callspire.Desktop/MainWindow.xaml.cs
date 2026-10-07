@@ -687,14 +687,12 @@ namespace Softphone
                 
                 Log("[MainWindow] Checking for updates on startup...");
                 
-                // Используем новый сервис обновлений через собственный сервер
-                var updateInfo = await UpdateService.CheckForUpdateAsync();
-                
-                if (updateInfo != null)
+                var updateBundle = await UpdateService.CheckAllSourcesAsync();
+                string currentVersion = UpdateService.GetCurrentVersion();
+
+                if (updateBundle.HasUpgrade(currentVersion))
                 {
                     Log("[MainWindow] New version available!");
-                    
-                    string currentVersion = UpdateService.GetCurrentVersion();
                     
                     // Показываем окно уведомления о новой версии
                     Dispatcher.Invoke(() =>
@@ -714,7 +712,7 @@ namespace Softphone
                             return;
                         }
 
-                        var updateWindow = new UpdateAvailableWindow(updateInfo, currentVersion);
+                        var updateWindow = new UpdateAvailableWindow(updateBundle, currentVersion);
                         CenterNonOwnedWindowOverThis(updateWindow);
                         updateWindow.Show();
                         try

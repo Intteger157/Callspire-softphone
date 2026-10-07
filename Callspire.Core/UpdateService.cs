@@ -152,93 +152,130 @@ namespace Softphone
         }
         
         /// <summary>
-        /// Проверяет наличие новой версии на сервере обновлений
+        /// macOS: GitHub Releases only. Windows: update server + GitHub Releases.
         /// </summary>
-        /// <param name="forceCheck">Если true, проверяет независимо от времени последней проверки</param>
-        /// <returns>Информация об обновлении или null, если ошибка или нет обновлений</returns>
+        public static async Task<UpdateCheckResult> CheckAllSourcesAsync(bool forceCheck = false)
+        {
+            if (!forceCheck && !ShouldCheckForUpdates())
+                return new UpdateCheckResult();
+
+            string current = GetCurrentVersion();
+            UpdateInfo? server = null;
+            UpdateInfo? github = null;
+            bool anySourceResponded = false;
+
+            if (OperatingSystem.IsWindows())
+            {
+                server = await FetchUpdateServerReleaseAsync().ConfigureAwait(false);
+                if (server != null)
+                {
+                    anySourceResponded = true;
+                    if (CompareVersions(current, server.Version) >= 0)
+                        server = null;
+                }
+
+                github = await GitHubUpdateService.FetchLatestReleaseAsync().ConfigureAwait(false);
+                if (github != null)
+                {
+                    anySourceResponded = true;
+                    if (CompareVersions(current, github.Version) >= 0)
+                        github = null;
+                }
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                github = await GitHubUpdateService.FetchLatestReleaseAsync().ConfigureAwait(false);
+                if (github != null)
+                {
+                    anySourceResponded = true;
+                    if (CompareVersions(current, github.Version) >= 0)
+                        github = null;
+                }
+            }
+            else
+            {
+                server = await FetchUpdateServerReleaseAsync().ConfigureAwait(false);
+                if (server != null)
+                {
+                    anySourceResponded = true;
+                    if (CompareVersions(current, server.Version) >= 0)
+                        server = null;
+                }
+            }
+
+            if (anySourceResponded)
+                SaveLastCheckTime(DateTime.Now);
+
+            return new UpdateCheckResult { Server = server, GitHub = github };
+        }
+
+        /// <summary>
+        /// Back-compat: returns the newest available update for this platform.
+        /// </summary>
         public static async Task<UpdateInfo?> CheckForUpdateAsync(bool forceCheck = false)
         {
-            // Проверяем, нужно ли выполнять проверку (если не принудительная)
-            if (!forceCheck && !ShouldCheckForUpdates())
-            {
-                return null;
-            }
-            
+            var bundle = await CheckAllSourcesAsync(forceCheck).ConfigureAwait(false);
+            string current = GetCurrentVersion();
+            if (OperatingSystem.IsMacOS())
+                return bundle.GitHub;
+            return bundle.NewestAvailable(current) ?? bundle.Server ?? bundle.GitHub;
+        }
+
+        /// <summary>
+        /// Fetches update metadata from the legacy update server (no version comparison).
+        /// </summary>
+        internal static async Task<UpdateInfo?> FetchUpdateServerReleaseAsync()
+        {
             try
             {
                 string url = $"{UpdateServerBaseUrl}{UpdateInfoEndpoint}";
-                
-                AppLog.Log($"[UpdateService] Checking for updates: {url}");
-                
-                HttpResponseMessage response = await _httpClient.GetAsync(url);
-                
-                if (response.IsSuccessStatusCode)
-                {
-                    string json = await response.Content.ReadAsStringAsync();
-                    UpdateInfo? updateInfo = null;
-                    
-                    try
-                    {
-                        updateInfo = JsonConvert.DeserializeObject<UpdateInfo>(json);
-                    }
-                    catch (JsonException jsonEx)
-                    {
-                        AppLog.Log($"[UpdateService] JSON parsing error: {jsonEx.Message}");
-                        AppLog.Log($"[UpdateService] JSON content (first 500 chars): {json.Substring(0, Math.Min(500, json.Length))}");
-                        AppLog.Log($"[UpdateService] Please check your update.json file on the server for syntax errors.");
-                        // Не сохраняем время проверки при ошибке парсинга
-                        return null;
-                    }
-                    
-                    // Сохраняем время проверки только после успешного получения ответа
-                    SaveLastCheckTime(DateTime.Now);
-                    
-                    if (updateInfo != null && !string.IsNullOrEmpty(updateInfo.Version))
-                    {
-                        AppLog.Log($"[UpdateService] Latest version found: {updateInfo.Version}");
-                        
-                        // Проверяем, есть ли новая версия
-                        string currentVersion = GetCurrentVersion();
-                        int comparison = CompareVersions(currentVersion, updateInfo.Version);
-                        
-                        if (comparison < 0)
-                        {
-                            AppLog.Log($"[UpdateService] New version available: {currentVersion} -> {updateInfo.Version}");
-                            return updateInfo;
-                        }
-                        else
-                        {
-                            AppLog.Log($"[UpdateService] Application is up to date. Current: {currentVersion}, Latest: {updateInfo.Version}");
-                            return null;
-                        }
-                    }
-                    else
-                    {
-                        AppLog.Log("[UpdateService] Update info received but version field is empty");
-                    }
-                }
-                else
+
+                AppLog.Log($"[UpdateService] Checking update server: {url}");
+
+                HttpResponseMessage response = await _httpClient.GetAsync(url).ConfigureAwait(false);
+
+                if (!response.IsSuccessStatusCode)
                 {
                     AppLog.Log($"[UpdateService] Server returned status: {response.StatusCode}");
-                    // Не сохраняем время проверки при ошибке, чтобы можно было повторить
+                    return null;
                 }
+
+                string json = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                UpdateInfo? updateInfo;
+                try
+                {
+                    updateInfo = JsonConvert.DeserializeObject<UpdateInfo>(json);
+                }
+                catch (JsonException jsonEx)
+                {
+                    AppLog.Log($"[UpdateService] JSON parsing error: {jsonEx.Message}");
+                    AppLog.Log($"[UpdateService] JSON content (first 500 chars): {json.Substring(0, Math.Min(500, json.Length))}");
+                    return null;
+                }
+
+                if (updateInfo == null || string.IsNullOrEmpty(updateInfo.Version))
+                {
+                    AppLog.Log("[UpdateService] Update server payload missing version");
+                    return null;
+                }
+
+                updateInfo.DownloadSource = "server";
+                AppLog.Log($"[UpdateService] Update server latest: {updateInfo.Version}");
+                return updateInfo;
             }
             catch (TaskCanceledException)
             {
-                AppLog.Log("[UpdateService] Update check timed out");
-                // Не сохраняем время проверки при таймауте
+                AppLog.Log("[UpdateService] Update server check timed out");
             }
             catch (HttpRequestException ex)
             {
-                AppLog.Log($"[UpdateService] Network error checking for updates: {ex.Message}");
-                // Не сохраняем время проверки при сетевой ошибке
+                AppLog.Log($"[UpdateService] Network error (update server): {ex.Message}");
             }
             catch (Exception ex)
             {
-                AppLog.Log($"[UpdateService] Error checking for updates: {ex.Message}");
-                // Не сохраняем время проверки при ошибке
+                AppLog.Log($"[UpdateService] Error (update server): {ex.Message}");
             }
-            
+
             return null;
         }
         
@@ -343,6 +380,10 @@ namespace Softphone
         
         [JsonProperty("mandatory")]
         public bool Mandatory { get; set; } = false;
+
+        /// <summary><c>server</c> or <c>github</c> — not serialized from update.json.</summary>
+        [JsonIgnore]
+        public string DownloadSource { get; set; } = "server";
 
         /// <summary>Optional macOS package (.dmg/.zip). When absent, macOS falls back to <see cref="Url"/>.</summary>
         [JsonProperty("mac_url")]

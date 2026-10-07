@@ -96,9 +96,9 @@ namespace Softphone.AppHost
             try
             {
                 await Task.Delay(3000).ConfigureAwait(false);
-                var info = await UpdateService.CheckForUpdateAsync().ConfigureAwait(false);
+                var info = await GitHubUpdateService.CheckForUpdateAsync().ConfigureAwait(false);
                 if (info == null || _disposed) return;
-                Log($"[Controller] Update available: {UpdateService.GetCurrentVersion()} -> {info.Version}");
+                Log($"[Controller] GitHub update available: {UpdateService.GetCurrentVersion()} -> {info.Version}");
                 _shell?.ShowUpdateAvailable(info, UpdateService.GetCurrentVersion());
             }
             catch (Exception ex)
