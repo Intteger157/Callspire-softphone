@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 // MARK: - Logs window (WPF LogWindow parity: live tail, filter, Clear, Copy, Open folder)
 
@@ -19,7 +20,7 @@ struct LogView: View {
                 Divider()
                 ScrollViewReader { proxy in
                     ScrollView([.vertical, .horizontal]) {
-                        LazyVStack(alignment: .leading, spacing: 0) {
+                        LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                                 Text(line)
                                     .font(.system(.caption, design: .monospaced))
@@ -28,21 +29,17 @@ struct LogView: View {
                                     .id(i)
                             }
                         }
-                        .padding(8)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .background(MacTheme.contentFill)
+                    .background { VisualEffectBackground(material: .contentBackground) }
                     .onChange(of: state.logs.count) { _ in
                         if autoScroll, let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
                     }
                 }
                 Divider()
-                HStack {
-                    Text("\(lines.count) lines").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Toggle("Auto-scroll", isOn: $autoScroll).toggleStyle(.checkbox).font(.caption)
-                }
-                .padding(.horizontal, 12).padding(.vertical, 6)
+                footer
             }
         }
         .floatingChromeLayout()
@@ -61,15 +58,59 @@ struct LogView: View {
                 .frame(width: 200)
             Button { Pasteboard.copy(lines.joined(separator: "\n")) } label: { Label("Copy", systemImage: "doc.on.doc") }
                 .help("Copy visible lines")
+            Button { exportTxt() } label: { Label("Export", systemImage: "square.and.arrow.up") }
+                .help("Save visible lines as .txt")
+                .disabled(lines.isEmpty)
             Button { state.clearLogs() } label: { Label("Clear", systemImage: "trash") }
             Button { state.openLogsFolder() } label: { Label("Open Folder", systemImage: "folder") }
         }
         .labelStyle(.iconOnly)
-        // Single panel: leave room for the traffic lights on the left of the header row.
         .padding(.leading, MacTheme.trafficLightsWidth)
         .padding(.trailing, 16)
         .padding(.top, 10)
         .padding(.bottom, 8)
+        .background { VisualEffectBackground(material: .headerView) }
+    }
+
+    private var footer: some View {
+        HStack {
+            Text("\(lines.count) lines")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if !filter.isEmpty {
+                Text("· filtered")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer()
+            Toggle("Auto-scroll", isOn: $autoScroll)
+                .toggleStyle(.checkbox)
+                .font(.caption)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background { VisualEffectBackground(material: .headerView) }
+    }
+
+    private func exportTxt() {
+        let panel = NSSavePanel()
+        panel.title = "Export logs"
+        panel.nameFieldStringValue = "Callspire-logs-\(Self.fileStamp()).txt"
+        panel.allowedContentTypes = [.plainText]
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            state.showError("Export logs", error)
+        }
+    }
+
+    private static func fileStamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmm"
+        return f.string(from: Date())
     }
 
     private func lineColor(_ line: String) -> Color {
