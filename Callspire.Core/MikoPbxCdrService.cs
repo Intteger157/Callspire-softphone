@@ -7,7 +7,10 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Authentication;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using System.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -18,6 +21,7 @@ namespace Softphone
         private readonly HttpClient _http;
         private readonly string _baseUrl;
         private readonly string _extension;
+        private readonly Timer? _presenceTimer;
 
         public MikoPbxCdrService(string serviceUrl, string jwtToken, string extension)
         {
@@ -38,6 +42,48 @@ namespace Softphone
             _http = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
             _http.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", jwtToken);
+
+            // Keep admin "Callspire client: Online" while the app runs (gateway stale window is ~20 min).
+            _presenceTimer = new Timer(
+                _ => { try { _ = ReportClientPresenceAsync(); } catch { /* best-effort */ } },
+                null,
+                TimeSpan.FromMinutes(1),
+                TimeSpan.FromMinutes(8));
+        }
+
+        /// <summary>
+        /// Best-effort heartbeat so the PBX Gateway admin can show desktop/mac client + OS.
+        /// </summary>
+        public async Task ReportClientPresenceAsync()
+        {
+            try
+            {
+                string clientKind = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                    ? "desktop_mac"
+                    : RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+                        ? "desktop_win"
+                        : "unknown";
+                string osName = RuntimeInformation.OSDescription ?? "";
+                var ver = Assembly.GetExecutingAssembly().GetName().Version;
+                string appVersion = ver != null ? ver.ToString() : "";
+                var body = new JObject
+                {
+                    ["client_kind"] = clientKind,
+                    ["app_version"] = appVersion,
+                    ["os_name"] = osName,
+                    ["session_id"] = Environment.MachineName ?? "",
+                };
+                var content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
+                var resp = await _http.PostAsync($"{_baseUrl}/api/client/presence", content).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    AppLog.Log($"[PBX Gateway] ReportClientPresence HTTP {(int)resp.StatusCode}");
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Log($"[PBX Gateway] ReportClientPresence error: {ex.Message}");
+            }
         }
 
         /// <summary>
@@ -724,6 +770,7 @@ namespace Softphone
 
         public void Dispose()
         {
+            _presenceTimer?.Dispose();
             _http.Dispose();
         }
     }

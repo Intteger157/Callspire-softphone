@@ -8466,6 +8466,7 @@ namespace Softphone
                 _mikoPbxExtension = settings.MikoPbxExtension;
 
                 Log($"[PBX Gateway] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
+                _ = _mikoPbxCdrService.ReportClientPresenceAsync();
                 LogOriginateExtensionMismatchIfAny(settings);
 
                 _ = LoadCallerIdsAsync(settings);

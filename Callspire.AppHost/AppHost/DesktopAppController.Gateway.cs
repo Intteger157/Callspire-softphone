@@ -134,6 +134,7 @@ namespace Softphone.AppHost
                 _gatewayExtension = settings.MikoPbxExtension;
                 Log($"[PBX Gateway] Service initialized (url={settings.MikoPbxCdrServiceUrl}, ext={settings.MikoPbxExtension})");
 
+                _ = _gateway.ReportClientPresenceAsync();
                 _ = LoadCallerIdsAsync(settings);
                 StartSipAuthFailurePolling();
                 _ = SyncTurnFromGatewayAsync(settings);
