@@ -5,8 +5,8 @@ options:
     macOS: "13.0"
   createIntermediateGroups: true
 settings:
-  MARKETING_VERSION: "1.1.48"
-  CURRENT_PROJECT_VERSION: "1148"
+  MARKETING_VERSION: "1.1.47"
+  CURRENT_PROJECT_VERSION: "1147"
   SWIFT_VERSION: "5.9"
   MACOSX_DEPLOYMENT_TARGET: "13.0"
   CODE_SIGN_STYLE: Automatic
