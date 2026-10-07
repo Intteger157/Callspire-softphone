@@ -5,11 +5,13 @@ import AppKit
 
 /// Surface + accent policy for every Callspire.Mac window.
 ///
-/// Surfaces (derived from the macOS window colour so the wallpaper tint and light/dark follow the system):
-///   • `chromeFill` — window backdrop (`windowBackgroundColor`); the traffic lights and panel gaps sit on it.
-///   • `panelFill`  — floating panels: the same window colour lifted toward white in dark mode,
-///                    `controlBackgroundColor` in light mode.
+/// Surfaces — **only** AppKit semantic colours (light/dark, accent tint, wallpaper tint follow the system):
+///   • `chromeFill` — recessed backdrop between panels (`underPageBackgroundColor`).
+///   • `panelFill`  — floating panel cards (`controlBackgroundColor`).
 ///   • `contentFill` — scrollable text areas inside a panel (log monospace view).
+///
+/// `FloatingPanel` / `floatingChromeLayout` also use `NSVisualEffectView` materials so the window
+/// picks up the desktop tint when “Allow wallpaper tinting in windows” is on.
 ///
 /// Accent: `Color.accentColor` is reserved for primary actions and live status —
 /// Call / Save / Test Connection buttons, the online dot, keyboard focus rings.
@@ -49,26 +51,16 @@ enum MacTheme {
 
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
-    static let chromeFill = Color(nsColor: .windowBackgroundColor)
-    static let panelFill = Color(nsColor: panelFillNS)
+    static let chromeFill = Color(nsColor: .underPageBackgroundColor)
+    static let panelFill = Color(nsColor: .controlBackgroundColor)
     static let contentFill = Color(nsColor: .textBackgroundColor)
     static let separator = Color(nsColor: .separatorColor)
     static let quaternary = Color(nsColor: .quaternaryLabelColor)
 
-    /// Window colour lifted toward white in dark mode; system control background in light mode.
-    static let panelFillNS = NSColor(name: nil) { appearance in
-        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-        var resolved = NSColor.controlBackgroundColor
-        appearance.performAsCurrentDrawingAppearance {
-            if dark {
-                let base = NSColor.windowBackgroundColor
-                resolved = base.blended(withFraction: 0.12, of: .white) ?? base
-            } else {
-                resolved = NSColor.controlBackgroundColor
-            }
-        }
-        return resolved
-    }
+    /// AppKit window backdrop matching the chrome gap (for `NSWindow.backgroundColor`).
+    static let chromeFillNS = NSColor.underPageBackgroundColor
+    /// Single-surface windows (active call).
+    static let panelFillNS = NSColor.controlBackgroundColor
 
     /// Primary-action accent (see type comment). Alias keeps call sites self-documenting.
     static let actionAccent = Color.accentColor
@@ -99,14 +91,13 @@ struct FloatingPanel<Content: View>: View {
     }
 
     private var panelBackground: some View {
-        RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous)
-            .fill(MacTheme.panelFill)
+        VisualEffectBackground(material: .contentBackground, cornerRadius: MacTheme.panelCorner)
             .overlay {
                 RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous)
                     .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
             }
-            .shadow(color: .black.opacity(0.05), radius: 0.5, y: 0.5)
-            .shadow(color: .black.opacity(0.14), radius: 14, y: 5)
+            .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0.5)
+            .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
     }
 }
 
@@ -344,18 +335,34 @@ struct CallActionButton: View {
     }
 }
 
-/// Native sidebar vibrancy behind SwiftUI content.
+/// Native vibrancy — follows light/dark, accent, and wallpaper tint (behind-window blending).
 struct VisualEffectBackground: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .sidebar
+    var cornerRadius: CGFloat = 0
+
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.material = material
         v.blendingMode = .behindWindow
         v.state = .followsWindowActiveState
+        applyCorner(v)
         return v
     }
+
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
+        applyCorner(nsView)
+    }
+
+    private func applyCorner(_ v: NSVisualEffectView) {
+        guard cornerRadius > 0 else {
+            v.layer?.cornerRadius = 0
+            v.layer?.masksToBounds = false
+            return
+        }
+        v.wantsLayer = true
+        v.layer?.cornerRadius = cornerRadius
+        v.layer?.masksToBounds = true
     }
 }
 

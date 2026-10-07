@@ -49,7 +49,10 @@ struct CallView: View {
         // Fill whatever size the window ends up with (title-bar band, resize animation),
         // otherwise the NSWindow backdrop shows through as a dark strip below the content.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MacTheme.panelFill.ignoresSafeArea())
+        .background {
+            VisualEffectBackground(material: .contentBackground)
+                .ignoresSafeArea()
+        }
         .sheet(isPresented: $showAudioDevices) {
             CallAudioDevicesSheet().environmentObject(state)
         }

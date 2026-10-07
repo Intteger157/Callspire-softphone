@@ -34,7 +34,6 @@ struct StatisticsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MacTheme.panelFill)
         .onAppear {
             if let f = st.customFrom { customFrom = f }
             if let t = st.customTo { customTo = t }

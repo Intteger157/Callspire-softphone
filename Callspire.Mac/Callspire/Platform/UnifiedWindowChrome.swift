@@ -20,7 +20,9 @@ struct UnifiedWindowChrome: ViewModifier {
                 win.titlebarAppearsTransparent = true
                 win.titleVisibility = .hidden
                 win.isMovableByWindowBackground = movableByBackground
-                win.backgroundColor = NSColor.windowBackgroundColor
+                // Clear + vibrancy layers show wallpaper tint; opaque gray windowBackgroundColor blocks it.
+                win.isOpaque = false
+                win.backgroundColor = .clear
                 positioner.attach(win, center: lightsCenter)
                 onWindow?(win)
             })
@@ -99,7 +101,10 @@ struct FloatingChromeLayout: ViewModifier {
         content
             .padding(MacTheme.chromeInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(MacTheme.chromeFill)
+            .background {
+                VisualEffectBackground(material: .underWindowBackground)
+                    .ignoresSafeArea()
+            }
             .ignoresSafeArea()
     }
 }

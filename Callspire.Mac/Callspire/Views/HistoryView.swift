@@ -43,7 +43,6 @@ struct HistoryView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(MacTheme.panelFill)
         .safeAreaInset(edge: .top, spacing: 0) {
             if let hint = state.main.historyFilterHint, !hint.isEmpty {
                 HStack(spacing: 8) {

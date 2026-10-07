@@ -29,7 +29,6 @@ struct DialerView: View {
             Spacer(minLength: 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MacTheme.panelFill)
         .onAppear { numberFocused = true }
     }
 

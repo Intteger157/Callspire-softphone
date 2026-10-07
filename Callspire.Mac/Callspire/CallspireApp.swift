@@ -47,7 +47,8 @@ struct CallspireApp: App {
             .unifiedWindowChrome(lightsCenter: MacTheme.callLightsCenter) { win in
                 state.callWindow = win
                 // Single-surface window: backdrop must match the panel, not the chrome gap colour.
-                win.backgroundColor = MacTheme.panelFillNS
+                win.isOpaque = false
+                win.backgroundColor = .clear
                 // Content is flexible so it can fill the title-bar band; keep the window itself fixed-size.
                 win.styleMask.remove(.resizable)
             }
