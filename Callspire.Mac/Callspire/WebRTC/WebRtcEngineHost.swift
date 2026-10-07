@@ -1,4 +1,5 @@
 import Foundation
+import ObjectiveC
 import WebKit
 import AppKit
 
@@ -20,7 +21,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
     private var eventQueue: AsyncStream<String>.Continuation?
     private var eventPump: Task<Void, Never>?
 
-    private static let hostWindowKey = "hostWindow"
+    private static var ghostWindowAssociationKey: UInt8 = 0
     /// WebKit needs a real backing size; keep the view small but non-zero inside the app window.
     private static let embedSize = NSSize(width: 64, height: 64)
 
@@ -82,7 +83,6 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         let wv = WKWebView(frame: NSRect(origin: .zero, size: Self.embedSize), configuration: config)
         wv.navigationDelegate = self
         wv.uiDelegate = self
-        wv.isMuted = false
         Self.setPrivateFlag(wv, "windowOcclusionDetectionEnabled", false)
         if #available(macOS 13.3, *), enableDevTools {
             wv.isInspectable = true
@@ -117,11 +117,11 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
             wv.configuration.userContentController.removeScriptMessageHandler(forName: "callspire")
             wv.stopLoading()
             wv.removeFromSuperview()
-            if let win = objc_getAssociatedObject(wv, Self.hostWindowKey) as? NSWindow {
+            if let win = objc_getAssociatedObject(wv, &Self.ghostWindowAssociationKey) as? NSWindow {
                 win.contentView = nil
                 win.close()
             }
-            objc_setAssociatedObject(wv, Self.hostWindowKey, nil, .OBJC_ASSOCIATION_RETAIN)
+            objc_setAssociatedObject(wv, &Self.ghostWindowAssociationKey, nil, .OBJC_ASSOCIATION_RETAIN)
         }
         webView = nil
         finishLoad(false)
@@ -142,7 +142,7 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         win.alphaValue = 1
         win.contentView = wv
         win.orderBack(nil)
-        objc_setAssociatedObject(wv, Self.hostWindowKey, win, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(wv, &Self.ghostWindowAssociationKey, win, .OBJC_ASSOCIATION_RETAIN)
     }
 
     private func reparentWebViewForAudioOutput() {
@@ -150,12 +150,12 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         let target = callHostWindow ?? mainHostWindow
         guard let container = target?.contentView else { return }
 
-        if let ghost = objc_getAssociatedObject(wv, Self.hostWindowKey) as? NSWindow {
+        if let ghost = objc_getAssociatedObject(wv, &Self.ghostWindowAssociationKey) as? NSWindow {
             wv.removeFromSuperview()
             ghost.contentView = nil
             ghost.orderOut(nil)
             ghost.close()
-            objc_setAssociatedObject(wv, Self.hostWindowKey, nil, .OBJC_ASSOCIATION_RETAIN)
+            objc_setAssociatedObject(wv, &Self.ghostWindowAssociationKey, nil, .OBJC_ASSOCIATION_RETAIN)
         }
 
         if wv.superview !== container {
@@ -166,7 +166,6 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         wv.frame = NSRect(x: -Self.embedSize.width - 8, y: -Self.embedSize.height - 8,
                           width: Self.embedSize.width, height: Self.embedSize.height)
         wv.isHidden = false
-        wv.isMuted = false
         wv.alphaValue = 1
         wv.setNeedsDisplay(wv.bounds)
     }
