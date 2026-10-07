@@ -17,7 +17,7 @@ struct CallspireApp: App {
             MainView()
                 .environmentObject(state)
                 .frame(minWidth: 900, minHeight: 600)
-                .unifiedWindowChrome()
+                .unifiedWindowChrome(lightsCenter: MacTheme.mainLightsCenter)
                 .onAppear {
                     appDelegate.attach(state: state)
                 }
@@ -44,7 +44,13 @@ struct CallspireApp: App {
                     Color.clear.frame(width: 380, height: 560)
                 }
             }
-            .unifiedWindowChrome { win in state.callWindow = win }
+            .unifiedWindowChrome(lightsCenter: MacTheme.callLightsCenter) { win in
+                state.callWindow = win
+                // Single-surface window: backdrop must match the panel, not the chrome gap colour.
+                win.backgroundColor = MacTheme.panelFillNS
+                // Content is flexible so it can fill the title-bar band; keep the window itself fixed-size.
+                win.styleMask.remove(.resizable)
+            }
         }
         .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentSize)
@@ -54,7 +60,7 @@ struct CallspireApp: App {
             SettingsView()
                 .environmentObject(state)
                 .frame(minWidth: 860, minHeight: 600)
-                .unifiedWindowChrome()
+                .unifiedWindowChrome(lightsCenter: MacTheme.sidebarLightsCenter)
         }
         .defaultSize(width: 980, height: 680)
         .windowStyle(.hiddenTitleBar)
@@ -63,7 +69,7 @@ struct CallspireApp: App {
             LogView()
                 .environmentObject(state)
                 .frame(minWidth: 640, minHeight: 400)
-                .unifiedWindowChrome()
+                .unifiedWindowChrome(lightsCenter: MacTheme.singlePanelLightsCenter)
         }
         .defaultSize(width: 860, height: 520)
         .windowStyle(.hiddenTitleBar)

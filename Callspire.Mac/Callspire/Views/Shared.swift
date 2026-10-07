@@ -5,10 +5,10 @@ import AppKit
 
 /// Surface + accent policy for every Callspire.Mac window.
 ///
-/// Surfaces (explicit light/dark pairs — the system `window`/`control` colours collapse into one
-/// black in dark mode, so Telegram-style floating panels need their own contrast):
-///   • `chromeFill` — window backdrop; the traffic lights and panel gaps sit on it (darkest).
-///   • `panelFill`  — elevated floating panels (rail, content column, settings sidebar).
+/// Surfaces (derived from the macOS window colour so the wallpaper tint and light/dark follow the system):
+///   • `chromeFill` — window backdrop (`windowBackgroundColor`); the traffic lights and panel gaps sit on it.
+///   • `panelFill`  — floating panels: the same window colour lifted toward white in dark mode,
+///                    `controlBackgroundColor` in light mode.
 ///   • `contentFill` — scrollable text areas inside a panel (log monospace view).
 ///
 /// Accent: `Color.accentColor` is reserved for primary actions and live status —
@@ -27,19 +27,47 @@ enum MacTheme {
     static let trafficLightsInset: CGFloat = 36
     /// Horizontal room for the traffic lights when a single panel spans the window.
     static let trafficLightsWidth: CGFloat = 74
+    /// Icon rail (main window left panel).
+    static let railWidth: CGFloat = 76
+    static let railPadding: CGFloat = 4
+
+    // Where the window buttons should be centred (top-left window coordinates), per window layout.
+    /// Main window: centred in the band above the rail avatar.
+    static var mainLightsCenter: CGPoint {
+        CGPoint(x: chromeInset + railWidth / 2, y: chromeInset + railPadding + trafficLightsInset / 2)
+    }
+    /// Settings: band above the sidebar list (panel padding 6, list top padding `trafficLightsInset - 6`).
+    static var sidebarLightsCenter: CGPoint {
+        CGPoint(x: chromeInset + 6 + 12 + 27, y: chromeInset + 6 + (trafficLightsInset - 6) / 2)
+    }
+    /// Single full-width panel (Logs): left of the header row, vertically on its centre.
+    static var singlePanelLightsCenter: CGPoint {
+        CGPoint(x: chromeInset + 14 + 27, y: chromeInset + 20)
+    }
+    /// Call window: one surface, buttons centred in the top band.
+    static var callLightsCenter: CGPoint { CGPoint(x: 7 + 27, y: trafficLightsInset / 2) }
 
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
-    static let chromeFill = dynamic(light: NSColor(white: 0.90, alpha: 1), dark: NSColor(white: 0.07, alpha: 1))
-    static let panelFill = dynamic(light: NSColor(white: 1.00, alpha: 1), dark: NSColor(white: 0.14, alpha: 1))
-    static let contentFill = dynamic(light: NSColor(white: 0.98, alpha: 1), dark: NSColor(white: 0.11, alpha: 1))
+    static let chromeFill = Color(nsColor: .windowBackgroundColor)
+    static let panelFill = Color(nsColor: panelFillNS)
+    static let contentFill = Color(nsColor: .textBackgroundColor)
     static let separator = Color(nsColor: .separatorColor)
     static let quaternary = Color(nsColor: .quaternaryLabelColor)
 
-    private static func dynamic(light: NSColor, dark: NSColor) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-        })
+    /// Window colour lifted toward white in dark mode; system control background in light mode.
+    static let panelFillNS = NSColor(name: nil) { appearance in
+        let dark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        var resolved = NSColor.controlBackgroundColor
+        appearance.performAsCurrentDrawingAppearance {
+            if dark {
+                let base = NSColor.windowBackgroundColor
+                resolved = base.blended(withFraction: 0.12, of: .white) ?? base
+            } else {
+                resolved = NSColor.controlBackgroundColor
+            }
+        }
+        return resolved
     }
 
     /// Primary-action accent (see type comment). Alias keeps call sites self-documenting.

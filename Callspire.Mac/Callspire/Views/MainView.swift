@@ -8,8 +8,8 @@ struct MainView: View {
     var body: some View {
         // Stable outer layout (inset + title-bar band) so switching tabs never reflows the window chrome.
         HStack(alignment: .top, spacing: MacTheme.panelGap) {
-            FloatingPanel(padding: 4) { rail }
-                .frame(width: 76)
+            FloatingPanel(padding: MacTheme.railPadding) { rail }
+                .frame(width: MacTheme.railWidth)
             FloatingPanel { detail }
         }
         .floatingChromeLayout()

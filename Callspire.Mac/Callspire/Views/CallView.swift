@@ -46,8 +46,10 @@ struct CallView: View {
         .frame(width: 340, height: s.isKeypadVisible ? 660 : 540)
         .animation(.easeInOut(duration: 0.18), value: s.isKeypadVisible)
         .animation(.easeInOut(duration: 0.18), value: s.showControls)
-        .background(MacTheme.panelFill)
-        .ignoresSafeArea()
+        // Fill whatever size the window ends up with (title-bar band, resize animation),
+        // otherwise the NSWindow backdrop shows through as a dark strip below the content.
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MacTheme.panelFill.ignoresSafeArea())
         .sheet(isPresented: $showAudioDevices) {
             CallAudioDevicesSheet().environmentObject(state)
         }
