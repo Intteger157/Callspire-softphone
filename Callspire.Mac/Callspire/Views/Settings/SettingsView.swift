@@ -20,50 +20,65 @@ struct SettingsView: View {
     private var isDirty: Bool { draft.asFields() != baseline }
 
     var body: some View {
-        NavigationSplitView {
-            List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
-                Label {
-                    Text(p.title)
-                } icon: {
-                    SettingsIcon(symbol: p.filledSymbol, tint: p.tint, size: 28)
-                }
-                .tag(p)
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 250)
-        } detail: {
-            VStack(spacing: 0) {
-                if !loaded {
-                    VStack(spacing: 14) {
-                        if state.connected {
-                            ProgressView("Loading settings…")
-                        } else {
-                            Image(systemName: "exclamationmark.triangle")
-                                .font(.system(size: 36))
-                                .foregroundStyle(.secondary)
-                            Text("Callspire.Service is not running")
-                                .font(.headline)
-                            Text(state.statusLine)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                            Button("Retry") { scheduleReload(restartSidecar: true) }
-                                .keyboardShortcut(.defaultAction)
-                        }
+        HStack(alignment: .top, spacing: MacTheme.panelGap) {
+            FloatingPanel(padding: 6) {
+                List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
+                    Label {
+                        Text(p.title)
+                    } icon: {
+                        SettingsIcon(symbol: p.filledSymbol, tint: p.tint, size: 28)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(24)
-                } else {
-                    pane
-                        .padding(.top, 4)
+                    .tag(p)
                 }
-                if loaded && panel != .about {
-                    Divider()
-                    saveBar
-                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
             }
-            .navigationTitle(panel.title)
+            .frame(minWidth: 200, idealWidth: 220, maxWidth: 248)
+
+            FloatingPanel {
+                VStack(spacing: 0) {
+                    Text(panel.title)
+                        .font(.title2.weight(.semibold))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 14)
+                        .padding(.bottom, 6)
+
+                    if !loaded {
+                        VStack(spacing: 14) {
+                            if state.connected {
+                                ProgressView("Loading settings…")
+                            } else {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .font(.system(size: 36))
+                                    .foregroundStyle(.secondary)
+                                Text("Callspire.Service is not running")
+                                    .font(.headline)
+                                Text(state.statusLine)
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                Button("Retry") { scheduleReload(restartSidecar: true) }
+                                    .keyboardShortcut(.defaultAction)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(24)
+                    } else {
+                        pane
+                            .padding(.top, 2)
+                    }
+                    if loaded && panel != .about {
+                        Divider()
+                        saveBar
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
         }
+        .padding(MacTheme.chromeInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MacTheme.chromeFill)
         .task { scheduleReload(restartSidecar: false) }
         .onChange(of: state.connected) { connected in
             if connected && !loaded { scheduleReload(restartSidecar: false) }

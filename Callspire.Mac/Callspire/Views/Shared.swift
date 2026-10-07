@@ -8,8 +8,15 @@ enum MacTheme {
     static let keypadKey: CGFloat = 64
     static let callButton: CGFloat = 64
     static let corner: CGFloat = 10
+    /// Outer window chrome (visible gaps between floating panels).
+    static let chromeInset: CGFloat = 10
+    static let panelGap: CGFloat = 10
+    static let panelCorner: CGFloat = 14
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
+    /// Slightly recessed backdrop behind Telegram-style floating panels.
+    static let chromeFill = Color(nsColor: .underPageBackgroundColor)
+    static let panelFill = Color(nsColor: .controlBackgroundColor)
     static let separator = Color(nsColor: .separatorColor)
     static let quaternary = Color(nsColor: .quaternaryLabelColor)
 }
@@ -21,6 +28,31 @@ struct Identified<T>: Identifiable {
 }
 
 // MARK: - Surfaces
+
+/// Rounded “floating” panel (Telegram-style column) on the window chrome.
+struct FloatingPanel<Content: View>: View {
+    var padding: CGFloat = 0
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(padding)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(panelBackground)
+            .clipShape(RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous))
+    }
+
+    private var panelBackground: some View {
+        RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous)
+            .fill(MacTheme.panelFill)
+            .overlay {
+                RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous)
+                    .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.05), radius: 0.5, y: 0.5)
+            .shadow(color: .black.opacity(0.14), radius: 14, y: 5)
+    }
+}
 
 /// Soft inset surface — use sparingly; prefer Form/List for settings.
 struct Card<Content: View>: View {

@@ -6,12 +6,14 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        HStack(spacing: 0) {
-            rail
-            Divider()
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        HStack(alignment: .top, spacing: MacTheme.panelGap) {
+            FloatingPanel(padding: 4) { rail }
+                .frame(width: 76)
+            FloatingPanel { detail }
         }
+        .padding(MacTheme.chromeInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MacTheme.chromeFill)
         // Keep one window title so macOS traffic-light / toolbar layout does not reflow on tab change.
         .navigationTitle("Callspire")
         .alert(item: $state.alert) { a in
@@ -76,10 +78,8 @@ struct MainView: View {
                 state.openLogs()
             }
         }
-        .padding(.vertical, 14)
-        .frame(width: 72)
-        .frame(maxHeight: .infinity)
-        .background(VisualEffectBackground(material: .sidebar))
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var avatar: some View {
@@ -92,7 +92,7 @@ struct MainView: View {
             Circle()
                 .fill(line.isError ? Color.red : (line.isOnline ? Color.green : Color.gray))
                 .frame(width: 11, height: 11)
-                .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 2))
+                .overlay(Circle().strokeBorder(MacTheme.panelFill, lineWidth: 2))
         }
         .help(accountHelp)
     }

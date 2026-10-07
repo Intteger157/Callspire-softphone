@@ -13,34 +13,39 @@ struct LogView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-                ScrollView([.vertical, .horizontal]) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
-                            Text(line)
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(lineColor(line))
-                                .textSelection(.enabled)
-                                .id(i)
+        FloatingPanel(padding: 0) {
+            VStack(spacing: 0) {
+                ScrollViewReader { proxy in
+                    ScrollView([.vertical, .horizontal]) {
+                        LazyVStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
+                                Text(line)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(lineColor(line))
+                                    .textSelection(.enabled)
+                                    .id(i)
+                            }
                         }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .onChange(of: state.logs.count) { _ in
+                        if autoScroll, let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
+                    }
                 }
-                .background(Color(nsColor: .textBackgroundColor))
-                .onChange(of: state.logs.count) { _ in
-                    if autoScroll, let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
+                Divider()
+                HStack {
+                    Text("\(lines.count) lines").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Toggle("Auto-scroll", isOn: $autoScroll).toggleStyle(.checkbox).font(.caption)
                 }
+                .padding(.horizontal, 12).padding(.vertical, 6)
             }
-            Divider()
-            HStack {
-                Text("\(lines.count) lines").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Toggle("Auto-scroll", isOn: $autoScroll).toggleStyle(.checkbox).font(.caption)
-            }
-            .padding(.horizontal, 12).padding(.vertical, 6)
         }
+        .padding(MacTheme.chromeInset)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(MacTheme.chromeFill)
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
                 TextField("Filter", text: $filter).textFieldStyle(.roundedBorder).frame(width: 200)
