@@ -1389,7 +1389,11 @@ namespace Softphone
                             // ВАЖНО: PeerConnectionError, ICEFailed, WebSocketDisconnected и подобные - ФАТАЛЬНЫЕ, их фильтровать нельзя!
                             isNonFatal =
                                 string.Equals(errorName, "AudioPlayError", StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(errorName, "EnumerateDevicesError", StringComparison.OrdinalIgnoreCase);
+                                string.Equals(errorName, "EnumerateDevicesError", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(errorName, "SwitchOutputDeviceError", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(errorName, "SwitchInputDeviceError", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(errorName, "SwitchAudioDeviceError", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(errorName, "SetSinkIdNotSupported", StringComparison.OrdinalIgnoreCase);
                             
                             if (isNonFatal)
                             {

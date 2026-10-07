@@ -1233,12 +1233,23 @@ window.SoftphoneWebRtc = (function () {
      *   В консоли DevTools на странице софтфона: localStorage.setItem('callspire.remotePlayback','audio'); затем перезагрузка WebView.
      * Вернуть Web Audio: localStorage.setItem('callspire.remotePlayback','webaudio'); или removeItem.
      */
+    function isCallspireMacWebView() {
+        try {
+            return !!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.callspire);
+        } catch {
+            return false;
+        }
+    }
+
     function isRemotePlaybackViaWebAudio() {
         try {
+            // Hidden WKWebView (Callspire.Mac): Web Audio often stays suspended; use <audio> directly.
+            if (isCallspireMacWebView()) return false;
+            if (window._softphoneForceHtmlRemotePlayback) return false;
             const v = (localStorage.getItem('callspire.remotePlayback') || 'webaudio').toLowerCase();
             return v !== 'audio' && v !== 'html';
         } catch {
-            return true;
+            return !isCallspireMacWebView();
         }
     }
 
@@ -1257,6 +1268,7 @@ window.SoftphoneWebRtc = (function () {
     // Fall back to direct <audio> output when Web Audio graph cannot run (common in hidden WebView2 hosts).
     function fallbackRemotePlaybackToHtmlAudio(remoteAudioEl, logSessionId, reason) {
         try {
+            window._softphoneForceHtmlRemotePlayback = true;
             teardownRemoteWebAudioPlayback();
             if (remoteAudioEl) {
                 remoteAudioEl.volume = 1.0;
@@ -5334,7 +5346,7 @@ window.SoftphoneWebRtc = (function () {
             
             // Переключение выходного устройства (динамика)
             // В WebRTC выходное устройство управляется через HTMLAudioElement.setSinkId()
-            if (outputDeviceId) {
+            if (outputDeviceId && outputDeviceId !== 'default') {
                 try {
                     const remoteAudio = document.getElementById('remoteAudio');
                     if (remoteAudio && 'setSinkId' in remoteAudio) {
@@ -5359,13 +5371,12 @@ window.SoftphoneWebRtc = (function () {
                         });
                     }
                 } catch (err) {
-                    console.error('[WebRTC] switchAudioDevice: Error switching output device:', err);
+                    console.warn('[WebRTC] switchAudioDevice: Error switching output device:', err);
                     sendEvent({
-                        type: 'error',
+                        type: 'js_log',
                         data: {
-                            name: 'SwitchOutputDeviceError',
-                            message: 'Failed to switch output device: ' + err.message,
-                            phase: 'switchAudioDevice'
+                            level: 'warning',
+                            message: `[WebRTC] switchAudioDevice output skipped: ${err.message}`
                         }
                     });
                 }

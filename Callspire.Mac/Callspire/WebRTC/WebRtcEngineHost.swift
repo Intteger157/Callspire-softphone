@@ -55,6 +55,9 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
                     window.webkit.messageHandlers.callspire.postMessage(jsonStr);
                 } catch (e) { /* swallow */ }
             };
+            try {
+                localStorage.setItem('callspire.remotePlayback', 'audio');
+            } catch (e) { /* swallow */ }
         })();
         """
         uc.addUserScript(WKUserScript(source: bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
