@@ -26,6 +26,7 @@ final class AppState: ObservableObject {
     // Call window
     @Published var call: CallWindowInfo?
     weak var callWindow: NSWindow?
+    weak var mainWindow: NSWindow?
 
     // Navigation / windows
     @Published var selectedNav: NavItem = .dialer
@@ -256,6 +257,7 @@ final class AppState: ObservableObject {
                 struct HostReq: Codable { var url: String; var enableDevTools: Bool? }
                 let req = try? params?.decode(HostReq.self)
                 let ok = await self?.webRtc.createHost(url: req?.url ?? "", enableDevTools: req?.enableDevTools ?? false) ?? false
+                self?.webRtc.updateAudioHostWindow(main: self?.mainWindow, call: self?.callWindow)
                 reply(.success(try? encodeJSON(["success": ok])))
             }
         }
@@ -288,6 +290,7 @@ final class AppState: ObservableObject {
             if let c = try? data?.decode(CallWindowInfo.self) {
                 call = c
                 NSApp.activate(ignoringOtherApps: true)
+                webRtc.updateAudioHostWindow(main: mainWindow, call: callWindow)
             }
         case "callStateChanged":
             if let s = try? data?.decode(CallState.self), var c = call, c.sessionId == s.sessionId {
@@ -298,6 +301,7 @@ final class AppState: ObservableObject {
             call = nil
             callWindow?.close()
             callWindow = nil
+            webRtc.updateAudioHostWindow(main: mainWindow, call: nil)
         case "bringCallWindowToFront":
             callWindow?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

@@ -17,6 +17,10 @@ struct CallspireApp: App {
             MainView()
                 .environmentObject(state)
                 .frame(minWidth: 900, minHeight: 600)
+                .background(WindowAccessor { win in
+                    state.mainWindow = win
+                    state.webRtc.updateAudioHostWindow(main: win, call: state.callWindow)
+                })
                 .unifiedWindowChrome(lightsCenter: MacTheme.mainLightsCenter)
                 .onAppear {
                     appDelegate.attach(state: state)
@@ -47,6 +51,7 @@ struct CallspireApp: App {
             // Call window: keep AppKit’s default top-left traffic lights (do not centre on the card).
             .unifiedWindowChrome(lightsCenter: nil) { win in
                 state.callWindow = win
+                state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: win)
                 // Single-surface window: backdrop must match the panel, not the chrome gap colour.
                 win.isOpaque = false
                 win.backgroundColor = .clear
