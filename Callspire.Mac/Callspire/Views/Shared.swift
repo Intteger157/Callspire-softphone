@@ -3,6 +3,16 @@ import AppKit
 
 // MARK: - Design tokens (system macOS, no custom brand chrome)
 
+/// Surface + accent policy for every Callspire.Mac window.
+///
+/// Surfaces (neutral, follow light/dark automatically):
+///   • `chromeFill` — window backdrop; the traffic lights and panel gaps sit on it.
+///   • `panelFill`  — elevated floating panels (rail, content column, settings sidebar).
+///   • `contentFill` — scrollable text areas inside a panel (log monospace view).
+///
+/// Accent: `Color.accentColor` is reserved for primary actions and live status —
+/// Call / Save / Test Connection buttons, the online dot, keyboard focus rings.
+/// Navigation selection, icons and charts use `.primary` / `.secondary` fills.
 enum MacTheme {
     static let contentMaxWidth: CGFloat = 360
     static let keypadKey: CGFloat = 64
@@ -12,13 +22,22 @@ enum MacTheme {
     static let chromeInset: CGFloat = 10
     static let panelGap: CGFloat = 10
     static let panelCorner: CGFloat = 14
+    /// Height of the transparent title bar band (traffic lights) that content must not cover.
+    static let titleBarInset: CGFloat = 38
+
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
-    /// Slightly recessed backdrop behind Telegram-style floating panels.
-    static let chromeFill = Color(nsColor: .underPageBackgroundColor)
+    static let chromeFill = Color(nsColor: .windowBackgroundColor)
     static let panelFill = Color(nsColor: .controlBackgroundColor)
+    static let contentFill = Color(nsColor: .textBackgroundColor)
     static let separator = Color(nsColor: .separatorColor)
     static let quaternary = Color(nsColor: .quaternaryLabelColor)
+
+    /// Primary-action accent (see type comment). Alias keeps call sites self-documenting.
+    static let actionAccent = Color.accentColor
+    /// Neutral selection fill for sidebar / rail items.
+    static let selectionFill = Color.primary.opacity(0.10)
+    static let hoverFill = Color.primary.opacity(0.06)
 }
 
 struct Identified<T>: Identifiable {

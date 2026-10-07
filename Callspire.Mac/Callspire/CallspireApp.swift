@@ -17,6 +17,7 @@ struct CallspireApp: App {
             MainView()
                 .environmentObject(state)
                 .frame(minWidth: 900, minHeight: 600)
+                .unifiedWindowChrome()
                 .onAppear {
                     appDelegate.attach(state: state)
                 }
@@ -42,12 +43,7 @@ struct CallspireApp: App {
                     Color.clear.frame(width: 380, height: 560)
                 }
             }
-            .background(WindowAccessor { win in
-                state.callWindow = win
-                win.titlebarAppearsTransparent = true
-                win.titleVisibility = .hidden
-                win.isMovableByWindowBackground = true
-            })
+            .unifiedWindowChrome { win in state.callWindow = win }
         }
         .windowResizability(.contentSize)
         .defaultPosition(.topTrailing)
@@ -56,6 +52,7 @@ struct CallspireApp: App {
             SettingsView()
                 .environmentObject(state)
                 .frame(minWidth: 860, minHeight: 600)
+                .unifiedWindowChrome()
         }
         .defaultSize(width: 980, height: 680)
 
@@ -63,6 +60,7 @@ struct CallspireApp: App {
             LogView()
                 .environmentObject(state)
                 .frame(minWidth: 640, minHeight: 400)
+                .unifiedWindowChrome()
         }
         .defaultSize(width: 860, height: 520)
     }

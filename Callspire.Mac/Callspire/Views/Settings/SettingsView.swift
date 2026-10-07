@@ -76,9 +76,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .padding(MacTheme.chromeInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MacTheme.chromeFill)
+        .floatingChromeLayout()
         .task { scheduleReload(restartSidecar: false) }
         .onChange(of: state.connected) { connected in
             if connected && !loaded { scheduleReload(restartSidecar: false) }
@@ -165,7 +163,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(.bar)
+        .background(MacTheme.panelFill)
     }
 
     // MARK: - Actions

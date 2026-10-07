@@ -24,7 +24,7 @@ struct CallView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-                .padding(.top, 40)
+                .padding(.top, MacTheme.titleBarInset)
                 .padding(.horizontal, 24)
 
             Spacer(minLength: 18)
@@ -46,12 +46,8 @@ struct CallView: View {
         .frame(width: 340, height: s.isKeypadVisible ? 660 : 540)
         .animation(.easeInOut(duration: 0.18), value: s.isKeypadVisible)
         .animation(.easeInOut(duration: 0.18), value: s.showControls)
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.10), MacTheme.windowFill, MacTheme.windowFill],
-                startPoint: .top, endPoint: .bottom
-            )
-        )
+        .background(MacTheme.windowFill)
+        .ignoresSafeArea()
         .sheet(isPresented: $showAudioDevices) {
             CallAudioDevicesSheet().environmentObject(state)
         }
@@ -197,16 +193,15 @@ private struct CallAvatar: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.accentColor.opacity(0.35), lineWidth: 2)
+                .stroke(Color.primary.opacity(0.25), lineWidth: 2)
                 .frame(width: 96, height: 96)
                 .scaleEffect(pulse ? 1.18 : 1)
                 .opacity(pulsing ? (pulse ? 0 : 0.9) : 0)
 
             Circle()
-                .fill(LinearGradient(colors: [Color.accentColor.opacity(0.85), Color.accentColor.opacity(0.55)],
-                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                .fill(Color.gray.gradient)
                 .frame(width: 88, height: 88)
-                .shadow(color: Color.accentColor.opacity(0.25), radius: 10, y: 4)
+                .shadow(color: Color.black.opacity(0.15), radius: 10, y: 4)
 
             if let initials {
                 Text(initials)

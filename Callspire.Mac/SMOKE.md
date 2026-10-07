@@ -2,7 +2,7 @@
 
 After `Callspire.Mac/Scripts/package-dmg.sh --arch arm64`:
 
-1. Main window — sidebar (account avatar + Dialer / Call History / Call Statistics, Settings & Logs at the bottom); toolbar shows account + online dot.
+1. Main window — Telegram-style chrome: traffic lights sit on the same grey backdrop as the floating panels (no separate title bar / toolbar); left icon rail (grey avatar + online dot, Dialer / Call History / Call Statistics, Settings & Logs at the bottom) and the content panel. Same unified chrome in Settings, Logs and the Call window; switching tabs never reflows the window. Accent colour appears only on primary actions (Call, Save, Test Connection, Apply) and status dots.
 2. Dialer — line status rows (● text, reconnect ↻), AmoCRM row, number field with backspace, Caller ID picker, keypad, green Call (split buttons when both lines are up).
 3. Call window — caller / status / timer / transport badge; mute, hold, speaker (audio device sheet: WebRTC enumerate+switch, SIP PortAudio), keypad (inline DTMF), red hang-up; incoming shows Answer/Reject; window closes itself when the call ends; closing it manually keeps the call (`callViewClosed`).
 4. Call History — cards with direction icon, badge, time, duration, coloured status, green call-back; "Clear History" asks for confirmation; drill-down chip with "Show all".

@@ -1,14 +1,15 @@
 import SwiftUI
 import Charts
 
-/// Call Statistics — same chrome as Call History / dialer (system surfaces, accent green).
+/// Call Statistics — same chrome as Call History / dialer. Charts are neutral; accent only on the Apply CTA.
 struct StatisticsView: View {
     @EnvironmentObject var state: AppState
     @State private var customFrom = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
     @State private var customTo = Date()
 
     private var st: StatisticsState { state.main.statistics }
-    private var accent: Color { Color.accentColor }
+    private var accent: Color { MacTheme.actionAccent }
+    private var chartFill: Color { Color.secondary }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -153,7 +154,7 @@ struct StatisticsView: View {
                 if st.daily.isEmpty { emptyChart } else {
                     Chart(st.daily) { day in
                         BarMark(x: .value("Day", day.label), y: .value("Total", day.total))
-                            .foregroundStyle(accent.opacity(0.22))
+                            .foregroundStyle(chartFill.opacity(0.22))
                         BarMark(x: .value("Day", day.label), y: .value("Answered", day.answered))
                             .foregroundStyle(Color.green.gradient)
                     }
@@ -166,7 +167,7 @@ struct StatisticsView: View {
                     let peak = st.hourly.map(\.total).max() ?? 0
                     Chart(st.hourly) { h in
                         BarMark(x: .value("Hour", h.label), y: .value("Calls", h.total))
-                            .foregroundStyle(h.total == peak && h.total > 0 ? accent : accent.opacity(0.35))
+                            .foregroundStyle(h.total == peak && h.total > 0 ? Color.primary : chartFill.opacity(0.35))
                             .cornerRadius(2)
                     }
                     .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(MacTheme.separator) } }
@@ -248,7 +249,7 @@ struct StatisticsView: View {
 
     private func metricLine(_ text: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Circle().fill(accent.opacity(0.85)).frame(width: 5, height: 5)
+            Circle().fill(chartFill.opacity(0.85)).frame(width: 5, height: 5)
             Text(text.isEmpty ? "—" : text)
                 .font(.callout)
                 .foregroundStyle(.primary)

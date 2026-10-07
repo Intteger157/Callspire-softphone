@@ -6,16 +6,13 @@ struct MainView: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        // Stable outer layout (inset + title-bar band) so switching tabs never reflows the window chrome.
         HStack(alignment: .top, spacing: MacTheme.panelGap) {
             FloatingPanel(padding: 4) { rail }
                 .frame(width: 76)
             FloatingPanel { detail }
         }
-        .padding(MacTheme.chromeInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MacTheme.chromeFill)
-        // Keep one window title so macOS traffic-light / toolbar layout does not reflow on tab change.
-        .navigationTitle("Callspire")
+        .floatingChromeLayout()
         .alert(item: $state.alert) { a in
             Alert(title: Text(a.title), message: Text(a.text), dismissButton: .default(Text("OK")))
         }
@@ -86,7 +83,7 @@ struct MainView: View {
         let line = state.main.main
         return ZStack(alignment: .bottomTrailing) {
             Circle()
-                .fill(Color.accentColor.gradient)
+                .fill(Color.gray.gradient)
                 .frame(width: 38, height: 38)
                 .overlay(Text(initial).font(.headline).foregroundStyle(.white))
             Circle()
@@ -134,10 +131,10 @@ private struct RailButton: View {
             Image(systemName: isSelected ? selectedSymbol : symbol)
                 .font(.system(size: 21, weight: .regular))
                 .frame(width: 46, height: 46)
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                 .background(
                     RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.primary.opacity(hover ? 0.07 : 0))
+                        .fill(isSelected ? MacTheme.selectionFill : (hover ? MacTheme.hoverFill : Color.clear))
                 )
                 .contentShape(Rectangle())
         }

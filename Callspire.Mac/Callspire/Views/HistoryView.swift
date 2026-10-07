@@ -55,7 +55,7 @@ struct HistoryView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
-                .background(.bar)
+                .background(MacTheme.panelFill)
             }
         }
         .confirmationDialog("Clear all call history?", isPresented: $confirmClear, titleVisibility: .visible) {
@@ -90,7 +90,7 @@ private struct HistoryRow: View {
             Image(systemName: directionSymbol)
                 .symbolRenderingMode(.hierarchical)
                 .font(.title3)
-                .foregroundStyle(item.isMissed ? Color.red : (item.isIncoming ? Color.accentColor : Color.green))
+                .foregroundStyle(item.isMissed ? Color.red : Color.secondary)
                 .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 3) {

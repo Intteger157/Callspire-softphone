@@ -68,6 +68,8 @@ struct ConnectionPanel: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
         .onAppear { showSecondary = hasSecondary }
     }
 
@@ -258,6 +260,8 @@ struct AudioPanel: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
         .onDisappear { if previewing { state.stopRingtone() } }
     }
 
@@ -291,6 +295,8 @@ struct GeneralPanel: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
     }
 }
 
@@ -318,6 +324,8 @@ struct AppearancePanel: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
     }
 }
 
@@ -358,6 +366,8 @@ struct AdvancedPanel: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
     }
 }
 
@@ -379,6 +389,8 @@ struct IntegrationsPanel: View {
             kommoSections
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
     }
 
     // MARK: PBX Gateway
@@ -565,6 +577,8 @@ struct AboutPanel: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(MacTheme.panelFill)
     }
 
     private var versionText: String {

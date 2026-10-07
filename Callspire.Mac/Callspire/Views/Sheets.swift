@@ -15,6 +15,8 @@ struct LogView: View {
     var body: some View {
         FloatingPanel(padding: 0) {
             VStack(spacing: 0) {
+                header
+                Divider()
                 ScrollViewReader { proxy in
                     ScrollView([.vertical, .horizontal]) {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -29,7 +31,7 @@ struct LogView: View {
                         .padding(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .background(MacTheme.contentFill)
                     .onChange(of: state.logs.count) { _ in
                         if autoScroll, let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
                     }
@@ -43,21 +45,29 @@ struct LogView: View {
                 .padding(.horizontal, 12).padding(.vertical, 6)
             }
         }
-        .padding(MacTheme.chromeInset)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(MacTheme.chromeFill)
-        .toolbar {
-            ToolbarItemGroup(placement: .automatic) {
-                TextField("Filter", text: $filter).textFieldStyle(.roundedBorder).frame(width: 200)
-                Button { Pasteboard.copy(lines.joined(separator: "\n")) } label: { Label("Copy", systemImage: "doc.on.doc") }
-                    .help("Copy visible lines")
-                Button { state.clearLogs() } label: { Label("Clear", systemImage: "trash") }
-                Button { state.openLogsFolder() } label: { Label("Open Folder", systemImage: "folder") }
-            }
-        }
-        .navigationTitle("Logs")
+        .floatingChromeLayout()
         .task { await state.loadLogSnapshot() }
         .onDisappear { state.stopLogStreaming() }
+    }
+
+    /// In-panel header (no system toolbar): title + filter + actions, same pattern as Call History.
+    private var header: some View {
+        HStack(spacing: 10) {
+            Text("Logs")
+                .font(.title3.weight(.semibold))
+            Spacer()
+            TextField("Filter", text: $filter)
+                .textFieldStyle(.roundedBorder)
+                .frame(width: 200)
+            Button { Pasteboard.copy(lines.joined(separator: "\n")) } label: { Label("Copy", systemImage: "doc.on.doc") }
+                .help("Copy visible lines")
+            Button { state.clearLogs() } label: { Label("Clear", systemImage: "trash") }
+            Button { state.openLogsFolder() } label: { Label("Open Folder", systemImage: "folder") }
+        }
+        .labelStyle(.iconOnly)
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
     }
 
     private func lineColor(_ line: String) -> Color {

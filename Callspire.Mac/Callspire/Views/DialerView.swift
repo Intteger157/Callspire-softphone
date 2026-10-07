@@ -71,7 +71,7 @@ struct DialerView: View {
             Image(systemName: "phone.badge.plus")
                 .font(.title2)
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text("No line configured").font(.callout.weight(.semibold))
                 Text("Add your SIP or WebRTC account to start calling.")
@@ -262,7 +262,7 @@ private struct CallerIdPicker: View {
                 Image(systemName: "person.crop.circle.fill")
                     .symbolRenderingMode(.hierarchical)
                     .font(.system(size: 15))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.secondary)
                 Text("From")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -340,7 +340,7 @@ private struct CallerIdRow: View {
             HStack(spacing: 10) {
                 Image(systemName: "checkmark")
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(.primary)
                     .opacity(isSelected ? 1 : 0)
                     .frame(width: 14)
                 VStack(alignment: .leading, spacing: 1) {
@@ -358,7 +358,7 @@ private struct CallerIdRow: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(hover ? Color.accentColor.opacity(0.15) : Color.clear))
+                .fill(hover ? MacTheme.selectionFill : Color.clear))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
