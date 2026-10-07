@@ -46,9 +46,6 @@ enum MacTheme {
     static var singlePanelLightsCenter: CGPoint {
         CGPoint(x: chromeInset + 14 + 27, y: chromeInset + 20)
     }
-    /// Call window (340pt wide): traffic lights centred on the window, not flush left.
-    static var callLightsCenter: CGPoint { CGPoint(x: 340 / 2, y: trafficLightsInset / 2) }
-
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
     static let chromeFill = Color(nsColor: .underPageBackgroundColor)

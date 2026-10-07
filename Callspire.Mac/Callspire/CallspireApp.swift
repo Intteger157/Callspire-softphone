@@ -44,7 +44,8 @@ struct CallspireApp: App {
                     Color.clear.frame(width: 380, height: 560)
                 }
             }
-            .unifiedWindowChrome(lightsCenter: MacTheme.callLightsCenter) { win in
+            // Call window: keep AppKit’s default top-left traffic lights (do not centre on the card).
+            .unifiedWindowChrome(lightsCenter: nil) { win in
                 state.callWindow = win
                 // Single-surface window: backdrop must match the panel, not the chrome gap colour.
                 win.isOpaque = false
