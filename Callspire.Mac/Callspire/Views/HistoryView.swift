@@ -37,7 +37,7 @@ struct HistoryView: View {
                             }
                         }
                 }
-                .listStyle(.inset)
+                .callspireInsetListStyle()
                 .callspireHiddenScrollContentBackground()
             }
             }
@@ -115,7 +115,7 @@ private struct HistoryRow: View {
                 Text(item.durationText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .monospaced()
                 Text(item.status)
                     .font(.caption)
                     .foregroundStyle(statusColor)

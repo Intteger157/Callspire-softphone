@@ -22,6 +22,34 @@ extension View {
             self
         }
     }
+
+    /// `Form.formStyle(.grouped)` is Ventura+.
+    @ViewBuilder
+    func callspireGroupedFormStyle() -> some View {
+        if #available(macOS 13.0, *) {
+            formStyle(.grouped)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func callspireSettingsSidebarListStyle() -> some View {
+        if #available(macOS 13.0, *) {
+            listStyle(.sidebar)
+        } else {
+            listStyle(.automatic)
+        }
+    }
+
+    @ViewBuilder
+    func callspireInsetListStyle() -> some View {
+        if #available(macOS 13.0, *) {
+            listStyle(.inset)
+        } else {
+            listStyle(.automatic)
+        }
+    }
 }
 
 /// `LabeledContent` is Ventura+; simple two-column row on Monterey.

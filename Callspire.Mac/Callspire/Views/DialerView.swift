@@ -189,7 +189,7 @@ private struct NumberField: View {
 
             TextField("", text: $text, prompt: Text("Enter number").foregroundColor(Color.secondary.opacity(0.55)))
                 .textFieldStyle(.plain)
-                .font(.system(size: 28, weight: .regular).monospacedDigit())
+                .font(.system(size: 28, weight: .regular).monospaced())
                 .multilineTextAlignment(.center)
                 .lineLimit(1)
                 .focused(focused)
@@ -271,7 +271,7 @@ private struct CallerIdPicker: View {
                         .lineLimit(1)
                     if !current.number.isEmpty, !Self.title(current).contains(current.number) {
                         Text(current.number)
-                            .font(.callout.monospacedDigit())
+                            .font(.callout.monospaced())
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -348,7 +348,7 @@ private struct CallerIdRow: View {
                         .lineLimit(1)
                     if !item.number.isEmpty, !CallerIdPicker.title(item).contains(item.number) {
                         Text(item.number)
-                            .font(.caption.monospacedDigit())
+                            .font(.caption.monospaced())
                             .foregroundStyle(.secondary)
                     }
                 }

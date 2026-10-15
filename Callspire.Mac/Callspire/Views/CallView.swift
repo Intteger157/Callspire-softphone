@@ -75,7 +75,7 @@ struct CallView: View {
 
             if showsNumberLine {
                 Text(info.phoneNumber)
-                    .font(.callout.monospacedDigit())
+                    .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .callspireTextSelectionEnabled()
             }
@@ -88,7 +88,7 @@ struct CallView: View {
                 }
                 if !s.timerText.isEmpty {
                     Text(s.timerText)
-                        .font(.callout.monospacedDigit())
+                        .font(.callout.monospaced())
                         .foregroundStyle(.secondary)
                 }
             }
@@ -309,7 +309,7 @@ struct CallAudioDevicesSheet: View {
                         ForEach(d.outputs) { Text($0.label).tag($0.id) }
                     }
                 }
-                .formStyle(.grouped)
+                .callspireGroupedFormStyle()
                 .frame(height: 120)
                 Text(d.isWebRtc
                      ? "Changes apply immediately to the current WebRTC call."

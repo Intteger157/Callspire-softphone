@@ -272,7 +272,7 @@ struct ConnectionSelectionSheet: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(.callout.weight(.medium)).lineLimit(1)
                 if !item.number.isEmpty, !title.contains(item.number) {
-                    Text(item.number).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(item.number).font(.caption.monospaced()).foregroundStyle(.secondary)
                 }
             }
         }

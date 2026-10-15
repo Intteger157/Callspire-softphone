@@ -247,7 +247,7 @@ struct StatisticsView: View {
                         } label: {
                             HStack {
                                 Text("\(index + 1).")
-                                    .font(.caption.monospacedDigit())
+                                    .font(.caption.monospaced())
                                     .foregroundStyle(.secondary)
                                     .frame(width: 22, alignment: .trailing)
                                 Text(row.name).font(.callout.weight(.medium))

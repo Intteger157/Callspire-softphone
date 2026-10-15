@@ -89,7 +89,7 @@ struct CallDetailsView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 StatusChip(text: d.wasAnswered ? "Answered" : "Not answered", color: d.wasAnswered ? .green : .orange)
                 Text(d.durationText.isEmpty ? "—" : d.durationText)
-                    .font(.title3.monospacedDigit().weight(.medium))
+                    .font(.title3.monospaced().weight(.medium))
             }
         }
         .padding(16)
@@ -383,7 +383,7 @@ extension DetailRow where Value == AnyView {
         self.init(key) {
             AnyView(
                 Text(text.isEmpty ? "—" : text)
-                    .font(mono ? .callout.monospacedDigit() : .callout)
+                    .font(mono ? .callout.monospaced() : .callout)
                     .callspireTextSelectionEnabled()
             )
         }

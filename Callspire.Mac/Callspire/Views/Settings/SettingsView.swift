@@ -30,7 +30,7 @@ struct SettingsView: View {
                     }
                     .tag(p)
                 }
-                .listStyle(.sidebar)
+                .callspireSettingsSidebarListStyle()
                 .callspireHiddenScrollContentBackground()
                 .listRowBackground(Color.clear)
                 // Traffic lights float over the top of the sidebar panel.

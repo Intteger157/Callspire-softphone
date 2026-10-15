@@ -67,7 +67,7 @@ struct ConnectionPanel: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
         .onAppear { showSecondary = hasSecondary }
@@ -259,7 +259,7 @@ struct AudioPanel: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
         .onDisappear { if previewing { state.stopRingtone() } }
@@ -294,7 +294,7 @@ struct GeneralPanel: View {
                 Text("Available for WebRTC calls. Recordings are saved on this Mac.")
             }
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
@@ -323,7 +323,7 @@ struct AppearancePanel: View {
                 Text("Saved as soon as you pick a theme (no Save button). System follows macOS appearance.")
             }
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
@@ -365,7 +365,7 @@ struct AdvancedPanel: View {
                 }
             }
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
@@ -388,7 +388,7 @@ struct IntegrationsPanel: View {
             gatewaySection
             kommoSections
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
@@ -576,7 +576,7 @@ struct AboutPanel: View {
                 Text(status.isEmpty ? "Updates come from public GitHub Releases (Intteger157/Callspire-softphone)." : status)
             }
         }
-        .formStyle(.grouped)
+        .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
