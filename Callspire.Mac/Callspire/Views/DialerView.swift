@@ -112,8 +112,14 @@ struct DialerView: View {
                 text: Binding(get: { state.main.phoneNumber }, set: { state.setPhone($0) }),
                 focused: $numberFocused,
                 onSubmit: { state.placeCall() },
-                onBackspace: { state.setPhone(String(state.main.phoneNumber.dropLast())) },
-                onClear: { state.setPhone("") }
+                onBackspace: {
+                    state.setPhone(String(state.main.phoneNumber.dropLast()))
+                    numberFocused = true
+                },
+                onClear: {
+                    state.setPhone("")
+                    numberFocused = true
+                }
             )
 
             if state.main.showCallerIdPicker && !state.main.callerIds.isEmpty {
@@ -230,25 +236,42 @@ private struct NumberField: View {
     }
 }
 
+/// Click deletes one character, holding clears the number. A `Button` carries the click: on macOS a
+/// `.onLongPressGesture` stacked on `.onTapGesture` swallows the plain click, so the long press runs
+/// as a simultaneous gesture and suppresses the click that fires on release.
 private struct BackspaceButton: View {
     var onTap: () -> Void
     var onLongPress: () -> Void
     @State private var hover = false
+    @State private var clearedByLongPress = false
 
     var body: some View {
-        Image(systemName: "delete.backward.fill")
-            .symbolRenderingMode(.hierarchical)
-            .font(.system(size: 17, weight: .medium))
-            .foregroundStyle(hover ? Color.primary : Color.secondary)
-            .frame(width: 32, height: 32)
-            .background(Circle().fill(Color.primary.opacity(hover ? 0.1 : 0)))
-            .contentShape(Circle())
-            .onTapGesture(perform: onTap)
-            .onLongPressGesture(minimumDuration: 0.5, perform: onLongPress)
-            .onHover { hover = $0 }
-            .help("Delete (hold to clear)")
-            .accessibilityLabel("Delete")
-            .accessibilityAddTraits(.isButton)
+        Button {
+            if clearedByLongPress {
+                clearedByLongPress = false
+                return
+            }
+            onTap()
+        } label: {
+            Image(systemName: "delete.backward.fill")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(hover ? Color.primary : Color.secondary)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Color.primary.opacity(hover ? 0.1 : 0)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .focusable(false)
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5).onEnded { _ in
+                clearedByLongPress = true
+                onLongPress()
+            }
+        )
+        .onHover { hover = $0 }
+        .help("Delete (hold to clear)")
+        .accessibilityLabel("Delete")
     }
 }
 
