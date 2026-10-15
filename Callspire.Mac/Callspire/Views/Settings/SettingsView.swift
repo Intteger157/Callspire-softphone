@@ -32,7 +32,7 @@ struct SettingsView: View {
                 }
                 .callspireSettingsSidebarListStyle()
                 .callspireHiddenScrollContentBackground()
-                .listRowBackground(Color.clear)
+                .callspireClearListRowBackground()
                 // Traffic lights float over the top of the sidebar panel.
                 .padding(.top, MacTheme.trafficLightsInset - 6)
             }

@@ -14,7 +14,7 @@ struct HistoryView: View {
                     Image(systemName: "clock")
                         .font(.system(size: 40, weight: .light))
                         .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.tertiary)
+                        .callspireForegroundTertiary()
                     Text("No Calls Yet")
                         .font(.title3.weight(.medium))
                     Text("Completed calls will appear here.")

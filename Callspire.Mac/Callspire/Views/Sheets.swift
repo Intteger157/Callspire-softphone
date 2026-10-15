@@ -80,7 +80,7 @@ struct LogView: View {
             if !filter.isEmpty {
                 Text("· filtered")
                     .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .callspireForegroundTertiary()
             }
             Spacer()
             Toggle("Auto-scroll", isOn: $autoScroll)

@@ -187,8 +187,14 @@ private struct NumberField: View {
         HStack(spacing: 0) {
             Color.clear.frame(width: 40, height: 1)
 
-            TextField("", text: $text, prompt: Text("Enter number").foregroundColor(Color.secondary.opacity(0.55)))
-                .textFieldStyle(.plain)
+            Group {
+                if #available(macOS 13.0, *) {
+                    TextField("", text: $text, prompt: Text("Enter number").foregroundColor(Color.secondary.opacity(0.55)))
+                } else {
+                    TextField("Enter number", text: $text)
+                }
+            }
+            .textFieldStyle(.plain)
                 .font(.system(size: 28, weight: .regular).monospaced())
                 .multilineTextAlignment(.center)
                 .lineLimit(1)

@@ -130,7 +130,7 @@ struct StatisticsView: View {
                     .minimumScaleFactor(0.75)
                 Text(hint.isEmpty ? " " : hint)
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .callspireForegroundTertiary()
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)

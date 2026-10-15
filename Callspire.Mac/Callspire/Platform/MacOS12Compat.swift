@@ -50,6 +50,24 @@ extension View {
             listStyle(.automatic)
         }
     }
+
+    @ViewBuilder
+    func callspireClearListRowBackground() -> some View {
+        if #available(macOS 13.0, *) {
+            listRowBackground(Color.clear)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func callspireForegroundTertiary() -> some View {
+        if #available(macOS 13.0, *) {
+            foregroundStyle(.tertiary)
+        } else {
+            foregroundStyle(.secondary.opacity(0.85))
+        }
+    }
 }
 
 /// `LabeledContent` is Ventura+; simple two-column row on Monterey.

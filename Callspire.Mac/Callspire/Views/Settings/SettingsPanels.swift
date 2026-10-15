@@ -11,13 +11,21 @@ struct FormField: View {
     var secure: Bool = false
     var width: CGFloat = 280
 
+    private var fallbackPlaceholder: String { prompt.isEmpty ? title : prompt }
+
     var body: some View {
         CallspireLabeledContent(title) {
             Group {
-                if secure {
-                    SecureField("", text: $text, prompt: Text(prompt))
+                if #available(macOS 13.0, *) {
+                    if secure {
+                        SecureField("", text: $text, prompt: Text(prompt))
+                    } else {
+                        TextField("", text: $text, prompt: Text(prompt))
+                    }
+                } else if secure {
+                    SecureField(fallbackPlaceholder, text: $text)
                 } else {
-                    TextField("", text: $text, prompt: Text(prompt))
+                    TextField(fallbackPlaceholder, text: $text)
                 }
             }
             .textFieldStyle(.roundedBorder)
@@ -225,9 +233,12 @@ struct AudioPanel: View {
                 }
                 if draft.sipCodec.lowercased() == "opus" {
                     CallspireLabeledContent("Opus bitrate") {
-                        TextField("", value: $draft.sipOpusBitrate, format: .number, prompt: Text("64000"))
-                            .textFieldStyle(.roundedBorder)
-                            .frame(width: 100)
+                        TextField("64000", text: Binding(
+                            get: { String(draft.sipOpusBitrate) },
+                            set: { draft.sipOpusBitrate = Int($0.filter(\.isNumber)) ?? draft.sipOpusBitrate }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
                     }
                 }
             } header: {
