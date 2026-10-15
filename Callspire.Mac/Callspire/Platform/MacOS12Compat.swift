@@ -111,14 +111,3 @@ func callspireMainRoot(state: AppState, appDelegate: AppDelegate) -> some View {
             appDelegate.attach(state: state)
         }
 }
-
-@CommandsBuilder
-func callspireAppCommands(state: AppState) -> some Commands {
-    CommandGroup(replacing: .appSettings) {
-        Button("Settings…") { state.openSettings() }.keyboardShortcut(",", modifiers: .command)
-    }
-    CommandGroup(after: .windowArrangement) {
-        Button("Logs") { state.openLogs() }.keyboardShortcut("l", modifiers: [.command, .shift])
-    }
-    CommandGroup(replacing: .newItem) { }
-}
