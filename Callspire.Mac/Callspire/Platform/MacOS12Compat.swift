@@ -78,6 +78,15 @@ extension View {
             self
         }
     }
+
+    @ViewBuilder
+    func callspireTracking(_ amount: CGFloat) -> some View {
+        if #available(macOS 13.0, *) {
+            tracking(amount)
+        } else {
+            self
+        }
+    }
 }
 
 /// `LabeledContent` is Ventura+; simple two-column row on Monterey.
@@ -120,6 +129,8 @@ func callspireMainRoot(state: AppState, appDelegate: AppDelegate) -> some View {
         })
         .unifiedWindowChrome(lightsCenter: MacTheme.mainLightsCenter)
         .onAppear {
-            appDelegate.attach(state: state)
+            Task { @MainActor in
+                appDelegate.attach(state: state)
+            }
         }
 }

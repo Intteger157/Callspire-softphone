@@ -244,7 +244,7 @@ struct ConnectionSelectionSheet: View {
     private func sectionTitle(_ text: String) -> some View {
         Text(text.uppercased())
             .font(.caption2).callspireFontWeight(.semibold)
-            .tracking(0.6)
+            .callspireTracking(0.6)
             .foregroundStyle(.secondary)
     }
 

@@ -344,7 +344,7 @@ private struct DetailSection<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased())
                 .font(.caption).callspireFontWeight(.semibold)
-                .tracking(0.6)
+                .callspireTracking(0.6)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
                 content()

@@ -261,7 +261,7 @@ struct KeypadKey: View {
                     .foregroundStyle(.primary)
                 Text(letters ?? " ")
                     .font(.system(size: 9, weight: .medium))
-                    .tracking(1.5)
+                    .callspireTracking(1.5)
                     .foregroundStyle(.secondary)
                     .opacity(letters == nil ? 0 : 1)
             }
