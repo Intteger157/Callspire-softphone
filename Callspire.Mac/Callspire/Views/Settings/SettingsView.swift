@@ -41,7 +41,7 @@ struct SettingsView: View {
             FloatingPanel {
                 VStack(spacing: 0) {
                     Text(panel.title)
-                        .font(.title2).fontWeight(.semibold)
+                        .font(.title2).callspireFontWeight(.semibold)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 18)
                         .padding(.top, 14)

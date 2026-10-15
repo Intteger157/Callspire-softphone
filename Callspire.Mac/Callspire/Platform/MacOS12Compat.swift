@@ -68,6 +68,16 @@ extension View {
             foregroundStyle(.secondary.opacity(0.85))
         }
     }
+
+    /// `fontWeight` modifier is Ventura+; Monterey keeps the base font from `.font(...)`.
+    @ViewBuilder
+    func callspireFontWeight(_ weight: Font.Weight) -> some View {
+        if #available(macOS 13.0, *) {
+            fontWeight(weight)
+        } else {
+            self
+        }
+    }
 }
 
 /// `LabeledContent` is Ventura+; simple two-column row on Monterey.
@@ -103,8 +113,10 @@ func callspireMainRoot(state: AppState, appDelegate: AppDelegate) -> some View {
         .environmentObject(state)
         .frame(minWidth: 900, minHeight: 600)
         .background(WindowAccessor { win in
-            state.mainWindow = win
-            state.webRtc.updateAudioHostWindow(main: win, call: state.callWindow)
+            Task { @MainActor in
+                state.mainWindow = win
+                state.webRtc.updateAudioHostWindow(main: win, call: state.callWindow)
+            }
         })
         .unifiedWindowChrome(lightsCenter: MacTheme.mainLightsCenter)
         .onAppear {

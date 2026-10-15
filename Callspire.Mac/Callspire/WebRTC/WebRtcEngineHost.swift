@@ -245,15 +245,6 @@ final class WebRtcEngineHost: NSObject, WKScriptMessageHandler, WKNavigationDele
         Task { try? await ipc?.requestVoid("webRtcHostReset") }
     }
 
-    private func finishLoad(_ ok: Bool) {
-        loadContinuation?.resume(returning: ok)
-        loadContinuation = nil
-    }
-}
-
-// Monterey: WebKit uses the legacy getUserMedia prompt; Ventura+ uses this delegate (pre-auth via MicrophoneAccess).
-@available(macOS 13.0, *)
-extension WebRtcEngineHost {
     func webView(
         _ webView: WKWebView,
         requestMediaCapturePermissionFor origin: WKSecurityOrigin,
@@ -276,5 +267,10 @@ extension WebRtcEngineHost {
         @unknown default:
             decisionHandler(.prompt)
         }
+    }
+
+    private func finishLoad(_ ok: Bool) {
+        loadContinuation?.resume(returning: ok)
+        loadContinuation = nil
     }
 }

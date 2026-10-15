@@ -157,12 +157,16 @@ private struct MainViewAuxiliarySheetsModifier: ViewModifier {
                 }
                 .frame(width: 380, height: 560)
                 .background(WindowAccessor { win in
-                    state.callWindow = win
-                    state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: win)
+                    Task { @MainActor in
+                        state.callWindow = win
+                        state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: win)
+                    }
                 })
                 .onDisappear {
-                    state.callWindow = nil
-                    state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: nil)
+                    Task { @MainActor in
+                        state.callWindow = nil
+                        state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: nil)
+                    }
                 }
             }
     }

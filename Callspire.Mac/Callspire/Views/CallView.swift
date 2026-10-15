@@ -83,7 +83,7 @@ struct CallView: View {
             HStack(spacing: 8) {
                 if !s.statusText.isEmpty {
                     Text(s.statusText)
-                        .font(.callout).fontWeight(.medium)
+                        .font(.callout).callspireFontWeight(.medium)
                         .foregroundStyle(toneColor)
                 }
                 if !s.timerText.isEmpty {
@@ -98,14 +98,14 @@ struct CallView: View {
                 TransportBadge(label: info.transportLabel, isWebRtc: info.isWebRtc)
                 if !info.connectionLabel.isEmpty {
                     Text(info.connectionLabel)
-                        .font(.caption2).fontWeight(.medium)
+                        .font(.caption2).callspireFontWeight(.medium)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(.quaternary.opacity(0.6), in: Capsule())
                 }
                 if s.isRecordingIndicatorVisible {
                     Label("REC", systemImage: "record.circle.fill")
-                        .font(.caption2).fontWeight(.bold)
+                        .font(.caption2).callspireFontWeight(.bold)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(Color.red, in: Capsule())
@@ -299,7 +299,7 @@ struct CallAudioDevicesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Audio Devices").font(.title3).fontWeight(.semibold)
+            Text("Audio Devices").font(.title3).callspireFontWeight(.semibold)
             if let d = devices {
                 Form {
                     Picker("Microphone", selection: $input) {

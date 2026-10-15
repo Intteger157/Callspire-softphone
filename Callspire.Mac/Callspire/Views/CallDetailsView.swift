@@ -89,7 +89,7 @@ struct CallDetailsView: View {
             VStack(alignment: .trailing, spacing: 6) {
                 StatusChip(text: d.wasAnswered ? "Answered" : "Not answered", color: d.wasAnswered ? .green : .orange)
                 Text(d.durationText.isEmpty ? "—" : d.durationText)
-                    .font(.system(.title3, design: .monospaced)).fontWeight(.medium)
+                    .font(.system(.title3, design: .monospaced)).callspireFontWeight(.medium)
             }
         }
         .padding(16)
@@ -203,7 +203,7 @@ struct CallDetailsView: View {
                 .help(isPlaying ? "Stop" : "Play recording")
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(recordingTitle).font(.callout).fontWeight(.medium).lineLimit(1).truncationMode(.middle)
+                    Text(recordingTitle).font(.callout).callspireFontWeight(.medium).lineLimit(1).truncationMode(.middle)
                     Text(recordingSubtitle).font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -343,7 +343,7 @@ private struct DetailSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title.uppercased())
-                .font(.caption).fontWeight(.semibold)
+                .font(.caption).callspireFontWeight(.semibold)
                 .tracking(0.6)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 10) {
@@ -397,7 +397,7 @@ private struct StatusChip: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle().fill(color).frame(width: 7, height: 7)
-            Text(text).font(.caption).fontWeight(.medium)
+            Text(text).font(.caption).callspireFontWeight(.medium)
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 4)

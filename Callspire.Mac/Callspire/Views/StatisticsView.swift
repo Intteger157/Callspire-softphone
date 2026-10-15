@@ -43,7 +43,7 @@ struct StatisticsView: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Call Statistics")
-                    .font(.title3).fontWeight(.semibold)
+                    .font(.title3).callspireFontWeight(.semibold)
                 if !st.periodHint.isEmpty {
                     Text(st.periodHint)
                         .font(.callout)
@@ -121,7 +121,7 @@ struct StatisticsView: View {
         let tile = Card(padding: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .font(.caption).fontWeight(.medium)
+                    .font(.caption).callspireFontWeight(.medium)
                     .foregroundStyle(.secondary)
                 Text(value.isEmpty ? "0" : value)
                     .font(.system(size: 24, weight: .semibold, design: .rounded))
@@ -245,7 +245,7 @@ struct StatisticsView: View {
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundStyle(.secondary)
                                     .frame(width: 22, alignment: .trailing)
-                                Text(row.name).font(.callout).fontWeight(.medium)
+                                Text(row.name).font(.callout).callspireFontWeight(.medium)
                                 Spacer()
                                 Text(row.detail).font(.callout).foregroundStyle(.secondary)
                             }
