@@ -88,7 +88,7 @@ struct FloatingPanel<Content: View>: View {
     }
 
     private var panelBackground: some View {
-        VisualEffectBackground(material: .contentBackground, cornerRadius: MacTheme.panelCorner)
+        VisualEffectBackground(inPanel: .contentBackground, cornerRadius: MacTheme.panelCorner)
             .overlay {
                 RoundedRectangle(cornerRadius: MacTheme.panelCorner)
                     .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
@@ -332,15 +332,31 @@ struct CallActionButton: View {
     }
 }
 
-/// Native vibrancy — follows light/dark, accent, and wallpaper tint (behind-window blending).
+/// Native vibrancy — window chrome uses behind-window; floating panels use within-window (avoids color bleed on newer macOS).
 struct VisualEffectBackground: NSViewRepresentable {
     var material: NSVisualEffectView.Material = .sidebar
+    var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
     var cornerRadius: CGFloat = 0
+
+    /// Use for content inside `FloatingPanel`, settings panes, log/call sheets — not for window-gap chrome.
+    init(inPanel material: NSVisualEffectView.Material = .contentBackground, cornerRadius: CGFloat = 0) {
+        self.material = material
+        self.blendingMode = .withinWindow
+        self.cornerRadius = cornerRadius
+    }
+
+    init(material: NSVisualEffectView.Material = .sidebar,
+         blendingMode: NSVisualEffectView.BlendingMode = .behindWindow,
+         cornerRadius: CGFloat = 0) {
+        self.material = material
+        self.blendingMode = blendingMode
+        self.cornerRadius = cornerRadius
+    }
 
     func makeNSView(context: Context) -> NSVisualEffectView {
         let v = NSVisualEffectView()
         v.material = material
-        v.blendingMode = .behindWindow
+        v.blendingMode = blendingMode
         v.state = .followsWindowActiveState
         applyCorner(v)
         return v
@@ -348,6 +364,7 @@ struct VisualEffectBackground: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
         nsView.material = material
+        nsView.blendingMode = blendingMode
         applyCorner(nsView)
     }
 

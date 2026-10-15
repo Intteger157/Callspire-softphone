@@ -199,6 +199,7 @@ private struct NumberField: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(1)
                 .focused(focused)
+                .callspireSuppressSystemFocusRing()
                 .onSubmit(onSubmit)
 
             BackspaceButton(onTap: onBackspace, onLongPress: onClear)
@@ -210,12 +211,16 @@ private struct NumberField: View {
         .frame(width: 320, height: 56)
         .background(
             RoundedRectangle(cornerRadius: 14)
-                .fill(Color.primary.opacity(hover || isFocused ? 0.07 : 0.045))
+                .fill(MacTheme.controlFill)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(isFocused ? Color.accentColor.opacity(0.55) : MacTheme.separator.opacity(0.6),
-                              lineWidth: isFocused ? 1.5 : 1)
+                .fill(Color.primary.opacity(hover || isFocused ? 0.05 : 0))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(isFocused ? Color.accentColor.opacity(0.38) : MacTheme.separator.opacity(0.55),
+                              lineWidth: 1)
         )
         .contentShape(RoundedRectangle(cornerRadius: 14))
         .onTapGesture { focused.wrappedValue = true }

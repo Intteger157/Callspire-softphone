@@ -33,6 +33,7 @@ struct SettingsView: View {
                 .callspireSettingsSidebarListStyle()
                 .callspireHiddenScrollContentBackground()
                 .callspireClearListRowBackground()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 // Traffic lights float over the top of the sidebar panel.
                 .padding(.top, MacTheme.trafficLightsInset - 6)
             }
@@ -166,7 +167,7 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background { VisualEffectBackground(material: .headerView) }
+        .background { VisualEffectBackground(inPanel: .headerView) }
     }
 
     // MARK: - Actions

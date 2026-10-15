@@ -77,7 +77,8 @@ struct ConnectionPanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
         .onAppear { showSecondary = hasSecondary }
     }
 
@@ -272,7 +273,8 @@ struct AudioPanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
         .onDisappear { if previewing { state.stopRingtone() } }
     }
 
@@ -307,7 +309,8 @@ struct GeneralPanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
     }
 }
 
@@ -336,7 +339,8 @@ struct AppearancePanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
     }
 }
 
@@ -378,7 +382,8 @@ struct AdvancedPanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
     }
 }
 
@@ -401,7 +406,8 @@ struct IntegrationsPanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
     }
 
     // MARK: PBX Gateway
@@ -589,7 +595,8 @@ struct AboutPanel: View {
         }
         .callspireGroupedFormStyle()
         .callspireHiddenScrollContentBackground()
-        .background { VisualEffectBackground(material: .contentBackground) }
+        .callspireMontereyFormChrome()
+        .background { VisualEffectBackground(inPanel: .contentBackground) }
     }
 
     private var versionText: String {

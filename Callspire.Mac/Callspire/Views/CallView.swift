@@ -50,7 +50,7 @@ struct CallView: View {
         // otherwise the NSWindow backdrop shows through as a dark strip below the content.
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background {
-            VisualEffectBackground(material: .contentBackground)
+            VisualEffectBackground(inPanel: .contentBackground)
                 .ignoresSafeArea()
         }
         .sheet(isPresented: $showAudioDevices) {

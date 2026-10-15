@@ -87,6 +87,29 @@ extension View {
             self
         }
     }
+
+    /// Hides the system focus ring (Sonoma+); custom focus chrome stays on dialer / fields.
+    @ViewBuilder
+    func callspireSuppressSystemFocusRing() -> some View {
+        if #available(macOS 14.0, *) {
+            focusEffectDisabled()
+        } else {
+            self
+        }
+    }
+
+    /// Settings `Form` on Monterey: pad and tint so rows are not lost on the default gray form chrome.
+    @ViewBuilder
+    func callspireMontereyFormChrome() -> some View {
+        if #available(macOS 13.0, *) {
+            self
+        } else {
+            padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(MacTheme.panelFill.opacity(0.92))
+                .clipShape(RoundedRectangle(cornerRadius: MacTheme.corner))
+        }
+    }
 }
 
 /// `LabeledContent` is Ventura+; simple two-column row on Monterey.
@@ -103,13 +126,15 @@ struct CallspireLabeledContent<Content: View>: View {
         if #available(macOS 13.0, *) {
             LabeledContent(title, content: content)
         } else {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
+            // Monterey: default Form + faint HStack labels read poorly; stack like grouped settings rows.
+            VStack(alignment: .leading, spacing: 6) {
                 Text(title)
-                    .frame(minWidth: 120, alignment: .leading)
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .foregroundStyle(Color(nsColor: .secondaryLabelColor))
                 content()
-                Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .padding(.vertical, 2)
         }
     }
 }

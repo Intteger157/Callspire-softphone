@@ -33,7 +33,7 @@ struct LogView: View {
                         .padding(.vertical, 10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .background { VisualEffectBackground(material: .contentBackground) }
+                    .background { VisualEffectBackground(inPanel: .contentBackground) }
                     .onChange(of: state.logs.count) { _ in
                         if autoScroll, let last = lines.indices.last { proxy.scrollTo(last, anchor: .bottom) }
                     }
@@ -69,7 +69,7 @@ struct LogView: View {
         .padding(.trailing, 16)
         .padding(.top, 10)
         .padding(.bottom, 8)
-        .background { VisualEffectBackground(material: .headerView) }
+        .background { VisualEffectBackground(inPanel: .headerView) }
     }
 
     private var footer: some View {
@@ -89,7 +89,7 @@ struct LogView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background { VisualEffectBackground(material: .headerView) }
+        .background { VisualEffectBackground(inPanel: .headerView) }
     }
 
     private func exportTxt() {
