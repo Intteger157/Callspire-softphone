@@ -48,14 +48,14 @@ enum MacTheme {
     }
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let windowFill = Color(nsColor: .windowBackgroundColor)
-    static let chromeFill = Color(nsColor: .underPageBackgroundColor)
+    static let chromeFill = Color(nsColor: .windowBackgroundColor)
     static let panelFill = Color(nsColor: .controlBackgroundColor)
     static let contentFill = Color(nsColor: .textBackgroundColor)
     static let separator = Color(nsColor: .separatorColor)
     static let quaternary = Color(nsColor: .quaternaryLabelColor)
 
     /// AppKit window backdrop matching the chrome gap (for `NSWindow.backgroundColor`).
-    static let chromeFillNS = NSColor.underPageBackgroundColor
+    static let chromeFillNS = NSColor.windowBackgroundColor
     /// Single-surface windows (active call).
     static let panelFillNS = NSColor.controlBackgroundColor
 
