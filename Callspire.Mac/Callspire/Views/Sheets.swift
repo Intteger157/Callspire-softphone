@@ -13,8 +13,13 @@ struct LogView: View {
         filter.isEmpty ? state.logs : state.logs.filter { $0.localizedCaseInsensitiveContains(filter) }
     }
 
+    private var logPanelSurface: FloatingPanelSurface {
+        if #available(macOS 13.0, *) { return .vibrancy }
+        return .solid
+    }
+
     var body: some View {
-        FloatingPanel(padding: 0) {
+        FloatingPanel(padding: 0, surface: logPanelSurface) {
             VStack(spacing: 0) {
                 header
                 Divider()
@@ -42,7 +47,7 @@ struct LogView: View {
                 footer
             }
         }
-        .floatingChromeLayout()
+        .callspireAuxiliaryWindowLayout()
         .task { await state.loadLogSnapshot() }
         .onDisappear { state.stopLogStreaming() }
     }

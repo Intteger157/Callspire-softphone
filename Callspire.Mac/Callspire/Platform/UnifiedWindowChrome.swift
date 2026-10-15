@@ -16,14 +16,7 @@ struct UnifiedWindowChrome: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background(WindowAccessor { win in
-                win.styleMask.insert(.fullSizeContentView)
-                win.titlebarAppearsTransparent = true
-                win.titleVisibility = .hidden
-                win.titlebarSeparatorStyle = .none
-                win.isMovableByWindowBackground = movableByBackground
-                // Clear + vibrancy layers show wallpaper tint; opaque gray windowBackgroundColor blocks it.
-                win.isOpaque = false
-                win.backgroundColor = .clear
+                CallspireWindowConfigurator.apply(to: win, movableByBackground: movableByBackground)
                 positioner.attach(win, center: lightsCenter)
                 onWindow?(win)
             })
@@ -112,6 +105,21 @@ struct FloatingChromeLayout: ViewModifier {
     }
 }
 
+/// AppKit window setup shared by SwiftUI scenes and `AuxiliaryWindows` (Settings / Logs / call).
+enum CallspireWindowConfigurator {
+    static func apply(to window: NSWindow, movableByBackground: Bool = true) {
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.titlebarSeparatorStyle = .none
+        window.isMovableByWindowBackground = movableByBackground
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+    }
+}
+
 extension View {
     func unifiedWindowChrome(
         movableByBackground: Bool = true,
@@ -123,5 +131,20 @@ extension View {
 
     func floatingChromeLayout() -> some View {
         modifier(FloatingChromeLayout())
+    }
+
+    /// Settings / Logs in an AppKit-hosted window: Monterey needs a single backdrop (nested vibrancy + Form reads as a white card).
+    @ViewBuilder
+    func callspireAuxiliaryWindowLayout() -> some View {
+        if #available(macOS 13.0, *) {
+            floatingChromeLayout()
+        } else {
+            padding(MacTheme.chromeInset)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background {
+                    VisualEffectBackground(material: .underWindowBackground)
+                        .ignoresSafeArea()
+                }
+        }
     }
 }

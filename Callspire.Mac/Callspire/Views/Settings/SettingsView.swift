@@ -19,9 +19,15 @@ struct SettingsView: View {
 
     private var isDirty: Bool { draft.asFields() != baseline }
 
+    /// Monterey auxiliary windows: solid panels + one backdrop (see `callspireAuxiliaryWindowLayout`).
+    private var settingsPanelSurface: FloatingPanelSurface {
+        if #available(macOS 13.0, *) { return .vibrancy }
+        return .solid
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: MacTheme.panelGap) {
-            FloatingPanel(padding: 6) {
+            FloatingPanel(padding: 6, surface: settingsPanelSurface) {
                 List(AppState.SettingsPanel.allCases, selection: Binding(get: { panel }, set: { if let v = $0 { panel = v } })) { p in
                     Label {
                         Text(p.title)
@@ -39,7 +45,7 @@ struct SettingsView: View {
             }
             .frame(minWidth: 200, idealWidth: 220, maxWidth: 248)
 
-            FloatingPanel {
+            FloatingPanel(surface: settingsPanelSurface) {
                 VStack(spacing: 0) {
                     Text(panel.title)
                         .font(.title2).callspireFontWeight(.semibold)
@@ -80,7 +86,7 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .floatingChromeLayout()
+        .callspireAuxiliaryWindowLayout()
         .task { scheduleReload(restartSidecar: false) }
         .onChange(of: state.connected) { connected in
             if connected && !loaded { scheduleReload(restartSidecar: false) }

@@ -110,6 +110,8 @@ extension View {
                     .padding(.vertical, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .background(MacTheme.controlFill.opacity(0.35))
+            .clipShape(RoundedRectangle(cornerRadius: MacTheme.corner))
         }
     }
 }

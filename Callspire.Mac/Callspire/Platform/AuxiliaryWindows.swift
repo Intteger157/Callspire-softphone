@@ -30,6 +30,7 @@ final class AuxiliaryWindows {
             self?.settings = nil
         }
         settings = window
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -77,7 +78,9 @@ final class AuxiliaryWindows {
         if let visible = NSScreen.main?.visibleFrame {
             window.setFrameTopLeftPoint(NSPoint(x: visible.maxX - window.frame.width - 24, y: visible.maxY - 24))
         }
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
     }
 
     private func makeWindow<Content: View>(
@@ -94,10 +97,14 @@ final class AuxiliaryWindows {
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: contentSize), styleMask: style, backing: .buffered, defer: false)
         window.title = title
         window.isReleasedWhenClosed = false
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
         if let minSize { window.contentMinSize = minSize }
-        window.contentView = NSHostingView(rootView: content())
+        let root = content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        let hosting = NSHostingView(rootView: root)
+        hosting.frame = NSRect(origin: .zero, size: contentSize)
+        hosting.autoresizingMask = [.width, .height]
+        window.contentView = hosting
+        CallspireWindowConfigurator.apply(to: window)
         window.center()
         if let autosaveName {
             // Restores the last frame when one was saved; otherwise the centred frame stays.

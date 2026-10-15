@@ -74,9 +74,16 @@ struct Identified<T>: Identifiable {
 
 // MARK: - Surfaces
 
+/// Panel surface for auxiliary windows on Monterey (vibrancy inside `NSHostingView` often renders as flat white).
+enum FloatingPanelSurface {
+    case vibrancy
+    case solid
+}
+
 /// Rounded “floating” panel (Telegram-style column) on the window chrome.
 struct FloatingPanel<Content: View>: View {
     var padding: CGFloat = 0
+    var surface: FloatingPanelSurface = .vibrancy
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -87,14 +94,26 @@ struct FloatingPanel<Content: View>: View {
             .clipShape(RoundedRectangle(cornerRadius: MacTheme.panelCorner))
     }
 
+    @ViewBuilder
     private var panelBackground: some View {
-        VisualEffectBackground(inPanel: .contentBackground, cornerRadius: MacTheme.panelCorner)
-            .overlay {
-                RoundedRectangle(cornerRadius: MacTheme.panelCorner)
-                    .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
-            }
-            .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0.5)
-            .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
+        switch surface {
+        case .vibrancy:
+            VisualEffectBackground(inPanel: .contentBackground, cornerRadius: MacTheme.panelCorner)
+                .overlay {
+                    RoundedRectangle(cornerRadius: MacTheme.panelCorner)
+                        .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0.5)
+                .shadow(color: .black.opacity(0.10), radius: 10, y: 4)
+        case .solid:
+            RoundedRectangle(cornerRadius: MacTheme.panelCorner)
+                .fill(MacTheme.panelFill)
+                .overlay {
+                    RoundedRectangle(cornerRadius: MacTheme.panelCorner)
+                        .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
+                }
+                .shadow(color: .black.opacity(0.06), radius: 8, y: 3)
+        }
     }
 }
 
