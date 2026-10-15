@@ -27,10 +27,8 @@ final class AppState: ObservableObject {
     @Published var call: CallWindowInfo?
     weak var callWindow: NSWindow?
     weak var mainWindow: NSWindow?
-    /// Monterey: Settings / Logs / active call open as sheets (Ventura+ uses separate `Window` scenes).
-    @Published var montereySettingsSheetPresented = false
-    @Published var montereyLogsSheetPresented = false
-    @Published var montereyCallSheetPresented = false
+    /// Settings / Logs / active call as AppKit windows (SwiftUI `Window` scenes need Ventura).
+    let windows = AuxiliaryWindows()
 
     // Navigation / windows
     @Published var selectedNav: NavItem = .dialer
@@ -293,6 +291,7 @@ final class AppState: ObservableObject {
         case "showCallWindow":
             if let c = try? data?.decode(CallWindowInfo.self) {
                 call = c
+                windows.showCall(state: self)
                 NSApp.activate(ignoringOtherApps: true)
                 webRtc.updateAudioHostWindow(main: mainWindow, call: callWindow)
             }
@@ -305,7 +304,6 @@ final class AppState: ObservableObject {
             call = nil
             callWindow?.close()
             callWindow = nil
-            montereyCallSheetPresented = false
             webRtc.updateAudioHostWindow(main: mainWindow, call: nil)
         case "bringCallWindowToFront":
             callWindow?.makeKeyAndOrderFront(nil)
@@ -491,6 +489,7 @@ final class AppState: ObservableObject {
     func openSettings(panel: SettingsPanel? = nil) {
         if let panel { settingsInitialPanel = panel }
         settingsOpenRequest += 1
+        windows.showSettings(state: self)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -640,6 +639,7 @@ final class AppState: ObservableObject {
 
     func openLogs() {
         logsOpenRequest += 1
+        windows.showLogs(state: self)
         NSApp.activate(ignoringOtherApps: true)
     }
 

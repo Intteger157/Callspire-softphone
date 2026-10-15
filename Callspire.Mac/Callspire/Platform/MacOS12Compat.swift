@@ -98,16 +98,18 @@ extension View {
         }
     }
 
-    /// Settings `Form` on Monterey: pad and tint so rows are not lost on the default gray form chrome.
+    /// Settings `Form` on Monterey: the automatic form style does not scroll (grouped is Ventura+), so long
+    /// panes such as Connection with a second line need an explicit scroll view and inset.
     @ViewBuilder
     func callspireMontereyFormChrome() -> some View {
         if #available(macOS 13.0, *) {
             self
         } else {
-            padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(MacTheme.panelFill.opacity(0.92))
-                .clipShape(RoundedRectangle(cornerRadius: MacTheme.corner))
+            ScrollView {
+                padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 }
@@ -148,6 +150,13 @@ func callspireMainRoot(state: AppState, appDelegate: AppDelegate) -> some View {
         .frame(minWidth: 900, minHeight: 600)
         .background(WindowAccessor { win in
             Task { @MainActor in
+                // `Scene.defaultSize` is Ventura+; size the very first main window once, then SwiftUI restores frames.
+                let sizedKey = "CallspireMainWindowSized"
+                if !UserDefaults.standard.bool(forKey: sizedKey) {
+                    UserDefaults.standard.set(true, forKey: sizedKey)
+                    win.setContentSize(NSSize(width: 1120, height: 720))
+                    win.center()
+                }
                 state.mainWindow = win
                 state.webRtc.updateAudioHostWindow(main: win, call: state.callWindow)
             }

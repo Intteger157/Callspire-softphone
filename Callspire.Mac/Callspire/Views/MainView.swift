@@ -5,11 +5,6 @@ struct MainView: View {
     @EnvironmentObject var state: AppState
 
     var body: some View {
-        mainContent
-            .modifier(MainViewAuxiliarySheetsModifier())
-    }
-
-    private var mainContent: some View {
         // Stable outer layout (inset + title-bar band) so switching tabs never reflows the window chrome.
         HStack(alignment: .top, spacing: MacTheme.panelGap) {
             FloatingPanel(padding: MacTheme.railPadding) { rail }
@@ -115,60 +110,6 @@ struct MainView: View {
         case .history: HistoryView()
         case .statistics: StatisticsView()
         }
-    }
-}
-
-// MARK: - Settings, logs, active call (sheet on macOS 12+; no separate `Window` scenes)
-
-private struct MainViewAuxiliarySheetsModifier: ViewModifier {
-    @EnvironmentObject var state: AppState
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: state.call?.sessionId) { id in
-                state.montereyCallSheetPresented = (id != nil)
-            }
-            .onChange(of: state.settingsOpenRequest) { _ in
-                state.montereySettingsSheetPresented = true
-            }
-            .onChange(of: state.logsOpenRequest) { _ in
-                state.montereyLogsSheetPresented = true
-            }
-            .sheet(isPresented: $state.montereySettingsSheetPresented) {
-                SettingsView()
-                    .environmentObject(state)
-                    .frame(minWidth: 860, minHeight: 600)
-                    .unifiedWindowChrome(lightsCenter: MacTheme.sidebarLightsCenter)
-            }
-            .sheet(isPresented: $state.montereyLogsSheetPresented) {
-                LogView()
-                    .environmentObject(state)
-                    .frame(minWidth: 640, minHeight: 400)
-                    .unifiedWindowChrome(lightsCenter: MacTheme.singlePanelLightsCenter)
-            }
-            .sheet(isPresented: $state.montereyCallSheetPresented) {
-                Group {
-                    if let call = state.call {
-                        CallView(info: call)
-                            .environmentObject(state)
-                    } else {
-                        Color.clear.frame(width: 380, height: 560)
-                    }
-                }
-                .frame(width: 380, height: 560)
-                .background(WindowAccessor { win in
-                    Task { @MainActor in
-                        state.callWindow = win
-                        state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: win)
-                    }
-                })
-                .onDisappear {
-                    Task { @MainActor in
-                        state.callWindow = nil
-                        state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: nil)
-                    }
-                }
-            }
     }
 }
 

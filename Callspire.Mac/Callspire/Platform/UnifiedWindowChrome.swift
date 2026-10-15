@@ -80,41 +80,19 @@ final class TrafficLightsPositioner {
         let spacing = max(0, mini.frame.minX - close.frame.maxX)
         let clusterWidth = buttons.reduce(CGFloat(0)) { $0 + $1.frame.width } + spacing * 2
 
-        // Do not stretch the title-bar container to full window width — on recent macOS that band renders as an opaque strip.
-        Self.clearTitlebarChrome(container: container, titlebar: titlebar)
+        // Title bar band tall enough that the cluster centre lands on `center.y` from the top edge.
+        // The band only stays invisible with a hidden-title-bar window (transparent title bar,
+        // full-size content); see `unifiedWindowChrome` / `AuxiliaryWindows`.
+        let bandHeight = max(center.y * 2, buttonHeight)
+        let size = window.frame.size
+        container.frame = NSRect(x: 0, y: size.height - bandHeight, width: size.width, height: bandHeight)
+        titlebar.frame = container.bounds
 
         var x = center.x - clusterWidth / 2
-        let y = (titlebar.bounds.height - buttonHeight) / 2
+        let y = (bandHeight - buttonHeight) / 2
         for button in buttons {
             button.setFrameOrigin(NSPoint(x: x, y: y))
             x += button.frame.width + spacing
-        }
-    }
-
-    /// The title-bar container is stretched full width for button placement; on recent macOS it paints an opaque band unless cleared.
-    private static func clearTitlebarChrome(container: NSView, titlebar: NSView) {
-        for view in [container, titlebar] {
-            view.isOpaque = false
-            view.wantsLayer = true
-            view.layer?.backgroundColor = NSColor.clear.cgColor
-        }
-        stripOpaqueTitlebarFill(in: titlebar)
-        stripOpaqueTitlebarFill(in: container)
-    }
-
-    private static func stripOpaqueTitlebarFill(in view: NSView) {
-        if let effect = view as? NSVisualEffectView {
-            effect.isEmphasized = false
-            effect.material = .underWindowBackground
-            effect.blendingMode = .behindWindow
-            effect.state = .followsWindowActiveState
-        }
-        for sub in view.subviews {
-            if sub is NSButton { continue }
-            sub.isOpaque = false
-            sub.wantsLayer = true
-            sub.layer?.backgroundColor = NSColor.clear.cgColor
-            stripOpaqueTitlebarFill(in: sub)
         }
     }
 }
