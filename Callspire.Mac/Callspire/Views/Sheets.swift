@@ -298,11 +298,11 @@ struct SelectableRow<Content: View>: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 8)
                     .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(hover ? 0.06 : 0.03))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(isSelected ? Color.accentColor.opacity(0.5) : MacTheme.separator.opacity(0.5))
             )
             .contentShape(Rectangle())

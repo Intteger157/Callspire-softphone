@@ -84,13 +84,13 @@ struct FloatingPanel<Content: View>: View {
             .padding(padding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(panelBackground)
-            .clipShape(RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: MacTheme.panelCorner))
     }
 
     private var panelBackground: some View {
         VisualEffectBackground(material: .contentBackground, cornerRadius: MacTheme.panelCorner)
             .overlay {
-                RoundedRectangle(cornerRadius: MacTheme.panelCorner, style: .continuous)
+                RoundedRectangle(cornerRadius: MacTheme.panelCorner)
                     .strokeBorder(MacTheme.separator.opacity(0.35), lineWidth: 0.5)
             }
             .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0.5)
@@ -106,7 +106,7 @@ struct Card<Content: View>: View {
         content()
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(MacTheme.controlFill, in: RoundedRectangle(cornerRadius: MacTheme.corner, style: .continuous))
+            .background(MacTheme.controlFill, in: RoundedRectangle(cornerRadius: MacTheme.corner))
     }
 }
 

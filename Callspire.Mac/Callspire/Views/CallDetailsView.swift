@@ -93,8 +93,8 @@ struct CallDetailsView: View {
             }
         }
         .padding(16)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.primary.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(MacTheme.separator.opacity(0.6)))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.04)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(MacTheme.separator.opacity(0.6)))
     }
 
     private var directionSymbol: String {
@@ -271,8 +271,8 @@ struct CallDetailsView: View {
                     .padding(10)
             }
             .frame(minHeight: 140, maxHeight: 240)
-            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(MacTheme.separator.opacity(0.7)))
+            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(MacTheme.separator.opacity(0.7)))
         }
     }
 
@@ -351,8 +351,8 @@ private struct DetailSection<Content: View>: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.primary.opacity(0.04)))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(MacTheme.separator.opacity(0.6)))
+            .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(MacTheme.separator.opacity(0.6)))
         }
     }
 }

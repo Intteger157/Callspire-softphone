@@ -279,7 +279,7 @@ struct SettingsIcon: View {
             .font(.system(size: size * 0.55, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: size, height: size)
-            .background(tint, in: RoundedRectangle(cornerRadius: size * 0.25, style: .continuous))
+            .background(tint, in: RoundedRectangle(cornerRadius: size * 0.25))
     }
 }
 

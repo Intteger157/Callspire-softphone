@@ -84,7 +84,7 @@ struct DialerView: View {
         }
         .padding(12)
         .frame(maxWidth: 440)
-        .background(MacTheme.controlFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(MacTheme.controlFill, in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func lineRow(_ c: ConnectionStatus, slot: String) -> some View {
@@ -209,15 +209,15 @@ private struct NumberField: View {
         .padding(.horizontal, 6)
         .frame(width: 320, height: 56)
         .background(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 14)
                 .fill(Color.primary.opacity(hover || isFocused ? 0.07 : 0.045))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(isFocused ? Color.accentColor.opacity(0.55) : MacTheme.separator.opacity(0.6),
                               lineWidth: isFocused ? 1.5 : 1)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 14))
         .onTapGesture { focused.wrappedValue = true }
         .onHover { hover = $0 }
         .animation(.easeOut(duration: 0.12), value: text.isEmpty)
@@ -362,7 +362,7 @@ private struct CallerIdRow: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .background(RoundedRectangle(cornerRadius: 6)
                 .fill(hover ? MacTheme.selectionFill : Color.clear))
             .contentShape(Rectangle())
         }

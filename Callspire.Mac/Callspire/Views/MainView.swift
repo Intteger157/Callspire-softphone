@@ -184,7 +184,7 @@ private struct RailButton: View {
                 .frame(width: 46, height: 46)
                 .foregroundStyle(isSelected ? Color.primary : Color.secondary)
                 .background(
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    RoundedRectangle(cornerRadius: 11)
                         .fill(isSelected ? MacTheme.selectionFill : (hover ? MacTheme.hoverFill : Color.clear))
                 )
                 .contentShape(Rectangle())
