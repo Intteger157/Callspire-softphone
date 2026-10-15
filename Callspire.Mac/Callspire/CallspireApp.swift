@@ -12,74 +12,13 @@ struct CallspireApp: App {
         InstanceBroker.claimPrimaryOrForwardAndExit()
     }
 
+    @SceneBuilder
     var body: some Scene {
-        Window("Callspire", id: "main") {
-            MainView()
-                .environmentObject(state)
-                .frame(minWidth: 900, minHeight: 600)
-                .background(WindowAccessor { win in
-                    state.mainWindow = win
-                    state.webRtc.updateAudioHostWindow(main: win, call: state.callWindow)
-                })
-                .unifiedWindowChrome(lightsCenter: MacTheme.mainLightsCenter)
-                .onAppear {
-                    appDelegate.attach(state: state)
-                }
+        if #available(macOS 13.0, *) {
+            callspireVenturaScenes(state: state, appDelegate: appDelegate)
+        } else {
+            callspireMontereyScene(state: state, appDelegate: appDelegate)
         }
-        .callspireDefaultSize(width: 1120, height: 720)
-        .windowStyle(.hiddenTitleBar)
-        .commands {
-            CommandGroup(replacing: .appSettings) {
-                Button("Settings…") { state.openSettings() }.keyboardShortcut(",", modifiers: .command)
-            }
-            CommandGroup(after: .windowArrangement) {
-                Button("Logs") { state.openLogs() }.keyboardShortcut("l", modifiers: [.command, .shift])
-            }
-            CommandGroup(replacing: .newItem) { }
-        }
-
-        // Active call — a separate small window like WPF CallWindow. Opened/closed from AppState.
-        Window("Active Call", id: "call") {
-            Group {
-                if let call = state.call {
-                    CallView(info: call)
-                        .environmentObject(state)
-                } else {
-                    Color.clear.frame(width: 380, height: 560)
-                }
-            }
-            // Call window: keep AppKit’s default top-left traffic lights (do not centre on the card).
-            .unifiedWindowChrome(lightsCenter: nil) { win in
-                state.callWindow = win
-                state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: win)
-                // Single-surface window: backdrop must match the panel, not the chrome gap colour.
-                win.isOpaque = false
-                win.backgroundColor = .clear
-                // Content is flexible so it can fill the title-bar band; keep the window itself fixed-size.
-                win.styleMask.remove(.resizable)
-            }
-        }
-        .windowStyle(.hiddenTitleBar)
-        .callspireWindowResizabilityContentSize()
-        .callspireDefaultPositionTopTrailing()
-
-        Window("Settings", id: "settings") {
-            SettingsView()
-                .environmentObject(state)
-                .frame(minWidth: 860, minHeight: 600)
-                .unifiedWindowChrome(lightsCenter: MacTheme.sidebarLightsCenter)
-        }
-        .callspireDefaultSize(width: 980, height: 680)
-        .windowStyle(.hiddenTitleBar)
-
-        Window("Logs", id: "logs") {
-            LogView()
-                .environmentObject(state)
-                .frame(minWidth: 640, minHeight: 400)
-                .unifiedWindowChrome(lightsCenter: MacTheme.singlePanelLightsCenter)
-        }
-        .callspireDefaultSize(width: 860, height: 520)
-        .windowStyle(.hiddenTitleBar)
     }
 }
 
@@ -182,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { NSApp.windows.first(where: { $0.identifier?.rawValue.hasPrefix("main") == true })?.makeKeyAndOrderFront(nil) }
+        if !flag { NSApp.windows.first?.makeKeyAndOrderFront(nil) }
         return true
     }
 

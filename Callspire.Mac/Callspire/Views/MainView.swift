@@ -3,9 +3,13 @@ import AppKit
 
 struct MainView: View {
     @EnvironmentObject var state: AppState
-    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        mainContent
+            .modifier(MainViewSecondaryPresentationModifier())
+    }
+
+    private var mainContent: some View {
         // Stable outer layout (inset + title-bar band) so switching tabs never reflows the window chrome.
         HStack(alignment: .top, spacing: MacTheme.panelGap) {
             FloatingPanel(padding: MacTheme.railPadding) { rail }
@@ -43,11 +47,6 @@ struct MainView: View {
                 }
             }
         }
-        .onChange(of: state.call?.sessionId) { id in
-            if id != nil { openWindow(id: "call") }
-        }
-        .onChange(of: state.settingsOpenRequest) { _ in openWindow(id: "settings") }
-        .onChange(of: state.logsOpenRequest) { _ in openWindow(id: "logs") }
     }
 
     // MARK: - Icon rail
@@ -116,6 +115,81 @@ struct MainView: View {
         case .history: HistoryView()
         case .statistics: StatisticsView()
         }
+    }
+}
+
+// MARK: - Ventura `openWindow` vs Monterey sheets
+
+private struct MainViewSecondaryPresentationModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 13.0, *) {
+            content.modifier(MainViewOpenWindowModifier())
+        } else {
+            content.modifier(MainViewMontereySheetsModifier())
+        }
+    }
+}
+
+@available(macOS 13.0, *)
+private struct MainViewOpenWindowModifier: ViewModifier {
+    @EnvironmentObject var state: AppState
+    @Environment(\.openWindow) private var openWindow
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: state.call?.sessionId) { id in
+                if id != nil { openWindow(id: "call") }
+            }
+            .onChange(of: state.settingsOpenRequest) { _ in openWindow(id: "settings") }
+            .onChange(of: state.logsOpenRequest) { _ in openWindow(id: "logs") }
+    }
+}
+
+private struct MainViewMontereySheetsModifier: ViewModifier {
+    @EnvironmentObject var state: AppState
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: state.call?.sessionId) { id in
+                state.montereyCallSheetPresented = (id != nil)
+            }
+            .onChange(of: state.settingsOpenRequest) { _ in
+                state.montereySettingsSheetPresented = true
+            }
+            .onChange(of: state.logsOpenRequest) { _ in
+                state.montereyLogsSheetPresented = true
+            }
+            .sheet(isPresented: $state.montereySettingsSheetPresented) {
+                SettingsView()
+                    .environmentObject(state)
+                    .frame(minWidth: 860, minHeight: 600)
+                    .unifiedWindowChrome(lightsCenter: MacTheme.sidebarLightsCenter)
+            }
+            .sheet(isPresented: $state.montereyLogsSheetPresented) {
+                LogView()
+                    .environmentObject(state)
+                    .frame(minWidth: 640, minHeight: 400)
+                    .unifiedWindowChrome(lightsCenter: MacTheme.singlePanelLightsCenter)
+            }
+            .sheet(isPresented: $state.montereyCallSheetPresented) {
+                Group {
+                    if let call = state.call {
+                        CallView(info: call)
+                            .environmentObject(state)
+                    } else {
+                        Color.clear.frame(width: 380, height: 560)
+                    }
+                }
+                .frame(width: 380, height: 560)
+                .background(WindowAccessor { win in
+                    state.callWindow = win
+                    state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: win)
+                })
+                .onDisappear {
+                    state.callWindow = nil
+                    state.webRtc.updateAudioHostWindow(main: state.mainWindow, call: nil)
+                }
+            }
     }
 }
 
