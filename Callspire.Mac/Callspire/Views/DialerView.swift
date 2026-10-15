@@ -50,7 +50,7 @@ struct DialerView: View {
                 HStack(spacing: 6) {
                     StatusDot(tone: state.main.amoCrmOnline ? .online : .warning)
                     Text("Kommo")
-                        .font(.caption.weight(.medium))
+                        .font(.caption).fontWeight(.medium)
                     Text(state.main.amoCrmStatusText)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -72,7 +72,7 @@ struct DialerView: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("No line configured").font(.callout.weight(.semibold))
+                Text("No line configured").font(.callout).fontWeight(.semibold)
                 Text("Add your SIP or WebRTC account to start calling.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -91,7 +91,7 @@ struct DialerView: View {
         HStack(spacing: 6) {
             StatusDot(tone: c.isError ? .error : (c.isOnline ? .online : .offline))
             Text(c.label.isEmpty ? (slot == "main" ? "Main line" : "Second line") : c.label)
-                .font(.caption.weight(.medium))
+                .font(.caption).fontWeight(.medium)
             Text(c.text.isEmpty ? (c.isOnline ? "Connected" : "Not connected") : c.text)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -195,7 +195,7 @@ private struct NumberField: View {
                 }
             }
             .textFieldStyle(.plain)
-                .font(.system(size: 28, weight: .regular).monospaced())
+                .font(.system(size: 28, weight: .regular, design: .monospaced))
                 .multilineTextAlignment(.center)
                 .lineLimit(1)
                 .focused(focused)
@@ -273,16 +273,16 @@ private struct CallerIdPicker: View {
                     .foregroundStyle(.secondary)
                 if let current {
                     Text(Self.title(current))
-                        .font(.callout.weight(.medium))
+                        .font(.callout).fontWeight(.medium)
                         .lineLimit(1)
                     if !current.number.isEmpty, !Self.title(current).contains(current.number) {
                         Text(current.number)
-                            .font(.callout.monospaced())
+                            .font(.system(.callout, design: .monospaced))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                 } else {
-                    Text("Caller ID").font(.callout.weight(.medium))
+                    Text("Caller ID").font(.callout).fontWeight(.medium)
                 }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 9, weight: .semibold))
@@ -306,7 +306,7 @@ private struct CallerIdPicker: View {
     private var list: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text("Outbound Caller ID")
-                .font(.caption.weight(.semibold))
+                .font(.caption).fontWeight(.semibold)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 10)
                 .padding(.top, 4)
@@ -350,11 +350,11 @@ private struct CallerIdRow: View {
                     .frame(width: 14)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(CallerIdPicker.title(item))
-                        .font(.callout.weight(isSelected ? .semibold : .regular))
+                        .font(.callout).fontWeight(isSelected ? .semibold : .regular)
                         .lineLimit(1)
                     if !item.number.isEmpty, !CallerIdPicker.title(item).contains(item.number) {
                         Text(item.number)
-                            .font(.caption.monospaced())
+                            .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 }

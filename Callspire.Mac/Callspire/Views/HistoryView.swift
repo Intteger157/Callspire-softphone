@@ -16,7 +16,7 @@ struct HistoryView: View {
                         .symbolRenderingMode(.hierarchical)
                         .callspireForegroundTertiary()
                     Text("No Calls Yet")
-                        .font(.title3.weight(.medium))
+                        .font(.title3).fontWeight(.medium)
                     Text("Completed calls will appear here.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -69,7 +69,7 @@ struct HistoryView: View {
     private var historyHeader: some View {
         HStack {
             Text("Call History")
-                .font(.title3.weight(.semibold))
+                .font(.title3).fontWeight(.semibold)
             Spacer()
             Button("Clear History", role: .destructive) { confirmClear = true }
                 .disabled(state.main.history.isEmpty)
@@ -95,7 +95,7 @@ private struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(item.phoneNumberDisplay.isEmpty ? item.phoneNumber : item.phoneNumberDisplay)
-                        .font(.body.weight(.medium))
+                        .font(.body).fontWeight(.medium)
                     TransportBadge(label: item.transportLabel, isWebRtc: item.isWebRtc)
                     if item.hasRecording {
                         Image(systemName: "waveform")
@@ -113,9 +113,8 @@ private struct HistoryRow: View {
 
             VStack(alignment: .trailing, spacing: 2) {
                 Text(item.durationText)
-                    .font(.caption)
+                    .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .monospaced()
                 Text(item.status)
                     .font(.caption)
                     .foregroundStyle(statusColor)

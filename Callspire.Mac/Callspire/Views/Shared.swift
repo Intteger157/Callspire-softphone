@@ -115,7 +115,7 @@ struct SectionHeader: View {
     var subtitle: String? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.title2.weight(.semibold))
+            Text(title).font(.title2).fontWeight(.semibold)
             if let subtitle { Text(subtitle).font(.callout).foregroundStyle(.secondary) }
         }
     }
@@ -162,7 +162,7 @@ struct TransportBadge: View {
     var isWebRtc: Bool
     var body: some View {
         Text(label.isEmpty ? (isWebRtc ? "WebRTC" : "SIP") : label)
-            .font(.caption2.weight(.medium))
+            .font(.caption2).fontWeight(.medium)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .foregroundStyle(.primary)
             .background(.quaternary, in: Capsule())
@@ -311,7 +311,7 @@ struct CallActionButton: View {
                 if let title, !title.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: systemImage).font(.system(size: 16, weight: .semibold))
-                        Text(title).font(.callout.weight(.medium)).lineLimit(1)
+                        Text(title).font(.callout).fontWeight(.medium).lineLimit(1)
                     }
                     .padding(.horizontal, 18)
                     .frame(height: 48)

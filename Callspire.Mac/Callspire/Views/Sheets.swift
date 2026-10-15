@@ -51,7 +51,7 @@ struct LogView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Text("Logs")
-                .font(.title3.weight(.semibold))
+                .font(.title3).fontWeight(.semibold)
             Spacer()
             TextField("Filter", text: $filter)
                 .textFieldStyle(.roundedBorder)
@@ -131,7 +131,7 @@ struct UpdateAvailableSheet: View {
             HStack(spacing: 12) {
                 Image(systemName: "arrow.down.circle.fill").font(.largeTitle).foregroundStyle(Color.accentColor)
                 VStack(alignment: .leading) {
-                    Text("Update available").font(.title3.weight(.semibold))
+                    Text("Update available").font(.title3).fontWeight(.semibold)
                     Text("Callspire \(info.version) is available. You have \(info.currentVersion).").foregroundStyle(.secondary)
                 }
             }
@@ -232,7 +232,7 @@ struct ConnectionSelectionSheet: View {
                 .background(Circle().fill(Color.green))
             VStack(alignment: .leading, spacing: 2) {
                 Text(request.phoneNumber.map { "Call \($0)" } ?? "Place call")
-                    .font(.title3.weight(.semibold))
+                    .font(.title3).fontWeight(.semibold)
                     .lineLimit(1)
                 Text(bothLines ? "Choose the line and the number to call from." : "Choose the number to call from.")
                     .font(.callout)
@@ -243,7 +243,7 @@ struct ConnectionSelectionSheet: View {
 
     private func sectionTitle(_ text: String) -> some View {
         Text(text.uppercased())
-            .font(.caption2.weight(.semibold))
+            .font(.caption2).fontWeight(.semibold)
             .tracking(0.6)
             .foregroundStyle(.secondary)
     }
@@ -254,7 +254,7 @@ struct ConnectionSelectionSheet: View {
         } content: {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(title).font(.callout.weight(.medium))
+                    Text(title).font(.callout).fontWeight(.medium)
                     TransportBadge(label: "", isWebRtc: isWebRtc)
                 }
                 if let status, !status.isEmpty {
@@ -270,9 +270,9 @@ struct ConnectionSelectionSheet: View {
             callerId = item.number
         } content: {
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.callout.weight(.medium)).lineLimit(1)
+                Text(title).font(.callout).fontWeight(.medium).lineLimit(1)
                 if !item.number.isEmpty, !title.contains(item.number) {
-                    Text(item.number).font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text(item.number).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 }
             }
         }
@@ -321,7 +321,7 @@ struct GatewayLeadSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Send call to Kommo").font(.title3.weight(.semibold))
+            Text("Send call to Kommo").font(.title3).fontWeight(.semibold)
             Text("Call with \(phone) has ended. Choose where PBX Gateway should attach the call note and recording.")
                 .font(.callout).foregroundStyle(.secondary)
             Button {
@@ -362,7 +362,7 @@ struct LeadSelectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Select Kommo lead").font(.title3.weight(.semibold))
+            Text("Select Kommo lead").font(.title3).fontWeight(.semibold)
             HStack(spacing: 10) {
                 Label(request.phoneNumber ?? "", systemImage: request.isIncoming ? "phone.arrow.down.left" : "phone.arrow.up.right")
                 Text(request.wasAnswered ? "Answered · \(request.durationSeconds)s" : "Not answered").foregroundStyle(.secondary)

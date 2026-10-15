@@ -75,7 +75,7 @@ struct CallView: View {
 
             if showsNumberLine {
                 Text(info.phoneNumber)
-                    .font(.callout.monospaced())
+                    .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .callspireTextSelectionEnabled()
             }
@@ -83,12 +83,12 @@ struct CallView: View {
             HStack(spacing: 8) {
                 if !s.statusText.isEmpty {
                     Text(s.statusText)
-                        .font(.callout.weight(.medium))
+                        .font(.callout).fontWeight(.medium)
                         .foregroundStyle(toneColor)
                 }
                 if !s.timerText.isEmpty {
                     Text(s.timerText)
-                        .font(.callout.monospaced())
+                        .font(.system(.callout, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -98,14 +98,14 @@ struct CallView: View {
                 TransportBadge(label: info.transportLabel, isWebRtc: info.isWebRtc)
                 if !info.connectionLabel.isEmpty {
                     Text(info.connectionLabel)
-                        .font(.caption2.weight(.medium))
+                        .font(.caption2).fontWeight(.medium)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(.quaternary.opacity(0.6), in: Capsule())
                 }
                 if s.isRecordingIndicatorVisible {
                     Label("REC", systemImage: "record.circle.fill")
-                        .font(.caption2.weight(.bold))
+                        .font(.caption2).fontWeight(.bold)
                         .foregroundStyle(.white)
                         .padding(.horizontal, 7).padding(.vertical, 2)
                         .background(Color.red, in: Capsule())
@@ -299,7 +299,7 @@ struct CallAudioDevicesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Audio Devices").font(.title3.weight(.semibold))
+            Text("Audio Devices").font(.title3).fontWeight(.semibold)
             if let d = devices {
                 Form {
                     Picker("Microphone", selection: $input) {

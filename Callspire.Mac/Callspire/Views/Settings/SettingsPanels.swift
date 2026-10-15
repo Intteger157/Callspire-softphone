@@ -558,7 +558,7 @@ struct AboutPanel: View {
                         .resizable()
                         .frame(width: 56, height: 56)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("Callspire").font(.title3.weight(.semibold))
+                        Text("Callspire").font(.title3).fontWeight(.semibold)
                         Text(versionText).foregroundStyle(.secondary)
                     }
                 }
