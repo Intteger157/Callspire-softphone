@@ -146,13 +146,8 @@ struct StatisticsView: View {
 
     // MARK: Charts
 
-    @ViewBuilder
     private var chartsRow: some View {
-        if #available(macOS 13.0, *) {
-            StatisticsChartsVentura(st: st, chartFill: chartFill)
-        } else {
-            montereyChartsSummary
-        }
+        montereyChartsSummary
     }
 
     private var montereyChartsSummary: some View {

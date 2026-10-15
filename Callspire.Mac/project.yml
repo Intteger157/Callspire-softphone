@@ -21,9 +21,6 @@ targets:
           - Callspire.entitlements
           - Assets.xcassets
       - path: Callspire/Assets.xcassets
-    dependencies:
-      - sdk: Charts.framework
-        weak: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.callspire.softphone
@@ -36,7 +33,6 @@ targets:
         COMBINE_HIDPI_IMAGES: YES
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
         SWIFT_EMIT_LOC_STRINGS: NO
-        OTHER_LDFLAGS: "$(inherited) -weak_framework Charts"
     entitlements:
       path: Callspire/Callspire.entitlements
     info:
