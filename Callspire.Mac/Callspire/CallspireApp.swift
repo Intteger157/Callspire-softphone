@@ -12,12 +12,12 @@ struct CallspireApp: App {
         InstanceBroker.claimPrimaryOrForwardAndExit()
     }
 
-    @SceneBuilder
     var body: some Scene {
-        if #available(macOS 13.0, *) {
-            callspireVenturaScenes(state: state, appDelegate: appDelegate)
-        } else {
-            callspireMontereyScene(state: state, appDelegate: appDelegate)
+        WindowGroup {
+            callspireMainRoot(state: state, appDelegate: appDelegate)
+        }
+        .commands {
+            callspireAppCommands(state: state)
         }
     }
 }

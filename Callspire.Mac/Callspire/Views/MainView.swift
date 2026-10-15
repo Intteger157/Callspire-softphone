@@ -6,7 +6,7 @@ struct MainView: View {
 
     var body: some View {
         mainContent
-            .modifier(MainViewSecondaryPresentationModifier())
+            .modifier(MainViewAuxiliarySheetsModifier())
     }
 
     private var mainContent: some View {
@@ -84,7 +84,7 @@ struct MainView: View {
         let line = state.main.main
         return ZStack(alignment: .bottomTrailing) {
             Circle()
-                .fill(Color.gray.gradient)
+                .fill(Color.gray.opacity(0.35))
                 .frame(width: 38, height: 38)
                 .overlay(Text(initial).font(.headline).foregroundStyle(.white))
             Circle()
@@ -118,34 +118,9 @@ struct MainView: View {
     }
 }
 
-// MARK: - Ventura `openWindow` vs Monterey sheets
+// MARK: - Settings, logs, active call (sheet on macOS 12+; no separate `Window` scenes)
 
-private struct MainViewSecondaryPresentationModifier: ViewModifier {
-    func body(content: Content) -> some View {
-        if #available(macOS 13.0, *) {
-            content.modifier(MainViewOpenWindowModifier())
-        } else {
-            content.modifier(MainViewMontereySheetsModifier())
-        }
-    }
-}
-
-@available(macOS 13.0, *)
-private struct MainViewOpenWindowModifier: ViewModifier {
-    @EnvironmentObject var state: AppState
-    @Environment(\.openWindow) private var openWindow
-
-    func body(content: Content) -> some View {
-        content
-            .onChange(of: state.call?.sessionId) { id in
-                if id != nil { openWindow(id: "call") }
-            }
-            .onChange(of: state.settingsOpenRequest) { _ in openWindow(id: "settings") }
-            .onChange(of: state.logsOpenRequest) { _ in openWindow(id: "logs") }
-    }
-}
-
-private struct MainViewMontereySheetsModifier: ViewModifier {
+private struct MainViewAuxiliarySheetsModifier: ViewModifier {
     @EnvironmentObject var state: AppState
 
     func body(content: Content) -> some View {
