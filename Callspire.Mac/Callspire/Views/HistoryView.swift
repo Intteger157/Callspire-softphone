@@ -38,7 +38,7 @@ struct HistoryView: View {
                         }
                 }
                 .listStyle(.inset)
-                .scrollContentBackground(.hidden)
+                .callspireHiddenScrollContentBackground()
             }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

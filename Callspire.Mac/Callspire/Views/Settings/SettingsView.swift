@@ -31,7 +31,7 @@ struct SettingsView: View {
                     .tag(p)
                 }
                 .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
+                .callspireHiddenScrollContentBackground()
                 .listRowBackground(Color.clear)
                 // Traffic lights float over the top of the sidebar panel.
                 .padding(.top, MacTheme.trafficLightsInset - 6)

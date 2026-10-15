@@ -26,7 +26,7 @@ struct CallspireApp: App {
                     appDelegate.attach(state: state)
                 }
         }
-        .defaultSize(width: 1120, height: 720)
+        .callspireDefaultSize(width: 1120, height: 720)
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appSettings) {
@@ -60,8 +60,8 @@ struct CallspireApp: App {
             }
         }
         .windowStyle(.hiddenTitleBar)
-        .windowResizability(.contentSize)
-        .defaultPosition(.topTrailing)
+        .callspireWindowResizabilityContentSize()
+        .callspireDefaultPositionTopTrailing()
 
         Window("Settings", id: "settings") {
             SettingsView()
@@ -69,7 +69,7 @@ struct CallspireApp: App {
                 .frame(minWidth: 860, minHeight: 600)
                 .unifiedWindowChrome(lightsCenter: MacTheme.sidebarLightsCenter)
         }
-        .defaultSize(width: 980, height: 680)
+        .callspireDefaultSize(width: 980, height: 680)
         .windowStyle(.hiddenTitleBar)
 
         Window("Logs", id: "logs") {
@@ -78,7 +78,7 @@ struct CallspireApp: App {
                 .frame(minWidth: 640, minHeight: 400)
                 .unifiedWindowChrome(lightsCenter: MacTheme.singlePanelLightsCenter)
         }
-        .defaultSize(width: 860, height: 520)
+        .callspireDefaultSize(width: 860, height: 520)
         .windowStyle(.hiddenTitleBar)
     }
 }

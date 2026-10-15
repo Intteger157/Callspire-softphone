@@ -68,7 +68,7 @@ struct ConnectionPanel: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
         .onAppear { showSecondary = hasSecondary }
     }
@@ -260,7 +260,7 @@ struct AudioPanel: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
         .onDisappear { if previewing { state.stopRingtone() } }
     }
@@ -295,7 +295,7 @@ struct GeneralPanel: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
 }
@@ -324,7 +324,7 @@ struct AppearancePanel: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
 }
@@ -366,7 +366,7 @@ struct AdvancedPanel: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
 }
@@ -389,7 +389,7 @@ struct IntegrationsPanel: View {
             kommoSections
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
 
@@ -577,7 +577,7 @@ struct AboutPanel: View {
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
+        .callspireHiddenScrollContentBackground()
         .background { VisualEffectBackground(material: .contentBackground) }
     }
 
