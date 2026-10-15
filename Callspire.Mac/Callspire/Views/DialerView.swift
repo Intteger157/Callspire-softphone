@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Dialer — phone-style layout: line status, large number display, keypad, call button.
 struct DialerView: View {
@@ -111,15 +112,7 @@ struct DialerView: View {
             NumberField(
                 text: Binding(get: { state.main.phoneNumber }, set: { state.setPhone($0) }),
                 focused: $numberFocused,
-                onSubmit: { state.placeCall() },
-                onBackspace: {
-                    state.setPhone(String(state.main.phoneNumber.dropLast()))
-                    numberFocused = true
-                },
-                onClear: {
-                    state.setPhone("")
-                    numberFocused = true
-                }
+                onSubmit: { state.placeCall() }
             )
 
             if state.main.showCallerIdPicker && !state.main.callerIds.isEmpty {
@@ -182,8 +175,6 @@ private struct NumberField: View {
     @Binding var text: String
     var focused: FocusState<Bool>.Binding
     var onSubmit: () -> Void
-    var onBackspace: () -> Void
-    var onClear: () -> Void
 
     @State private var hover = false
 
@@ -201,17 +192,31 @@ private struct NumberField: View {
                 }
             }
             .textFieldStyle(.plain)
-                .font(.system(size: 28, weight: .regular, design: .monospaced))
-                .multilineTextAlignment(.center)
-                .lineLimit(1)
-                .focused(focused)
-                .callspireSuppressSystemFocusRing()
-                .onSubmit(onSubmit)
+            .font(.system(size: 28, weight: .regular, design: .monospaced))
+            .multilineTextAlignment(.center)
+            .lineLimit(1)
+            .focused(focused)
+            .callspireSuppressSystemFocusRing()
+            .onSubmit(onSubmit)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { focused.wrappedValue = true }
 
-            BackspaceButton(onTap: onBackspace, onLongPress: onClear)
-                .opacity(text.isEmpty ? 0 : 1)
-                .disabled(text.isEmpty)
-                .frame(width: 40)
+            BackspaceButton(
+                onTap: {
+                    guard !text.isEmpty else { return }
+                    text.removeLast()
+                    focused.wrappedValue = true
+                },
+                onClear: {
+                    text = ""
+                    focused.wrappedValue = true
+                }
+            )
+            .opacity(text.isEmpty ? 0 : 1)
+            .allowsHitTesting(!text.isEmpty)
+            .frame(width: 40)
+            .zIndex(1)
         }
         .padding(.horizontal, 6)
         .frame(width: 320, height: 56)
@@ -222,56 +227,75 @@ private struct NumberField: View {
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .fill(Color.primary.opacity(hover || isFocused ? 0.05 : 0))
+                .allowsHitTesting(false)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .strokeBorder(isFocused ? Color.accentColor.opacity(0.38) : MacTheme.separator.opacity(0.55),
                               lineWidth: 1)
+                .allowsHitTesting(false)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 14))
-        .onTapGesture { focused.wrappedValue = true }
         .onHover { hover = $0 }
         .animation(.easeOut(duration: 0.12), value: text.isEmpty)
         .animation(.easeOut(duration: 0.12), value: isFocused)
     }
 }
 
-/// Click deletes one character, holding clears the number. A `Button` carries the click: on macOS a
-/// `.onLongPressGesture` stacked on `.onTapGesture` swallows the plain click, so the long press runs
-/// as a simultaneous gesture and suppresses the click that fires on release.
-private struct BackspaceButton: View {
+/// AppKit button so clicks are not swallowed by the field’s focus tap or SwiftUI gesture stacking.
+private struct BackspaceButton: NSViewRepresentable {
     var onTap: () -> Void
-    var onLongPress: () -> Void
-    @State private var hover = false
-    @State private var clearedByLongPress = false
+    var onClear: () -> Void
 
-    var body: some View {
-        Button {
-            if clearedByLongPress {
-                clearedByLongPress = false
-                return
-            }
-            onTap()
-        } label: {
-            Image(systemName: "delete.backward.fill")
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size: 17, weight: .medium))
-                .foregroundStyle(hover ? Color.primary : Color.secondary)
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(Color.primary.opacity(hover ? 0.1 : 0)))
-                .contentShape(Circle())
+    func makeNSView(context: Context) -> NSButton {
+        let button = BackspaceNSButton(onTap: onTap, onClear: onClear)
+        button.toolTip = "Delete (hold to clear)"
+        button.setContentHuggingPriority(.required, for: .horizontal)
+        button.setContentHuggingPriority(.required, for: .vertical)
+        return button
+    }
+
+    func updateNSView(_ nsView: NSButton, context: Context) {
+        guard let button = nsView as? BackspaceNSButton else { return }
+        button.onTap = onTap
+        button.onClear = onClear
+    }
+}
+
+private final class BackspaceNSButton: NSButton {
+    var onTap: (() -> Void)?
+    var onClear: (() -> Void)?
+    private var holdTimer: Timer?
+    private var didLongPress = false
+
+    convenience init(onTap: @escaping () -> Void, onClear: @escaping () -> Void) {
+        self.init(frame: NSRect(x: 0, y: 0, width: 32, height: 32))
+        self.onTap = onTap
+        self.onClear = onClear
+        image = NSImage(systemSymbolName: "delete.backward.fill", accessibilityDescription: "Delete")
+        isBordered = false
+        bezelStyle = .inline
+        imagePosition = .imageOnly
+        imageScaling = .scaleProportionallyDown
+        contentTintColor = NSColor.secondaryLabelColor
+    }
+
+    override var intrinsicContentSize: NSSize { NSSize(width: 32, height: 32) }
+
+    override func mouseDown(with event: NSEvent) {
+        didLongPress = false
+        holdTimer?.invalidate()
+        holdTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.didLongPress = true
+            self.onClear?()
         }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.5).onEnded { _ in
-                clearedByLongPress = true
-                onLongPress()
-            }
-        )
-        .onHover { hover = $0 }
-        .help("Delete (hold to clear)")
-        .accessibilityLabel("Delete")
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        holdTimer?.invalidate()
+        holdTimer = nil
+        if !didLongPress { onTap?() }
+        didLongPress = false
     }
 }
 
