@@ -71,13 +71,13 @@ struct CallView: View {
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
-                .textSelection(.enabled)
+                .callspireTextSelectionEnabled()
 
             if showsNumberLine {
                 Text(info.phoneNumber)
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .callspireTextSelectionEnabled()
             }
 
             HStack(spacing: 8) {
@@ -204,7 +204,7 @@ private struct CallAvatar: View {
                 .opacity(pulsing ? (pulse ? 0 : 0.9) : 0)
 
             Circle()
-                .fill(Color.gray.gradient)
+                .fill(Color.gray.opacity(0.45))
                 .frame(width: 88, height: 88)
                 .shadow(color: Color.black.opacity(0.15), radius: 10, y: 4)
 

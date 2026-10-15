@@ -12,7 +12,7 @@ struct FormField: View {
     var width: CGFloat = 280
 
     var body: some View {
-        LabeledContent(title) {
+        CallspireLabeledContent(title) {
             Group {
                 if secure {
                     SecureField("", text: $text, prompt: Text(prompt))
@@ -86,7 +86,7 @@ struct ConnectionPanel: View {
         Section {
             FormField(title: "Display name", text: isSecondary ? $draft.secondaryName : $draft.mainName,
                       prompt: isSecondary ? "Second line" : "Office")
-            LabeledContent("Transport") {
+            CallspireLabeledContent("Transport") {
                 Picker("", selection: transport) {
                     Text("SIP").tag(transportKey("sip"))
                     Text("WebRTC").tag(transportKey("webrtc"))
@@ -120,7 +120,7 @@ struct ConnectionPanel: View {
                 FormField(title: "Password", text: isSecondary ? $draft.secondaryPassword : $draft.mainPassword,
                           prompt: "Required", secure: true)
             }
-            LabeledContent("Reachability") {
+            CallspireLabeledContent("Reachability") {
                 Button("Test Connection") { onTest(isSecondary) }
                     .disabled(busy)
             }
@@ -224,7 +224,7 @@ struct AudioPanel: View {
                     ForEach(info.sipSampleRateOptions, id: \.self) { Text(sampleRateLabel($0)).tag($0) }
                 }
                 if draft.sipCodec.lowercased() == "opus" {
-                    LabeledContent("Opus bitrate") {
+                    CallspireLabeledContent("Opus bitrate") {
                         TextField("", value: $draft.sipOpusBitrate, format: .number, prompt: Text("64000"))
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 100)
@@ -241,7 +241,7 @@ struct AudioPanel: View {
                     Text("Ringtone file").tag(true)
                     Text("Classic tone").tag(false)
                 }
-                LabeledContent("Volume") {
+                CallspireLabeledContent("Volume") {
                     HStack {
                         Image(systemName: "speaker.fill").foregroundStyle(.secondary)
                         Slider(value: $draft.ringtoneVolume, in: 0...1, step: 0.05)
@@ -249,7 +249,7 @@ struct AudioPanel: View {
                         Image(systemName: "speaker.wave.3.fill").foregroundStyle(.secondary)
                     }
                 }
-                LabeledContent("Preview") {
+                CallspireLabeledContent("Preview") {
                     Button {
                         if previewing { state.stopRingtone() } else { state.previewRingtone(draft: draft) }
                         previewing.toggle()
@@ -285,7 +285,7 @@ struct GeneralPanel: View {
         Form {
             Section {
                 Toggle("Record calls automatically", isOn: $draft.callRecording)
-                LabeledContent("Recordings") {
+                CallspireLabeledContent("Recordings") {
                     Button("Show in Finder") { state.openRecordingsFolder() }
                 }
             } header: {
@@ -309,7 +309,7 @@ struct AppearancePanel: View {
     var body: some View {
         Form {
             Section {
-                LabeledContent("Appearance") {
+                CallspireLabeledContent("Appearance") {
                     Picker("", selection: $draft.theme) {
                         Text("System").tag("system")
                         Text("Light").tag("light")
@@ -347,20 +347,20 @@ struct AdvancedPanel: View {
             }
 
             Section("Logs") {
-                LabeledContent("Live log") {
+                CallspireLabeledContent("Live log") {
                     Button("Open Log Window") { state.openLogs() }
                 }
-                LabeledContent("Log files") {
+                CallspireLabeledContent("Log files") {
                     Button("Show in Finder") { state.openLogsFolder() }
                 }
                 if !info.settingsFile.isEmpty {
-                    LabeledContent("Settings file") {
+                    CallspireLabeledContent("Settings file") {
                         Text(info.settingsFile)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .textSelection(.enabled)
+                            .callspireTextSelectionEnabled()
                     }
                 }
             }
@@ -410,7 +410,7 @@ struct IntegrationsPanel: View {
             if draft.gatewayEnabled {
                 FormField(title: "Service URL", text: $draft.gatewayUrl, prompt: "https://pbx.example.com/tool")
                 FormField(title: "Extension", text: $draft.gatewayExtension, prompt: "204", width: 120)
-                LabeledContent("Sign in") {
+                CallspireLabeledContent("Sign in") {
                     HStack {
                         Button {
                             gatewayBusy = true
@@ -457,7 +457,7 @@ struct IntegrationsPanel: View {
         Section {
             Toggle("Send calls to Kommo", isOn: $draft.kommoEnabled)
             if draft.kommoEnabled {
-                LabeledContent("Connect via") {
+                CallspireLabeledContent("Connect via") {
                     Picker("", selection: $draft.kommoSource) {
                         Text("PBX Gateway").tag("gateway")
                         Text("This Mac").tag("local")
@@ -482,7 +482,7 @@ struct IntegrationsPanel: View {
         if draft.kommoEnabled && !isGatewaySource {
             Section {
                 FormField(title: "Account", text: $draft.kommoSubdomain, prompt: "yourcompany")
-                LabeledContent("Sign-in method") {
+                CallspireLabeledContent("Sign-in method") {
                     Picker("", selection: $draft.kommoAuthMode) {
                         ForEach(info.kommoAuthOptions) { Text($0.label).tag($0.key) }
                     }
@@ -494,7 +494,7 @@ struct IntegrationsPanel: View {
                     FormField(title: "Client ID", text: $draft.kommoClientId, prompt: "From Kommo integration")
                     FormField(title: "Client secret", text: $draft.kommoClientSecret, prompt: "Required", secure: true)
                     FormField(title: "Redirect URI", text: $draft.kommoRedirectUri, prompt: "https://…")
-                    LabeledContent("Authorization") {
+                    CallspireLabeledContent("Authorization") {
                         HStack {
                             StatusPill(text: info.kommoOAuth.statusText,
                                        tone: info.kommoOAuth.isAuthorized ? .online : .offline)
@@ -555,7 +555,7 @@ struct AboutPanel: View {
             }
 
             Section {
-                LabeledContent("Software update") {
+                CallspireLabeledContent("Software update") {
                     HStack {
                         if result?.available ?? info.updateAvailable {
                             Button("Download from GitHub") { state.openUpdateUrl() }

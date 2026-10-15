@@ -25,7 +25,7 @@ struct LogView: View {
                                 Text(line)
                                     .font(.system(.caption, design: .monospaced))
                                     .foregroundStyle(lineColor(line))
-                                    .textSelection(.enabled)
+                                    .callspireTextSelectionEnabled()
                                     .id(i)
                             }
                         }
@@ -140,7 +140,7 @@ struct UpdateAvailableSheet: View {
                     .frame(maxHeight: 160)
             }
             if let sha = info.sha256, !sha.isEmpty {
-                Text("SHA-256: \(sha)").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
+                Text("SHA-256: \(sha)").font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary).callspireTextSelectionEnabled()
             }
             HStack {
                 Spacer()

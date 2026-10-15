@@ -56,13 +56,13 @@ struct CallDetailsView: View {
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 52, height: 52)
-                .background(Circle().fill(directionColor.gradient))
+                .background(Circle().fill(directionColor))
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(d.phoneNumber)
                         .font(.system(size: 24, weight: .semibold, design: .rounded))
-                        .textSelection(.enabled)
+                        .callspireTextSelectionEnabled()
                     Button { Pasteboard.copy(d.phoneNumber) } label: {
                         Image(systemName: "doc.on.doc")
                             .font(.system(size: 11, weight: .medium))
@@ -266,7 +266,7 @@ struct CallDetailsView: View {
                 Text(filteredLogs.isEmpty ? "No log entries for this filter." : filteredLogs.joined(separator: "\n"))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(filteredLogs.isEmpty ? .secondary : .primary)
-                    .textSelection(.enabled)
+                    .callspireTextSelectionEnabled()
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
             }
@@ -384,7 +384,7 @@ extension DetailRow where Value == AnyView {
             AnyView(
                 Text(text.isEmpty ? "—" : text)
                     .font(mono ? .callout.monospacedDigit() : .callout)
-                    .textSelection(.enabled)
+                    .callspireTextSelectionEnabled()
             )
         }
     }

@@ -226,7 +226,7 @@ struct KeyValueRow: View {
     var body: some View {
         HStack(alignment: .firstTextBaseline) {
             Text(key).foregroundStyle(.secondary).frame(width: keyWidth, alignment: .leading)
-            Text(value).foregroundStyle(valueColor ?? .primary).textSelection(.enabled)
+            Text(value).foregroundStyle(valueColor ?? .primary).callspireTextSelectionEnabled()
             Spacer(minLength: 0)
         }
         .font(.callout)

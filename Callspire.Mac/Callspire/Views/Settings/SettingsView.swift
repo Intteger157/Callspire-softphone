@@ -148,7 +148,7 @@ struct SettingsView: View {
                 Text(message.text)
                     .font(.callout)
                     .lineLimit(2)
-                    .textSelection(.enabled)
+                    .callspireTextSelectionEnabled()
             } else if isDirty {
                 Image(systemName: "circle.fill")
                     .font(.system(size: 7))
@@ -279,7 +279,7 @@ struct SettingsIcon: View {
             .font(.system(size: size * 0.55, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: size, height: size)
-            .background(tint.gradient, in: RoundedRectangle(cornerRadius: size * 0.25, style: .continuous))
+            .background(tint, in: RoundedRectangle(cornerRadius: size * 0.25, style: .continuous))
     }
 }
 
