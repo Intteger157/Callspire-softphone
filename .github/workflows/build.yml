@@ -85,7 +85,17 @@ jobs:
         run: brew install xcodegen
 
       - name: Build Callspire.app (unsigned, CI)
-        run: bash Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --ci
+        run: |
+          set -o pipefail
+          bash Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --ci 2>&1 | tee publish/macos/xcodebuild-arm64.log
+
+      - name: Upload xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64-xcodebuild-log
+          path: publish/macos/xcodebuild-arm64.log
+          if-no-files-found: ignore
 
       - name: Zip .app for artifact download
         run: |
@@ -126,7 +136,17 @@ jobs:
         run: brew install xcodegen
 
       - name: Build Callspire.app (unsigned, CI)
-        run: bash Callspire.Mac/Scripts/package-dmg.sh --arch x86_64 --ci
+        run: |
+          set -o pipefail
+          bash Callspire.Mac/Scripts/package-dmg.sh --arch x86_64 --ci 2>&1 | tee publish/macos/xcodebuild-x64.log
+
+      - name: Upload xcodebuild log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x64-xcodebuild-log
+          path: publish/macos/xcodebuild-x64.log
+          if-no-files-found: ignore
 
       - name: Zip .app for artifact download
         run: |
