@@ -16,6 +16,7 @@ struct CallspireApp: App {
         WindowGroup {
             callspireMainRoot(state: state, appDelegate: appDelegate)
         }
+        .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { state.openSettings() }.keyboardShortcut(",", modifiers: .command)
