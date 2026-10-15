@@ -98,6 +98,16 @@ jobs:
           path: publish/macos/xcodebuild-arm64.log
           if-no-files-found: ignore
 
+      - name: Surface xcodebuild errors
+        if: failure()
+        run: |
+          LOG="publish/macos/xcodebuild-arm64.log"
+          if [ -f "$LOG" ]; then
+            grep -E " error:" "$LOG" | head -40 | while IFS= read -r line; do
+              echo "::error title=xcodebuild::${line}"
+            done
+          fi
+
       - name: Zip .app for artifact download
         run: |
           APP="$(find publish/macos -name 'Callspire.app' -type d | head -1)"
@@ -149,6 +159,16 @@ jobs:
           name: macos-x64-xcodebuild-log
           path: publish/macos/xcodebuild-x64.log
           if-no-files-found: ignore
+
+      - name: Surface xcodebuild errors
+        if: failure()
+        run: |
+          LOG="publish/macos/xcodebuild-x64.log"
+          if [ -f "$LOG" ]; then
+            grep -E " error:" "$LOG" | head -40 | while IFS= read -r line; do
+              echo "::error title=xcodebuild::${line}"
+            done
+          fi
 
       - name: Zip .app for artifact download
         run: |
