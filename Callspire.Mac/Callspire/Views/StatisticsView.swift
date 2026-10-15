@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 
 /// Call Statistics — same chrome as Call History / dialer. Charts are neutral; accent only on the Apply CTA.
 struct StatisticsView: View {
@@ -147,56 +146,28 @@ struct StatisticsView: View {
 
     // MARK: Charts
 
+    @ViewBuilder
     private var chartsRow: some View {
-        HStack(alignment: .top, spacing: 10) {
-            chartCard(title: "Calls by day", caption: nil) {
-                if st.daily.isEmpty { emptyChart } else {
-                    Chart(st.daily) { day in
-                        BarMark(x: .value("Day", day.label), y: .value("Total", day.total))
-                            .foregroundStyle(chartFill.opacity(0.22))
-                        BarMark(x: .value("Day", day.label), y: .value("Answered", day.answered))
-                            .foregroundStyle(Color.green.gradient)
-                    }
-                    .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(MacTheme.separator) } }
-                    .frame(height: 160)
-                }
-            }
-            chartCard(title: "Activity by hour", caption: st.peakHourText) {
-                if st.hourly.isEmpty { emptyChart } else {
-                    let peak = st.hourly.map(\.total).max() ?? 0
-                    Chart(st.hourly) { h in
-                        BarMark(x: .value("Hour", h.label), y: .value("Calls", h.total))
-                            .foregroundStyle(h.total == peak && h.total > 0 ? Color.primary : chartFill.opacity(0.35))
-                            .cornerRadius(2)
-                    }
-                    .chartYAxis { AxisMarks(position: .leading) { _ in AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5)).foregroundStyle(MacTheme.separator) } }
-                    .chartXAxis { AxisMarks(values: .automatic(desiredCount: 8)) { _ in AxisValueLabel().font(.caption2) } }
-                    .frame(height: 160)
-                }
-            }
+        if #available(macOS 13.0, *) {
+            StatisticsChartsVentura(st: st, chartFill: chartFill)
+        } else {
+            montereyChartsSummary
         }
     }
 
-    private func chartCard<Content: View>(title: String, caption: String?, @ViewBuilder content: @escaping () -> Content) -> some View {
+    private var montereyChartsSummary: some View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(title).font(.headline)
-                    Spacer()
-                    if let caption, !caption.isEmpty {
-                        Text(caption).font(.caption).foregroundStyle(.secondary)
-                    }
+                Text("Charts").font(.headline)
+                Text("Bar charts need macOS 13 (Ventura) or newer. KPI cards, breakdowns, and CSV export work on Monterey.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if !st.peakHourText.isEmpty {
+                    Text(st.peakHourText).font(.caption).foregroundStyle(.secondary)
                 }
-                content()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    private var emptyChart: some View {
-        Text("No data for this period.")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 140)
     }
 
     // MARK: Breakdowns
