@@ -87,6 +87,7 @@ jobs:
       - name: Build Callspire.app (unsigned, CI)
         run: |
           set -o pipefail
+          mkdir -p publish/macos
           bash Callspire.Mac/Scripts/package-dmg.sh --arch arm64 --ci 2>&1 | tee publish/macos/xcodebuild-arm64.log
 
       - name: Upload xcodebuild log on failure
@@ -138,6 +139,7 @@ jobs:
       - name: Build Callspire.app (unsigned, CI)
         run: |
           set -o pipefail
+          mkdir -p publish/macos
           bash Callspire.Mac/Scripts/package-dmg.sh --arch x86_64 --ci 2>&1 | tee publish/macos/xcodebuild-x64.log
 
       - name: Upload xcodebuild log on failure
