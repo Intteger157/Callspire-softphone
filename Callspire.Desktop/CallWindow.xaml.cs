@@ -175,6 +175,7 @@ namespace Softphone
                 _sipService.OnCallEnded += OnCallEnded;
                 _sipService.OnRecordingFinalized += OnSipRecordingFinalized;
                 _sipService.OnOutboundCallerIdReceived += OnOutboundCallerIdReceived;
+                _sipService.OnLinkQualityChanged += OnLinkQualityChanged;
             }
 
             // НЕ запускаем таймер сразу - он запустится только когда звонок будет принят
@@ -650,6 +651,75 @@ namespace Softphone
                 }
             };
             _callTimer.Start();
+            ShowLinkQuality();
+        }
+
+        private System.Windows.Media.SolidColorBrush? _linkQualityGoodBrush;
+        private System.Windows.Media.SolidColorBrush? _linkQualityFairBrush;
+        private System.Windows.Media.SolidColorBrush? _linkQualityPoorBrush;
+        private System.Windows.Media.SolidColorBrush? _linkQualityEmptyBrush;
+
+        private static System.Windows.Media.SolidColorBrush FreezeBrush(byte r, byte g, byte b, byte a = 255)
+        {
+            var brush = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromArgb(a, r, g, b));
+            brush.Freeze();
+            return brush;
+        }
+
+        private System.Windows.Media.SolidColorBrush LinkQualityGoodBrush => _linkQualityGoodBrush ??= FreezeBrush(35, 165, 90);
+        private System.Windows.Media.SolidColorBrush LinkQualityFairBrush => _linkQualityFairBrush ??= FreezeBrush(230, 162, 60);
+        private System.Windows.Media.SolidColorBrush LinkQualityPoorBrush => _linkQualityPoorBrush ??= FreezeBrush(232, 93, 76);
+        private System.Windows.Media.SolidColorBrush LinkQualityEmptyBrush => _linkQualityEmptyBrush ??= FreezeBrush(128, 128, 128, 70);
+
+        private void ShowLinkQuality()
+        {
+            if (!CanTouchCallUi()) return;
+            LinkQualityPanel.Visibility = Visibility.Visible;
+            CallLinkQuality? last = _useWebRtc
+                ? (_webRtcService ?? WebRtcService.Main).LastLinkQuality
+                : _sipService?.LastLinkQuality;
+            if (last != null && last.Level != CallLinkQualityLevel.Unknown)
+                ApplyLinkQuality(last);
+            else
+                ApplyLinkQuality(CallLinkQuality.Measuring());
+        }
+
+        private void OnLinkQualityChanged(CallLinkQuality quality)
+        {
+            if (quality == null || _isClosing) return;
+            if (!Dispatcher.CheckAccess())
+            {
+                Dispatcher.BeginInvoke(new Action(() => OnLinkQualityChanged(quality)));
+                return;
+            }
+            if (!CanTouchCallUi() || LinkQualityPanel.Visibility != Visibility.Visible) return;
+            ApplyLinkQuality(quality);
+        }
+
+        private void ApplyLinkQuality(CallLinkQuality quality)
+        {
+            var brush = quality.Level switch
+            {
+                CallLinkQualityLevel.Excellent or CallLinkQualityLevel.Good => LinkQualityGoodBrush,
+                CallLinkQualityLevel.Fair => LinkQualityFairBrush,
+                CallLinkQualityLevel.Poor => LinkQualityPoorBrush,
+                _ => (System.Windows.Media.Brush)FindResource("TextSecondaryBrush"),
+            };
+            LinkQualityText.Text = quality.Level == CallLinkQualityLevel.Unknown
+                ? "PBX · Measuring…"
+                : $"PBX · {quality.Label}";
+            LinkQualityText.Foreground = brush;
+            LinkQualityDetail.Text = quality.Detail;
+            var bars = new[] { LinkQualityBar1, LinkQualityBar2, LinkQualityBar3, LinkQualityBar4 };
+            var fill = quality.Level switch
+            {
+                CallLinkQualityLevel.Excellent or CallLinkQualityLevel.Good => LinkQualityGoodBrush,
+                CallLinkQualityLevel.Fair => LinkQualityFairBrush,
+                CallLinkQualityLevel.Poor => LinkQualityPoorBrush,
+                _ => LinkQualityEmptyBrush,
+            };
+            for (int i = 0; i < bars.Length; i++)
+                bars[i].Background = i < quality.Bars ? fill : LinkQualityEmptyBrush;
         }
 
         private void StartRingbackUiTimer()
@@ -1924,6 +1994,7 @@ namespace Softphone
             
             if (_useWebRtc)
             {
+                try { (_webRtcService ?? WebRtcService.Main).OnLinkQualityChanged -= OnLinkQualityChanged; } catch { }
                 // События нужны для recording_complete, который может прийти после закрытия окна.
                 MainWindow.Log($"{logPrefix} OnClosed: Keeping WebRTC event subscription for recording_complete processing (queue size={_recordingEventQueue.Count})");
                 _ = Task.Delay(10000).ContinueWith(_ =>
@@ -1932,6 +2003,7 @@ namespace Softphone
                     try
                     {
                         (_webRtcService ?? WebRtcService.Main).Event -= OnWebRtcServiceEvent;
+                        (_webRtcService ?? WebRtcService.Main).OnLinkQualityChanged -= OnLinkQualityChanged;
                     }
                     catch (Exception ex)
                     {
@@ -1966,6 +2038,7 @@ namespace Softphone
                 _sipService.OnCallEnded -= OnCallEnded;
                 _sipService.OnRecordingFinalized -= OnSipRecordingFinalized;
                 _sipService.OnOutboundCallerIdReceived -= OnOutboundCallerIdReceived;
+                _sipService.OnLinkQualityChanged -= OnLinkQualityChanged;
                 
                 // Записываем время окончания гудков, если еще не записано
                 CallWindowHelpers.UpdateRingbackEndTime(_ringbackStartTime, ref _ringbackEndTime);
@@ -2536,6 +2609,7 @@ namespace Softphone
             
             // Подписываемся на события WebRTC сервиса
             (_webRtcService ?? WebRtcService.Main).Event += OnWebRtcServiceEvent;
+            (_webRtcService ?? WebRtcService.Main).OnLinkQualityChanged += OnLinkQualityChanged;
             
             KeyDown += CallWindow_KeyDown;
             Focusable = true;
@@ -4064,12 +4138,10 @@ namespace Softphone
             {
                 // Проверяем, включена ли интеграция AmoCRM
                 var mainWindow = Application.Current.MainWindow as MainWindow;
-                if (mainWindow == null || !mainWindow.IsAmoCrmServiceInitialized())
-                {
-                    return; // Интеграция не включена
-                }
-                
-                // Получаем имя контакта из AmoCRM
+                if (mainWindow == null)
+                    return;
+
+                // Local client, or PBX Gateway Kommo session when the desktop has no local token.
                 string? contactName = await mainWindow.GetAmoCrmContactNameAsync(phoneNumber);
                 
                 if (!string.IsNullOrEmpty(contactName))

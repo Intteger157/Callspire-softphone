@@ -7201,14 +7201,13 @@ namespace Softphone
         /// </summary>
         public async Task<string?> GetAmoCrmContactNameAsync(string phoneNumber)
         {
-            if (_amoCrmService == null || !_amoCrmService.IsInitialized)
-            {
+            if (!IsAmoCrmIntegrationEnabled())
                 return null;
-            }
-            
+
             try
             {
-                return await _amoCrmService.GetContactNameByPhoneAsync(phoneNumber);
+                var lookup = await KommoContactDirectory.LookupAsync(phoneNumber, _amoCrmService, _mikoPbxCdrService).ConfigureAwait(false);
+                return lookup.Name;
             }
             catch (Exception ex)
             {

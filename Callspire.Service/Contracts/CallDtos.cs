@@ -38,6 +38,12 @@ namespace Softphone.Service.Contracts
         public bool IsKeypadVisible { get; init; }
         public bool IsRecordingIndicatorVisible { get; init; }
         public bool WasAnswered { get; init; }
+        public bool ShowLinkQuality { get; init; }
+        public string LinkQualityLabel { get; init; } = "";
+        public string LinkQualityDetail { get; init; } = "";
+        /// <summary>"unknown" | "excellent" | "good" | "fair" | "poor"</summary>
+        public string LinkQualityLevel { get; init; } = "unknown";
+        public int LinkQualityBars { get; init; }
 
         public static CallStateDto From(string sessionId, CallViewModel vm) => new()
         {
@@ -47,6 +53,9 @@ namespace Softphone.Service.Contracts
             ShowIncomingButtons = vm.ShowIncomingButtons, ShowHangupButton = vm.ShowHangupButton, ShowControls = vm.ShowControls,
             IsMuted = vm.IsMuted, IsOnHold = vm.IsOnHold, IsKeypadVisible = vm.IsKeypadVisible,
             IsRecordingIndicatorVisible = vm.IsRecordingIndicatorVisible, WasAnswered = vm.WasAnswered,
+            ShowLinkQuality = vm.ShowLinkQuality, LinkQualityLabel = vm.LinkQualityLabel,
+            LinkQualityDetail = vm.LinkQualityDetail, LinkQualityLevel = vm.LinkQualityLevel,
+            LinkQualityBars = vm.LinkQualityBars,
         };
     }
 
@@ -197,7 +206,7 @@ namespace Softphone.Service.Contracts
         public bool KommoGatewayUpload { get; init; }
         /// <summary>Local-mode upload of the client recording is enabled.</summary>
         public bool KommoLocalUpload { get; init; }
-        /// <summary>The CRM "Send result" section should be shown (WPF <c>UpdateCrmManualUploadSectionVisibility</c>).</summary>
+        /// <summary>The CRM "Send result" section. Hidden when Kommo recordings are uploaded by the PBX Gateway.</summary>
         public bool ShowCrmSendSection { get; init; }
     }
 

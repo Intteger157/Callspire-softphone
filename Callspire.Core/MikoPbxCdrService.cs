@@ -66,12 +66,13 @@ namespace Softphone
                 string osName = RuntimeInformation.OSDescription ?? "";
                 var ver = Assembly.GetExecutingAssembly().GetName().Version;
                 string appVersion = ver != null ? ver.ToString() : "";
+                string machineId = Environment.MachineName ?? "";
                 var body = new JObject
                 {
                     ["client_kind"] = clientKind,
                     ["app_version"] = appVersion,
                     ["os_name"] = osName,
-                    ["session_id"] = Environment.MachineName ?? "",
+                    ["device_id"] = machineId,
                 };
                 var content = new StringContent(body.ToString(Formatting.None), Encoding.UTF8, "application/json");
                 var resp = await _http.PostAsync($"{_baseUrl}/api/client/presence", content).ConfigureAwait(false);

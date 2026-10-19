@@ -49,6 +49,7 @@ namespace Softphone
         WebRtcCallState CurrentCallState { get; }
 
         event Action<WebRtcEventDto>? Event;
+        event Action<CallLinkQuality>? OnLinkQualityChanged;
 
         Task MakeCallAsync(string number);
         Task AnswerAsync(string? sessionId = null);
@@ -111,7 +112,11 @@ namespace Softphone
         private DateTime _lastResetUtc = DateTime.MinValue;
         private readonly ConcurrentDictionary<string, DateTime> _incomingCallDedup = new();
         private System.Threading.Timer? _watchdogTimer;
+        private System.Threading.Timer? _linkQualityTimer;
         private int _watchdogInFlight = 0;
+        private readonly object _linkLock = new();
+        private long _linkRecv = -1;
+        private long _linkLost = -1;
         private int _reconnectInFlight = 0;
 
         // Auto-reconnect (keeps WebRTC "ironclad" connected after network blips).
@@ -596,6 +601,9 @@ namespace Softphone
         }
 
         public event Action<WebRtcEventDto>? Event;
+        /// <summary>Live media-path quality toward the PBX while a WebRTC call is connected.</summary>
+        public event Action<CallLinkQuality>? OnLinkQualityChanged;
+        public CallLinkQuality? LastLinkQuality { get; private set; }
 
         public void AttachEngine(IWebRtcEngineHost engine)
         {
@@ -1265,6 +1273,7 @@ namespace Softphone
                                 _state = WebRtcCallState.Idle;
                                 _activeSessionId = null;
                                 _ringingSessionId = null;
+                                ResetLinkQuality();
                                 
                                 // Также очищаем дедупликацию входящих звонков для этого sessionId
                                 if (!string.IsNullOrEmpty(sessionId))
@@ -1412,6 +1421,7 @@ namespace Softphone
                                     _state = WebRtcCallState.Idle;
                                     _activeSessionId = null;
                                     _ringingSessionId = null;
+                                    ResetLinkQuality();
                                 }
                             }
                             break;
@@ -1420,6 +1430,7 @@ namespace Softphone
                             _activeSessionId = null;
                             _ringingSessionId = null;
                             _state = WebRtcCallState.Idle;
+                            ResetLinkQuality();
                             break;
                     }
 
@@ -1456,6 +1467,9 @@ namespace Softphone
                         dto.Data = dataEl2;
                     }
                 }
+
+                if (string.Equals(dto.Type, "stats", StringComparison.Ordinal) && dto.Data is { } statsData)
+                    PublishWebRtcLinkQuality(statsData);
 
                 if (suppressIncomingSubscriberDispatch)
                     return;
@@ -2211,6 +2225,116 @@ namespace Softphone
             }
         }
 
+        private void ResetLinkQuality()
+        {
+            lock (_linkLock)
+            {
+                _linkRecv = -1;
+                _linkLost = -1;
+                LastLinkQuality = null;
+            }
+        }
+
+        private void PublishWebRtcLinkQuality(JsonElement data)
+        {
+            WebRtcCallState state;
+            lock (_lock) state = _state;
+            if (state != WebRtcCallState.Connected) return;
+            if (data.ValueKind != JsonValueKind.Object) return;
+
+            string? ice = ReadStatString(data, "iceConnectionState");
+            if (ice is "failed" or "disconnected" or "closed")
+            {
+                EmitLinkQuality(CallLinkQuality.Broken($"ICE {ice}"));
+                return;
+            }
+
+            var inbound = ReadStatObject(data, "inbound");
+            var remote = ReadStatObject(data, "remoteInbound");
+            var pair = ReadStatObject(data, "selectedPair");
+
+            long recv = inbound is { } inn ? ReadStatLong(inn, "packetsReceived") : 0;
+            long lost = inbound is { } inl ? ReadStatLong(inl, "packetsLost") : 0;
+
+            double? loss = null;
+            lock (_linkLock)
+            {
+                if (_linkRecv >= 0)
+                {
+                    long dRecv = recv - _linkRecv;
+                    long dLost = lost - _linkLost;
+                    long total = dRecv + Math.Max(0, dLost);
+                    if (total >= 10)
+                        loss = 100.0 * Math.Max(0, dLost) / total;
+                }
+                _linkRecv = recv;
+                _linkLost = lost;
+            }
+
+            if (remote is { } rem && ReadStatDouble(rem, "fractionLost") is double fraction)
+            {
+                double uplink = fraction <= 1 ? fraction * 100.0 : fraction;
+                loss = loss is double down ? Math.Max(down, uplink) : uplink;
+            }
+
+            double? jitter = null;
+            if (inbound is { } inj && ReadStatDouble(inj, "jitter") is double inboundJitter)
+                jitter = inboundJitter * 1000.0;
+            if (remote is { } remJ && ReadStatDouble(remJ, "jitter") is double remoteJitter)
+            {
+                double remoteMs = remoteJitter * 1000.0;
+                jitter = jitter is double local ? Math.Max(local, remoteMs) : remoteMs;
+            }
+
+            double? rtt = null;
+            if (pair is { } p && ReadStatDouble(p, "currentRoundTripTime") is double pairRtt)
+                rtt = pairRtt * 1000.0;
+            else if (remote is { } remR && ReadStatDouble(remR, "roundTripTime") is double remoteRtt)
+                rtt = remoteRtt * 1000.0;
+
+            var quality = recv == 0 && rtt == null && loss == null && jitter == null
+                ? CallLinkQuality.Measuring()
+                : CallLinkQuality.Evaluate(loss, jitter, rtt);
+            EmitLinkQuality(quality);
+        }
+
+        private void EmitLinkQuality(CallLinkQuality quality)
+        {
+            LastLinkQuality = quality;
+            AppLog.Log(quality.ToLogLine($"WebRTC {_slot}"));
+            try { OnLinkQualityChanged?.Invoke(quality); }
+            catch (Exception ex) { AppLog.Log($"[CallQuality] subscriber error: {ex.Message}"); }
+        }
+
+        private static JsonElement? ReadStatObject(JsonElement parent, string name)
+        {
+            if (!parent.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.Object)
+                return null;
+            return el;
+        }
+
+        private static string? ReadStatString(JsonElement parent, string name)
+        {
+            if (!parent.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.String)
+                return null;
+            return el.GetString();
+        }
+
+        private static double? ReadStatDouble(JsonElement parent, string name)
+        {
+            if (!parent.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.Number || !el.TryGetDouble(out var value))
+                return null;
+            return value;
+        }
+
+        private static long ReadStatLong(JsonElement parent, string name)
+        {
+            if (!parent.TryGetProperty(name, out var el) || el.ValueKind != JsonValueKind.Number)
+                return 0;
+            if (el.TryGetInt64(out var whole)) return whole;
+            return el.TryGetDouble(out var value) ? (long)value : 0;
+        }
+
         public void StartWatchdog()
         {
             lock (_lock)
@@ -2271,11 +2395,6 @@ namespace Softphone
                                 TriggerReconnectNow("watchdog_no_pong");
                             }
 
-                            // Request stats only during active calls.
-                            if (state == WebRtcCallState.Connected)
-                            {
-                                _ = engine.SendAsync(new { cmd = "getStats", slot = _slot });
-                            }
                         }
                         catch (Exception ex)
                         {
@@ -2287,6 +2406,27 @@ namespace Softphone
                         }
                     });
                 }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(15));
+
+                _linkQualityTimer ??= new System.Threading.Timer(_ =>
+                {
+                    try
+                    {
+                        IWebRtcEngineHost? qualityEngine;
+                        WebRtcCallState qualityState;
+                        lock (_lock)
+                        {
+                            qualityEngine = _engine;
+                            qualityState = _state;
+                        }
+                        if (qualityEngine == null || !qualityEngine.IsInitialized) return;
+                        if (qualityState != WebRtcCallState.Connected) return;
+                        _ = qualityEngine.SendAsync(new { cmd = "getStats", slot = _slot });
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLog.Log($"[WebRtcService] link quality poll: {ex.Message}");
+                    }
+                }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(3));
             }
         }
         
@@ -2303,6 +2443,11 @@ namespace Softphone
                     _watchdogTimer = null;
                     System.Threading.Interlocked.Exchange(ref _watchdogInFlight, 0);
                     AppLog.Log("[WebRtcService] Watchdog timer stopped");
+                }
+                if (_linkQualityTimer != null)
+                {
+                    _linkQualityTimer.Dispose();
+                    _linkQualityTimer = null;
                 }
             }
         }

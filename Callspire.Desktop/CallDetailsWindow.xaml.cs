@@ -246,12 +246,9 @@ namespace Softphone
                     OpenAmoCrmContactButton.Visibility = Visibility.Collapsed; // Будет показана после загрузки contact ID
                 }
 
-                // Загружаем contact ID для кнопки «Open contact»
-                _ = LoadAmoCrmContactIdAsync();
-
-                // AmoCRM Contact Name - загружаем асинхронно
+                // Contact name and id. Gateway mode has no local Kommo client, so this also uses the gateway session.
                 AmoCrmContactNameTextBlock.Text = "Loading...";
-                _ = LoadAmoCrmContactNameAsync();
+                _ = LoadAmoCrmContactAsync();
 
                 // AmoCRM Upload Status
                 UpdateAmoCrmUploadStatusDisplay();
@@ -1492,110 +1489,47 @@ namespace Softphone
         }
 
         /// <summary>
-        /// Загружает ID контакта из AmoCRM по номеру телефона для кнопки "Open Contact"
+        /// Loads the Kommo contact name (and id for "Open contact") for this call.
+        /// Local mode uses the desktop Kommo client. Gateway mode uses the PBX Gateway Kommo session.
         /// </summary>
-        private async Task LoadAmoCrmContactIdAsync()
+        private async Task LoadAmoCrmContactAsync()
         {
             try
             {
-                // Проверяем, включена ли интеграция AmoCRM
                 var mainWindow = Application.Current.MainWindow as MainWindow;
-                if (mainWindow == null || !mainWindow.IsAmoCrmServiceInitialized())
+                var lookup = await KommoContactDirectory.LookupAsync(
+                    _callItem.PhoneNumber,
+                    mainWindow?.GetAmoCrmService(),
+                    mainWindow?.GetMikoPbxCdrService()).ConfigureAwait(true);
+
+                if (!string.IsNullOrEmpty(lookup.Name))
                 {
-                    return;
+                    AmoCrmContactNameTextBlock.Text = lookup.Name;
+                    MainWindow.Log($"[CallDetailsWindow] Loaded AmoCRM contact name: {lookup.Name} for {_callItem.PhoneNumber}");
+                }
+                else
+                {
+                    AmoCrmContactNameTextBlock.Text = lookup.Error ?? "Contact not found in AmoCRM";
                 }
 
-                var amoCrmService = mainWindow.GetAmoCrmService();
-                if (amoCrmService == null)
+                if (lookup.ContactId is long contactId)
                 {
-                    return;
+                    _amoCrmContactId = contactId;
+                    if (!_callItem.AmoCrmLeadId.HasValue)
+                        OpenAmoCrmContactButton.Visibility = Visibility.Visible;
+                    MainWindow.Log($"[CallDetailsWindow] Loaded AmoCRM contact ID: {contactId} for {_callItem.PhoneNumber}");
                 }
-
-                // Получаем ID контакта из AmoCRM
-                long? contactId = await amoCrmService.FindContactByPhoneAsync(_callItem.PhoneNumber);
-
-                // Обновляем UI в главном потоке
-                Dispatcher.Invoke(() =>
+                else
                 {
-                    if (contactId.HasValue)
-                    {
-                        _amoCrmContactId = contactId.Value;
-                        // Показываем кнопку "Open Contact", если запись не прикреплена к лиду
-                        if (!_callItem.AmoCrmLeadId.HasValue)
-                        {
-                            OpenAmoCrmContactButton.Visibility = Visibility.Visible;
-                        }
-                        MainWindow.Log($"[CallDetailsWindow] Loaded AmoCRM contact ID: {contactId.Value} for {_callItem.PhoneNumber}");
-                    }
-                    else
-                    {
-                        _amoCrmContactId = null;
-                        // Если нет contact ID и нет lead ID, скрываем кнопку
-                        if (!_callItem.AmoCrmLeadId.HasValue)
-                        {
-                            OpenAmoCrmContactButton.Visibility = Visibility.Collapsed;
-                        }
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                MainWindow.Log($"[CallDetailsWindow] Error loading AmoCRM contact ID: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Загружает имя контакта из AmoCRM по номеру телефона
-        /// </summary>
-        private async Task LoadAmoCrmContactNameAsync()
-        {
-            try
-            {
-                // Проверяем, включена ли интеграция AmoCRM
-                var mainWindow = Application.Current.MainWindow as MainWindow;
-                if (mainWindow == null || !mainWindow.IsAmoCrmServiceInitialized())
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        AmoCrmContactNameTextBlock.Text = "AmoCRM integration not enabled";
-                    });
-                    return;
+                    _amoCrmContactId = null;
+                    if (!_callItem.AmoCrmLeadId.HasValue)
+                        OpenAmoCrmContactButton.Visibility = Visibility.Collapsed;
                 }
-
-                var amoCrmService = mainWindow.GetAmoCrmService();
-                if (amoCrmService == null)
-                {
-                    Dispatcher.Invoke(() =>
-                    {
-                        AmoCrmContactNameTextBlock.Text = "AmoCRM service not available";
-                    });
-                    return;
-                }
-
-                // Получаем имя контакта из AmoCRM
-                string? contactName = await amoCrmService.GetContactNameByPhoneAsync(_callItem.PhoneNumber);
-
-                // Обновляем UI в главном потоке
-                Dispatcher.Invoke(() =>
-                {
-                    if (!string.IsNullOrEmpty(contactName))
-                    {
-                        AmoCrmContactNameTextBlock.Text = contactName;
-                        MainWindow.Log($"[CallDetailsWindow] Loaded AmoCRM contact name: {contactName} for {_callItem.PhoneNumber}");
-                    }
-                    else
-                    {
-                        AmoCrmContactNameTextBlock.Text = "Contact not found in AmoCRM";
-                    }
-                });
             }
             catch (Exception ex)
             {
                 MainWindow.Log($"[CallDetailsWindow] Error loading AmoCRM contact name: {ex.Message}");
-                Dispatcher.Invoke(() =>
-                {
-                    AmoCrmContactNameTextBlock.Text = "Error loading contact name";
-                });
+                AmoCrmContactNameTextBlock.Text = "Error loading contact name";
             }
         }
 
@@ -1851,28 +1785,17 @@ namespace Softphone
 
         private void UpdateCrmManualUploadSectionVisibility(bool isAmoCrmEnabled)
         {
-            bool gatewayUpload = IsGatewayKommoRecordingUploadSource();
-            bool localUpload = IsLocalKommoRecordingUploadSource();
-            bool showGatewayRetry = gatewayUpload
-                && (_callItem.AmoCrmUploadStatus == AmoCrmUploadStatus.Failed
-                    || _callItem.AmoCrmUploadStatus == AmoCrmUploadStatus.NotUploaded
-                    || _callItem.AmoCrmUploadStatus == AmoCrmUploadStatus.Cancelled);
-            bool show = isAmoCrmEnabled && (localUpload || showGatewayRetry);
+            // Gateway mode uploads the recording itself. The manual "Send result" block is only for local upload.
+            bool show = isAmoCrmEnabled && IsLocalKommoRecordingUploadSource();
 
             if (AmoCrmManualUploadBorder != null)
                 AmoCrmManualUploadBorder.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
 
             if (UploadCallResultButton != null)
-            {
-                UploadCallResultButton.Content = gatewayUpload && showGatewayRetry
-                    ? UploadCallResultButtonGatewayCaption
-                    : UploadCallResultButtonDefaultCaption;
-            }
+                UploadCallResultButton.Content = UploadCallResultButtonDefaultCaption;
 
-            if (show && localUpload)
+            if (show)
                 _ = LoadCrmSectionRecordingAsync();
-            else if (show && gatewayUpload)
-                SetCrmRecordingUi(null, "Recording will be fetched from Miko PBX by Gateway", false);
             else
                 SetCrmRecordingUi(null, null, false);
         }

@@ -156,6 +156,11 @@ struct CallState: Codable {
     var isKeypadVisible: Bool = false
     var isRecordingIndicatorVisible: Bool = false
     var wasAnswered: Bool = false
+    var showLinkQuality: Bool = false
+    var linkQualityLabel: String = ""
+    var linkQualityDetail: String = ""
+    var linkQualityLevel: String = "unknown"
+    var linkQualityBars: Int = 0
 }
 
 struct CallWindowInfo: Codable {

@@ -1,81 +1,45 @@
-# Руководство по изменению версии приложения
+# Руководство по версии и релизу приложения
 
-## Где изменить версию
+Релизы Callspire **не собираются локально**. Сборка и упаковка (установщики Windows, macOS `.zip`/`.dmg`) выполняются автоматически в GitHub Actions после push.
 
-Версия приложения задается в файле **`Callspire.csproj`** в секции `<PropertyGroup>`:
+## Где задаётся версия
 
-```xml
-<!-- Application Version -->
-<!-- Измените эти значения перед каждым релизом -->
-<Version>1.0.0</Version>
-<AssemblyVersion>1.0.0.0</AssemblyVersion>
-<FileVersion>1.0.0.0</FileVersion>
-<InformationalVersion>1.0.0</InformationalVersion>
-```
-
-## Формат версии
-
-- **`<Version>`** - основная версия в формате `x.y.z` (например, `1.0.0`, `1.1.0`, `2.0.0`)
-- **`<AssemblyVersion>`** - версия сборки в формате `x.y.z.w` (например, `1.0.0.0`)
-- **`<FileVersion>`** - версия файла в формате `x.y.z.w` (обычно совпадает с AssemblyVersion)
-- **`<InformationalVersion>`** - информационная версия, отображаемая пользователю (формат `x.y.z`)
-
-## Как изменить версию перед релизом
-
-### Пример: обновление с 1.0.0 до 1.0.1
-
-1. Откройте файл `Callspire.csproj`
-2. Найдите секцию с версиями (строки 23-27)
-3. Измените все значения:
+Единственный источник версии — **`Directory.Build.props`** в корне репозитория:
 
 ```xml
-<Version>1.0.1</Version>
-<AssemblyVersion>1.0.1.0</AssemblyVersion>
-<FileVersion>1.0.1.0</FileVersion>
-<InformationalVersion>1.0.1</InformationalVersion>
+<PropertyGroup>
+  <AppVersion>1.1.50</AppVersion>
+  <Version>$(AppVersion)</Version>
+  <AssemblyVersion>$(AppVersion).0</AssemblyVersion>
+  <FileVersion>$(AppVersion).0</FileVersion>
+  <InformationalVersion>$(AppVersion)</InformationalVersion>
+</PropertyGroup>
 ```
 
-### Пример: обновление до 1.1.0
+Меняйте **только `AppVersion`** (формат `x.y.z`) — остальные значения вычисляются из него и применяются ко всем проектам решения (Core, AppHost, Desktop, Service). В отдельных `.csproj` версию не править.
 
-```xml
-<Version>1.1.0</Version>
-<AssemblyVersion>1.1.0.0</AssemblyVersion>
-<FileVersion>1.1.0.0</FileVersion>
-<InformationalVersion>1.1.0</InformationalVersion>
-```
+## Процесс релиза
 
-### Пример: обновление до 2.0.0
+1. Измените `AppVersion` в `Directory.Build.props` (например, `1.1.50` → `1.1.51`).
+2. Закоммитьте и сделайте push в GitHub.
+3. Для публикации релиза создайте и отправьте тег, **совпадающий с версией** с префиксом `v`:
 
-```xml
-<Version>2.0.0</Version>
-<AssemblyVersion>2.0.0.0</AssemblyVersion>
-<FileVersion>2.0.0.0</FileVersion>
-<InformationalVersion>2.0.0</InformationalVersion>
-```
+   ```bash
+   git tag v1.1.51
+   git push origin v1.1.51
+   ```
 
-## Важно!
+## Что делает GitHub
 
-1. **Версия должна совпадать с тегом релиза на GitHub** (например, если версия `1.0.1`, то тег должен быть `v1.0.1` или `1.0.1`)
-2. **Измените версию ПЕРЕД сборкой** релиза
-3. **После изменения версии пересоберите проект** (`Build` → `Rebuild Solution`)
-4. **Проверьте версию** в Settings → About после сборки
+| Событие | Workflow | Результат |
+|---|---|---|
+| push в любую ветку / PR в main | `.github/workflows/build.yml` | Артефакты Windows x64/arm64 и macOS arm64/x64 (unsigned), хранятся 30 дней |
+| push тега `v*` (или ручной запуск) | `.github/workflows/release.yml` | В GitHub Release загружаются: `Callspire-<версия>-win-x64-setup.exe`, `Callspire-<версия>-win-arm64-setup.exe`, `Callspire-<версия>-macos-{arm64,x64}-unsigned.zip` / `.dmg` |
 
-## Где отображается версия
+Версия установщика Windows берётся из имени тега (без `v`), поэтому тег должен совпадать с `AppVersion`. Теги с `-` (например, `v1.1.51-beta1`) публикуются как pre-release.
 
-- **Settings → About** - отображается как "Version: x.y.z"
-- **Проверка обновлений** - сравнивается с версией релиза на GitHub
-- **Свойства файла .exe** - в деталях файла (FileVersion)
+## Важно
 
-## Семантическое версионирование
-
-Рекомендуется использовать [Semantic Versioning](https://semver.org/):
-
-- **MAJOR** (x.0.0) - несовместимые изменения API
-- **MINOR** (x.y.0) - новая функциональность с обратной совместимостью
-- **PATCH** (x.y.z) - исправления ошибок с обратной совместимостью
-
-Примеры:
-- `1.0.0` → `1.0.1` - исправление бага
-- `1.0.1` → `1.1.0` - добавление новой функции
-- `1.1.0` → `2.0.0` - крупное обновление с несовместимыми изменениями
-
+- Не собирайте релизные артефакты локально через `build.ps1` / `build.sh` — эти скрипты только для локальной проверки компиляции и отладки.
+- Меняйте версию **до** создания тега.
+- Не используйте старый `Callspire.csproj` — версионирование теперь централизовано в `Directory.Build.props`.

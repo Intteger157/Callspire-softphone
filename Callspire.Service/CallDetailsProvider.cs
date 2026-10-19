@@ -36,29 +36,15 @@ namespace Softphone.Service
                 return new { ok, error, details = Build(_controller.FindHistoryItem(call.PhoneNumber, call.CallTime) ?? call) };
             });
 
-            // WPF CallDetailsWindow.LoadAmoCrmContactNameAsync — local Kommo mode only (gateway mode has no Kommo client here).
+            // Local Kommo client, or the PBX Gateway Kommo session when recordings are uploaded by the gateway.
             _ipc.Register("getKommoContactName", async (p, _) =>
             {
                 var phone = p.HasValue && p.Value.TryGetProperty("phoneNumber", out var ph) ? ph.GetString() : null;
                 if (string.IsNullOrWhiteSpace(phone)) throw new IpcException("phoneNumber is required", "bad_request");
-                var s = _controller.Settings;
-                if (!s.EnableAmoCrmIntegration) return new KommoContactLookupDto { Error = "AmoCRM integration not enabled" };
-                var svc = _controller.LocalKommo;
-                if (svc == null || !svc.IsInitialized)
-                    return new KommoContactLookupDto { Error = string.Equals(s.AmoCrmRecordingUploadSource?.Trim(), "gateway", StringComparison.OrdinalIgnoreCase)
-                        ? "Contact lookup is handled by PBX Gateway" : "AmoCRM service not available" };
-                try
-                {
-                    var id = await svc.FindContactByPhoneAsync(phone).ConfigureAwait(false);
-                    if (id == null) return new KommoContactLookupDto { Error = "Contact not found in AmoCRM" };
-                    var name = await svc.GetContactNameByPhoneAsync(phone).ConfigureAwait(false);
-                    return new KommoContactLookupDto { Name = name ?? $"Contact #{id}", ContactId = id };
-                }
-                catch (Exception ex)
-                {
-                    AppLog.Log($"[CallDetails] contact lookup failed: {ex.Message}");
-                    return new KommoContactLookupDto { Error = "Error loading contact name" };
-                }
+                if (!_controller.Settings.EnableAmoCrmIntegration)
+                    return new KommoContactLookupDto { Error = "AmoCRM integration not enabled" };
+                var lookup = await KommoContactDirectory.LookupAsync(phone, _controller.LocalKommo, _controller.Gateway).ConfigureAwait(false);
+                return new KommoContactLookupDto { Name = lookup.Name, ContactId = lookup.ContactId, Error = lookup.Error };
             });
         }
 
@@ -83,7 +69,6 @@ namespace Softphone.Service
             var s = _controller.Settings;
             bool gatewayUpload = string.Equals(s.AmoCrmRecordingUploadSource?.Trim(), "gateway", StringComparison.OrdinalIgnoreCase);
             bool localUpload = s.EnableAmoCrmRecordingUpload && !gatewayUpload;
-            bool showGatewayRetry = gatewayUpload && call.AmoCrmUploadStatus != AmoCrmUploadStatus.Uploaded;
             string? webBase = AmoCrmAccountUrl.TryBuildWebBaseUrl(s.AmoCrmSubdomain) ?? _controller.LocalKommo?.GetAccountWebBaseUrl();
             return new CallDetailsDto
             {
@@ -93,7 +78,7 @@ namespace Softphone.Service
                     ? CallWindowHelpers.GetUploadedRecordingSourceLabel(call.AmoCrmUploadedRecordingSource) : null,
                 KommoGatewayUpload = gatewayUpload,
                 KommoLocalUpload = localUpload,
-                ShowCrmSendSection = s.EnableAmoCrmIntegration && (localUpload || showGatewayRetry),
+                ShowCrmSendSection = s.EnableAmoCrmIntegration && localUpload,
                 PhoneNumber = call.PhoneNumber, CallTime = call.CallTime,
                 RingbackStart = call.RingbackStartTime, RingbackEnd = call.RingbackEndTime, AnswerTime = call.AnswerTime,
                 WasAnswered = call.WasAnswered || call.AnswerTime.HasValue,

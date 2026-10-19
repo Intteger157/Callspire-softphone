@@ -69,6 +69,11 @@ namespace Softphone.AppHost.ViewModels
         private bool _isOnHold;
         private bool _isKeypadVisible;
         private bool _isRecordingIndicatorVisible;
+        private bool _showLinkQuality;
+        private string _linkQualityLabel = "";
+        private string _linkQualityDetail = "";
+        private string _linkQualityLevel = "unknown";
+        private int _linkQualityBars;
 
         public event Action<CallEndedReport>? Completed;
         public event Action? CloseRequested;
@@ -148,12 +153,22 @@ namespace Softphone.AppHost.ViewModels
         public bool IsRecordingIndicatorVisible { get => _isRecordingIndicatorVisible; private set => Set(ref _isRecordingIndicatorVisible, value); }
         public bool WasAnswered => _wasAnswered;
 
+        /// <summary>Live PBX media-path quality, visible once the call is connected.</summary>
+        public bool ShowLinkQuality { get => _showLinkQuality; private set => Set(ref _showLinkQuality, value); }
+        public string LinkQualityLabel { get => _linkQualityLabel; private set => Set(ref _linkQualityLabel, value); }
+        public string LinkQualityDetail { get => _linkQualityDetail; private set => Set(ref _linkQualityDetail, value); }
+        /// <summary>"unknown" | "excellent" | "good" | "fair" | "poor"</summary>
+        public string LinkQualityLevel { get => _linkQualityLevel; private set => Set(ref _linkQualityLevel, value); }
+        public int LinkQualityBars { get => _linkQualityBars; private set => Set(ref _linkQualityBars, value); }
+
         // ───────────────────────── lifecycle ─────────────────────────
 
         /// <summary>Attach to service events and, for outgoing calls, dial.</summary>
         public async Task StartAsync()
         {
             if (_useWebRtc) HookWebRtc(); else HookSip();
+            if (!_isIncoming)
+                _ = ResolveCallerNameAsync();
 
             if (_isIncoming)
             {
@@ -423,6 +438,7 @@ namespace Softphone.AppHost.ViewModels
             _sip.OnCallEnded += OnSipCallEnded;
             _sip.OnRecordingFinalized += OnSipRecordingFinalized;
             _sip.OnOutboundCallerIdReceived += OnSipOutboundCallerId;
+            _sip.OnLinkQualityChanged += OnLinkQualityChanged;
         }
 
         private void UnhookSip()
@@ -432,6 +448,7 @@ namespace Softphone.AppHost.ViewModels
             _sip.OnCallEnded -= OnSipCallEnded;
             _sip.OnRecordingFinalized -= OnSipRecordingFinalized;
             _sip.OnOutboundCallerIdReceived -= OnSipOutboundCallerId;
+            _sip.OnLinkQualityChanged -= OnLinkQualityChanged;
         }
 
         private void OnSipOutboundCallerId(string callerId)
@@ -528,12 +545,14 @@ namespace Softphone.AppHost.ViewModels
         {
             if (_webRtc == null) return;
             _webRtc.Event += OnWebRtcEvent;
+            _webRtc.OnLinkQualityChanged += OnLinkQualityChanged;
         }
 
         private void UnhookWebRtc()
         {
             if (_webRtc == null) return;
             _webRtc.Event -= OnWebRtcEvent;
+            _webRtc.OnLinkQualityChanged -= OnLinkQualityChanged;
         }
 
         private void OnWebRtcEvent(WebRtcEventDto dto)
@@ -763,6 +782,7 @@ namespace Softphone.AppHost.ViewModels
             ShowControls = true;
             SetStatus("Connected", CallUiTone.Good);
             TimerText = "00:00:00";
+            ShowConnectedLinkQuality();
             StartTickTimer();
             AddDetail("Connected");
 
@@ -784,6 +804,7 @@ namespace Softphone.AppHost.ViewModels
             StopMediaWatchdog();
             StopRingback();
             PlatformRingtone.Stop();
+            ShowLinkQuality = false;
             SetStatus(text, tone);
             ShowIncomingButtons = false;
             ShowControls = false;
@@ -855,6 +876,49 @@ namespace Softphone.AppHost.ViewModels
         {
             StatusText = text;
             StatusTone = tone;
+        }
+
+        private void OnLinkQualityChanged(CallLinkQuality quality) => Ui(() => ApplyLinkQuality(quality));
+
+        private async Task ResolveCallerNameAsync()
+        {
+            try
+            {
+                if (!_controller.Settings.EnableAmoCrmIntegration) return;
+                var lookup = await KommoContactDirectory.LookupAsync(PhoneNumber, _controller.LocalKommo, _controller.Gateway).ConfigureAwait(false);
+                if (string.IsNullOrWhiteSpace(lookup.Name) || _closing) return;
+                Ui(() => CallerDisplay = $"{lookup.Name} ({PhoneNumber})");
+            }
+            catch (Exception ex)
+            {
+                Log($"contact name lookup failed: {ex.Message}");
+            }
+        }
+
+        private void ShowConnectedLinkQuality()
+        {
+            CallLinkQuality? last = _useWebRtc ? _webRtc?.LastLinkQuality : _sip?.LastLinkQuality;
+            if (last != null && last.Level != CallLinkQualityLevel.Unknown)
+                ApplyLinkQuality(last);
+            else
+                ApplyLinkQuality(CallLinkQuality.Measuring());
+        }
+
+        private void ApplyLinkQuality(CallLinkQuality quality)
+        {
+            if (_closing || !_wasAnswered || quality == null) return;
+            ShowLinkQuality = true;
+            LinkQualityLevel = quality.Level switch
+            {
+                CallLinkQualityLevel.Excellent => "excellent",
+                CallLinkQualityLevel.Good => "good",
+                CallLinkQualityLevel.Fair => "fair",
+                CallLinkQualityLevel.Poor => "poor",
+                _ => "unknown",
+            };
+            LinkQualityBars = quality.Bars;
+            LinkQualityLabel = quality.Level == CallLinkQualityLevel.Unknown ? "PBX · Measuring…" : $"PBX · {quality.Label}";
+            LinkQualityDetail = quality.Detail;
         }
 
         // ───────────────────────── timers & tones ─────────────────────────

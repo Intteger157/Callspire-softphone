@@ -896,32 +896,32 @@ namespace Softphone
         /// </summary>
         public async Task<string?> GetContactNameByPhoneAsync(string phoneNumber)
         {
+            var (name, _) = await LookupContactByPhoneAsync(phoneNumber).ConfigureAwait(false);
+            return name;
+        }
+
+        /// <summary>Contact id and display name for a phone number. Name may be null when the contact has none.</summary>
+        public async Task<(string? Name, long? ContactId)> LookupContactByPhoneAsync(string phoneNumber)
+        {
             if (!IsInitialized)
-                return null;
+                return (null, null);
 
             try
             {
-                long? contactId = await FindContactByPhoneAsync(phoneNumber);
+                long? contactId = await FindContactByPhoneAsync(phoneNumber).ConfigureAwait(false);
                 if (!contactId.HasValue)
-                    return null;
+                    return (null, null);
 
-                var contact = await GetContactByIdAsync(contactId.Value);
-                if (contact == null)
-                    return null;
-
-                string? name = contact["name"]?.Value<string>();
-                if (!string.IsNullOrEmpty(name))
-                {
+                var contact = await GetContactByIdAsync(contactId.Value).ConfigureAwait(false);
+                string? name = contact?["name"]?.Value<string>();
+                if (!string.IsNullOrWhiteSpace(name))
                     AppLog.Log($"[AmoCrmService] Found contact name: {name} for phone: {phoneNumber}");
-                    return name;
-                }
-
-                return null;
+                return (string.IsNullOrWhiteSpace(name) ? null : name, contactId);
             }
             catch (Exception ex)
             {
                 AppLog.Log($"[AmoCrmService] Error getting contact name: {ex.Message}");
-                return null;
+                return (null, null);
             }
         }
 

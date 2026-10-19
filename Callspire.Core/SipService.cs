@@ -18,6 +18,7 @@ using Softphone.Audio;
 using System.Security.Cryptography;
 using System.Text.RegularExpressions;
 using System.Net;
+using System.Diagnostics;
 
 namespace Softphone
 {
@@ -398,6 +399,9 @@ namespace Softphone
         public event Action<string>? OnRecordingFinalized;
         public event Action<string>? OnIncomingCall; // Событие для входящего звонка (номер звонящего)
         public event Action<string>? OnOutboundCallerIdReceived; // P-Asserted-Identity from SIP responses
+        /// <summary>Live media-path quality toward the PBX, sampled while RTP diagnostics are running.</summary>
+        public event Action<CallLinkQuality>? OnLinkQualityChanged;
+        public CallLinkQuality? LastLinkQuality { get; private set; }
 
         /// <summary>
         /// The outbound CallerID (P-Asserted-Identity) received from the PBX/carrier in SIP responses.
@@ -539,6 +543,21 @@ namespace Softphone
         private long _rtpTotalBytesReceived;
         private WavFileWriter? _diagnosticWavWriter;
         private readonly object _diagnosticWavLock = new object();
+
+        // Live PBX link quality (loss from sequence gaps, jitter, RTCP RTT).
+        private readonly object _linkLock = new();
+        private VoIPMediaSession? _rtpDiagSession;
+        private uint _rtpJitter;
+        private uint _rtpTransit;
+        private bool _rtpJitterPrimed;
+        private int _qualitySnapPackets;
+        private int _qualitySnapGaps;
+        private double _linkRttMs = -1;
+        private DateTime _linkRttUtc = DateTime.MinValue;
+        private int _linkUplinkFraction = -1;
+        private DateTime _linkUplinkUtc = DateTime.MinValue;
+        private double _linkRemoteJitterMs = -1;
+        private DateTime _linkRemoteJitterUtc = DateTime.MinValue;
         
         // ========== NAT TRAVERSAL (STUN) ==========
         private string? _publicIPAddress; // Кэшированный внешний IP адрес
@@ -5303,8 +5322,11 @@ namespace Softphone
                 _voipMediaSession.OnRtpPacketReceived += DiagnosticRtpPacketReceived;
             }
             
-            // Log stats every 5 seconds
-            _rtpStatsTimer = new System.Threading.Timer(LogRtpStats, null, 5000, 5000);
+            ResetLinkQualityState();
+            HookRtpQualityReports(_voipMediaSession);
+
+            // Stats + PBX link quality every 3 seconds.
+            _rtpStatsTimer = new System.Threading.Timer(LogRtpStats, null, 3000, 3000);
             
             AppLog.Log($"[SipService] {(_isSecondaryConnection ? "[Connection2] " : "")}RTP diagnostics started");
         }
@@ -5316,6 +5338,7 @@ namespace Softphone
         {
             _rtpStatsTimer?.Dispose();
             _rtpStatsTimer = null;
+            HookRtpQualityReports(null);
             
             if (_voipMediaSession != null)
             {
@@ -5396,6 +5419,9 @@ namespace Softphone
                 }
             }
             _rtpLastSequenceNumber = seq;
+
+            if (pt != 101 && (_rtpNegotiatedPayloadType < 0 || pt == _rtpNegotiatedPayloadType))
+                NoteInboundJitter(header.Timestamp);
             
             // Log first packet
             if (_rtpPacketsReceived == 1)
@@ -5519,6 +5545,152 @@ namespace Softphone
             }
             
             AppLog.Log($"[SipService] {connLabel}RTP stats: {_rtpPacketsReceived} pkts ({pps:F1}/s), gaps={_rtpSequenceGaps}, bytes={_rtpTotalBytesReceived}, PT=[{ptInfo}]");
+            PublishLinkQuality();
+        }
+
+        private void ResetLinkQualityState()
+        {
+            lock (_linkLock)
+            {
+                _rtpJitter = 0;
+                _rtpTransit = 0;
+                _rtpJitterPrimed = false;
+                _linkRttMs = -1;
+                _linkRttUtc = DateTime.MinValue;
+                _linkUplinkFraction = -1;
+                _linkUplinkUtc = DateTime.MinValue;
+                _linkRemoteJitterMs = -1;
+                _linkRemoteJitterUtc = DateTime.MinValue;
+            }
+            _qualitySnapPackets = 0;
+            _qualitySnapGaps = 0;
+            LastLinkQuality = null;
+        }
+
+        private void HookRtpQualityReports(VoIPMediaSession? session)
+        {
+            if (_rtpDiagSession != null)
+            {
+                try { _rtpDiagSession.OnReceiveReport -= OnDiagnosticRtcp; } catch { }
+                _rtpDiagSession = null;
+            }
+            if (session == null) return;
+            session.OnReceiveReport += OnDiagnosticRtcp;
+            _rtpDiagSession = session;
+        }
+
+        private int RtpClockHz()
+        {
+            try
+            {
+                int hz = _voipMediaSession?.AudioRtcpSession?.PayloadSampleRateHz ?? 0;
+                if (hz > 0) return hz;
+            }
+            catch { }
+            return _audioSampleRate > 0 ? _audioSampleRate : 8000;
+        }
+
+        private void NoteInboundJitter(uint rtpTimestamp)
+        {
+            int clock = RtpClockHz();
+            if (clock <= 0) return;
+            uint arrival = (uint)(Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency * clock);
+            lock (_linkLock)
+            {
+                uint transit = arrival - rtpTimestamp;
+                if (!_rtpJitterPrimed)
+                {
+                    _rtpTransit = transit;
+                    _rtpJitterPrimed = true;
+                    return;
+                }
+                int delta = (int)(transit - _rtpTransit);
+                if (delta < 0) delta = -delta;
+                _rtpJitter += (uint)(delta - (int)((_rtpJitter + 8) >> 4));
+                _rtpTransit = transit;
+            }
+        }
+
+        private void OnDiagnosticRtcp(IPEndPoint remoteEndPoint, SDPMediaTypesEnum media, RTCPCompoundPacket packet)
+        {
+            if (media != SDPMediaTypesEnum.audio || packet == null) return;
+            var reports = packet.SenderReport?.ReceptionReports;
+            if (reports == null || reports.Count == 0)
+                reports = packet.ReceiverReport?.ReceptionReports;
+            if (reports == null || reports.Count == 0) return;
+
+            uint now = RTCPSession.DateTimeToNtpTimestamp32(DateTime.Now);
+            int clock = RtpClockHz();
+            foreach (var rr in reports)
+            {
+                if (rr == null) continue;
+                lock (_linkLock)
+                {
+                    if (rr.LastSenderReportTimestamp != 0)
+                    {
+                        uint rttUnits = now - rr.LastSenderReportTimestamp - rr.DelaySinceLastSenderReport;
+                        double ms = rttUnits * 1000.0 / 65536.0;
+                        if (ms >= 0 && ms <= 5000)
+                        {
+                            _linkRttMs = ms;
+                            _linkRttUtc = DateTime.UtcNow;
+                        }
+                    }
+                    _linkUplinkFraction = rr.FractionLost;
+                    _linkUplinkUtc = DateTime.UtcNow;
+                    if (clock > 0)
+                    {
+                        _linkRemoteJitterMs = rr.Jitter * 1000.0 / clock;
+                        _linkRemoteJitterUtc = DateTime.UtcNow;
+                    }
+                }
+            }
+        }
+
+        private void PublishLinkQuality()
+        {
+            int pkts = _rtpPacketsReceived;
+            int gaps = _rtpSequenceGaps;
+            int dPkts = pkts - _qualitySnapPackets;
+            int dGaps = gaps - _qualitySnapGaps;
+            _qualitySnapPackets = pkts;
+            _qualitySnapGaps = gaps;
+
+            double? loss = null;
+            int denom = dPkts + Math.Max(0, dGaps);
+            if (denom >= 10)
+                loss = 100.0 * Math.Max(0, dGaps) / denom;
+
+            double? jitter = null;
+            double? rtt = null;
+            lock (_linkLock)
+            {
+                if (_rtpJitterPrimed)
+                {
+                    int clock = RtpClockHz();
+                    if (clock > 0) jitter = (_rtpJitter >> 4) * 1000.0 / clock;
+                }
+                if (_linkRemoteJitterUtc != DateTime.MinValue && (DateTime.UtcNow - _linkRemoteJitterUtc).TotalSeconds < 20 && _linkRemoteJitterMs >= 0)
+                    jitter = jitter is double local ? Math.Max(local, _linkRemoteJitterMs) : _linkRemoteJitterMs;
+                if (_linkRttUtc != DateTime.MinValue && (DateTime.UtcNow - _linkRttUtc).TotalSeconds < 20 && _linkRttMs >= 0)
+                    rtt = _linkRttMs;
+                if (_linkUplinkUtc != DateTime.MinValue && (DateTime.UtcNow - _linkUplinkUtc).TotalSeconds < 20 && _linkUplinkFraction >= 0)
+                {
+                    double uplink = _linkUplinkFraction * 100.0 / 256.0;
+                    loss = loss is double down ? Math.Max(down, uplink) : uplink;
+                }
+            }
+
+            var age = (DateTime.UtcNow - _rtpStatsStartTime).TotalSeconds;
+            CallLinkQuality quality = pkts == 0 && age >= 10 && rtt == null
+                ? CallLinkQuality.Broken("no RTP from PBX")
+                : CallLinkQuality.Evaluate(loss, jitter, rtt);
+
+            string source = _isSecondaryConnection ? "SIP secondary" : "SIP main";
+            LastLinkQuality = quality;
+            AppLog.Log(quality.ToLogLine(source));
+            try { OnLinkQualityChanged?.Invoke(quality); }
+            catch (Exception ex) { AppLog.Log($"[CallQuality] subscriber error: {ex.Message}"); }
         }
 
         /// <summary>

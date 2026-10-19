@@ -94,6 +94,15 @@ struct CallView: View {
             }
             .frame(minHeight: 20)
 
+            if s.showLinkQuality {
+                LinkQualityRow(
+                    level: s.linkQualityLevel,
+                    bars: s.linkQualityBars,
+                    label: s.linkQualityLabel,
+                    detail: s.linkQualityDetail
+                )
+            }
+
             HStack(spacing: 6) {
                 TransportBadge(label: info.transportLabel, isWebRtc: info.isWebRtc)
                 if !info.connectionLabel.isEmpty {
@@ -182,6 +191,47 @@ struct CallView: View {
 }
 
 // MARK: - Call window pieces
+
+private struct LinkQualityRow: View {
+    let level: String
+    let bars: Int
+    let label: String
+    let detail: String
+
+    private var color: Color {
+        switch level {
+        case "excellent", "good": return Color(red: 0.14, green: 0.65, blue: 0.35)
+        case "fair": return Color(red: 0.90, green: 0.64, blue: 0.24)
+        case "poor": return Color(red: 0.91, green: 0.36, blue: 0.30)
+        default: return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            HStack(spacing: 8) {
+                HStack(alignment: .bottom, spacing: 2) {
+                    ForEach(0..<4, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 1, style: .continuous)
+                            .fill(index < bars ? color : Color.secondary.opacity(0.28))
+                            .frame(width: 4, height: CGFloat(7 + index * 3))
+                    }
+                }
+                Text(label.isEmpty ? "PBX · Measuring…" : label)
+                    .font(.caption).callspireFontWeight(.semibold)
+                    .foregroundStyle(color)
+            }
+            if !detail.isEmpty {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+            }
+        }
+        .frame(maxWidth: 300)
+    }
+}
 
 private struct CallAvatar: View {
     let title: String

@@ -5098,25 +5098,47 @@ window.SoftphoneWebRtc = (function () {
                 signalingState: pc.signalingState
             };
             
-            // Получаем статистику через getStats (асинхронно)
+            // Live PBX-path sample: inbound audio, RTCP remote-inbound, selected ICE pair RTT.
             pc.getStats().then((report) => {
-                const statsData = {};
+                let inbound = null;
+                let remoteInbound = null;
+                let selectedPair = null;
                 report.forEach((stat) => {
-                    if (stat.type === 'inbound-rtp' || stat.type === 'outbound-rtp') {
-                        statsData[stat.type] = {
-                            packetsLost: stat.packetsLost,
-                            jitter: stat.jitter,
-                            bytesReceived: stat.bytesReceived,
-                            bytesSent: stat.bytesSent
+                    const kind = stat.kind || stat.mediaType;
+                    if (stat.type === 'inbound-rtp' && kind === 'audio') {
+                        inbound = {
+                            packetsReceived: stat.packetsReceived || 0,
+                            packetsLost: stat.packetsLost || 0,
+                            jitter: stat.jitter || 0
                         };
+                    } else if (stat.type === 'remote-inbound-rtp' && kind === 'audio') {
+                        remoteInbound = {
+                            roundTripTime: stat.roundTripTime,
+                            fractionLost: stat.fractionLost,
+                            jitter: stat.jitter,
+                            packetsLost: stat.packetsLost || 0
+                        };
+                    } else if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && (stat.selected || stat.nominated)) {
+                        const better = !selectedPair
+                            || (stat.selected && !selectedPair.selected)
+                            || (!selectedPair.selected && stat.nominated && !selectedPair.nominated);
+                        if (better) {
+                            selectedPair = {
+                                selected: !!stat.selected,
+                                nominated: !!stat.nominated,
+                                currentRoundTripTime: stat.currentRoundTripTime
+                            };
+                        }
                     }
                 });
-                sendEvent({ 
-                    type: 'stats', 
-                    data: { 
+                sendEvent({
+                    type: 'stats',
+                    data: {
                         ...stats,
-                        rtpStats: statsData
-                    } 
+                        inbound: inbound,
+                        remoteInbound: remoteInbound,
+                        selectedPair: selectedPair
+                    }
                 });
             }).catch((e) => {
                 console.error('[WebRTC] Error getting stats:', e);
