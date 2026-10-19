@@ -23,16 +23,18 @@ namespace Softphone.AppHost
 
             string? number = ExtractNumberFromUrl(url);
             if (string.IsNullOrWhiteSpace(number)) return;
-            Log($"[Controller] click-to-call: {number}");
+            long? leadId = ExtractLeadIdFromUrl(url);
+            Log($"[Controller] click-to-call: {number}, leadId={leadId?.ToString() ?? "null"}");
             _shell?.BringToForeground();
 
+            // Same as Windows InitiateCallFromBrowser: always let the user pick the outbound Caller ID / line.
             if (ViewModel.AnyOnline)
             {
-                _ = PlaceCallAsync(number);
+                _ = PlaceCallAsync(number, browserLeadId: leadId, forceSelection: true);
                 return;
             }
 
-            lock (_pendingClickToCall) _pendingClickToCall.Enqueue(number);
+            lock (_pendingClickToCall) _pendingClickToCall.Enqueue((number, leadId));
             UiThread.BeginInvoke(() => ViewModel.PhoneNumber = number);
         }
 

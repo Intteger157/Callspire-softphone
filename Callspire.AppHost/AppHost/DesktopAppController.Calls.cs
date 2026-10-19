@@ -12,7 +12,7 @@ namespace Softphone.AppHost
     {
         private CallStatisticsDrillDown _historyDrill = CallStatisticsDrillDown.All;
         private string? _historyDrillPhone;
-        private readonly Queue<string> _pendingClickToCall = new();
+        private readonly Queue<(string Number, long? LeadId)> _pendingClickToCall = new();
 
         // ───────────────────────── outbound ─────────────────────────
 
@@ -369,12 +369,33 @@ namespace Softphone.AppHost
 
         internal void FlushPendingClickToCall()
         {
-            string? next = null;
+            (string Number, long? LeadId)? next = null;
             lock (_pendingClickToCall)
             {
                 if (_pendingClickToCall.Count > 0) next = _pendingClickToCall.Dequeue();
             }
-            if (next != null) _ = PlaceCallAsync(next);
+            if (next is { } n) _ = PlaceCallAsync(n.Number, browserLeadId: n.LeadId, forceSelection: true);
+        }
+
+        /// <summary><c>callspire://call?phone=…&amp;leadId=123</c> from the Kommo widget.</summary>
+        internal static long? ExtractLeadIdFromUrl(string url)
+        {
+            if (string.IsNullOrWhiteSpace(url) || !url.StartsWith("callspire:", StringComparison.OrdinalIgnoreCase))
+                return null;
+            try
+            {
+                var uri = new Uri(url);
+                foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    var kv = pair.Split('=', 2);
+                    if (kv.Length == 2
+                        && string.Equals(kv[0], "leadId", StringComparison.OrdinalIgnoreCase)
+                        && long.TryParse(Uri.UnescapeDataString(kv[1]), out var id) && id > 0)
+                        return id;
+                }
+            }
+            catch { }
+            return null;
         }
 
         internal static bool TryExtractCdrAuthToken(string url, out string token)
