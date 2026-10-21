@@ -250,8 +250,51 @@
                     <!-- Hidden: used during download (Stop / Start) -->
                     <Button Grid.Column="4" Name="UpdateButton"
                            Content="Update Now"
+                           Background="{DynamicResource AccentBlueBrush}"
+                           Foreground="White"
+                           BorderThickness="0"
+                           Padding="24,9"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           Cursor="Hand"
+                           MinWidth="150"
                            Visibility="Collapsed"
-                           Click="UpdateButton_Click"/>
+                           Click="UpdateButton_Click">
+                        <Button.Style>
+                            <Style TargetType="Button">
+                                <Setter Property="Template">
+                                    <Setter.Value>
+                                        <ControlTemplate TargetType="Button">
+                                            <Border x:Name="Bd"
+                                                    Background="{TemplateBinding Background}"
+                                                    CornerRadius="6"
+                                                    SnapsToDevicePixels="True">
+                                                <StackPanel Orientation="Horizontal"
+                                                            HorizontalAlignment="Center"
+                                                            VerticalAlignment="Center"
+                                                            Margin="{TemplateBinding Padding}">
+                                                    <ic:SymbolIcon Symbol="ArrowDownload" Width="16" Height="16"
+                                                                   IconVariant="Regular"
+                                                                   Foreground="{TemplateBinding Foreground}"
+                                                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                                    <ContentPresenter VerticalAlignment="Center"/>
+                                                </StackPanel>
+                                            </Border>
+                                            <ControlTemplate.Triggers>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter TargetName="Bd" Property="Background" Value="#4752C4"/>
+                                                </Trigger>
+                                                <Trigger Property="IsEnabled" Value="False">
+                                                    <Setter TargetName="Bd" Property="Opacity" Value="0.5"/>
+                                                </Trigger>
+                                            </ControlTemplate.Triggers>
+                                        </ControlTemplate>
+                                    </Setter.Value>
+                                </Setter>
+                                <Setter Property="TextElement.Foreground" Value="White"/>
+                            </Style>
+                        </Button.Style>
+                    </Button>
                 </Grid>
             </Border>
             </Grid>

@@ -90,6 +90,9 @@ namespace Softphone
         /// </summary>
         public static bool ShouldCheckForUpdates()
         {
+#if DEBUG
+            return true; // debug builds always check, ignoring the 24h interval
+#else
             DateTime? lastCheck = GetLastCheckTime();
             
             if (lastCheck == null)
@@ -111,6 +114,7 @@ namespace Softphone
             }
             
             return shouldCheck;
+#endif
         }
         
         /// <summary>
@@ -163,6 +167,7 @@ namespace Softphone
             UpdateInfo? server = null;
             UpdateInfo? github = null;
             bool anySourceResponded = false;
+            bool allSourcesResponded = true;
 
             if (OperatingSystem.IsWindows())
             {
@@ -173,6 +178,10 @@ namespace Softphone
                     if (CompareVersions(current, server.Version) >= 0)
                         server = null;
                 }
+                else
+                {
+                    allSourcesResponded = false;
+                }
 
                 github = await GitHubUpdateService.FetchLatestReleaseAsync().ConfigureAwait(false);
                 if (github != null)
@@ -180,6 +189,10 @@ namespace Softphone
                     anySourceResponded = true;
                     if (CompareVersions(current, github.Version) >= 0)
                         github = null;
+                }
+                else
+                {
+                    allSourcesResponded = false;
                 }
             }
             else if (OperatingSystem.IsMacOS())
@@ -203,7 +216,8 @@ namespace Softphone
                 }
             }
 
-            if (anySourceResponded)
+            // A failed source is retried on next launch instead of waiting out the 24h interval.
+            if (anySourceResponded && allSourcesResponded)
                 SaveLastCheckTime(DateTime.Now);
 
             return new UpdateCheckResult { Server = server, GitHub = github };

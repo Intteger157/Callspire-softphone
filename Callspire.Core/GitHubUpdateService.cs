@@ -27,7 +27,21 @@ namespace Softphone
                 new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         }
 
+        /// <summary>Returns null (never throws) when GitHub is unreachable, so other sources still work.</summary>
         public static async Task<UpdateInfo?> FetchLatestReleaseAsync()
+        {
+            try
+            {
+                return await FetchLatestReleaseCoreAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Log($"[GitHubUpdate] Check failed: {ex.GetType().Name}: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static async Task<UpdateInfo?> FetchLatestReleaseCoreAsync()
         {
             var (owner, repo) = ResolveRepositorySlug();
             string url = $"https://api.github.com/repos/{owner}/{repo}/releases/latest";

@@ -296,8 +296,8 @@ namespace Softphone
 
                 LaterButton.IsEnabled = true;
                 LaterButton.Content = "Close";
-                GitHubUpdateButton.IsEnabled = false;
-                ServerUpdateButton.IsEnabled = false;
+                GitHubUpdateButton.Visibility = Visibility.Collapsed;
+                ServerUpdateButton.Visibility = Visibility.Collapsed;
                 UpdateButton.Visibility = Visibility.Visible;
                 UpdateButton.IsEnabled = true;
                 UpdateButton.Content = "Start installer";
@@ -380,6 +380,7 @@ namespace Softphone
             LaterButton.Content = "Update Later";
             GitHubUpdateButton.IsEnabled = true;
             ServerUpdateButton.IsEnabled = true;
+            ConfigureSourceButtons();
             UpdateButton.Visibility = Visibility.Collapsed;
             UpdateButton.IsEnabled = true;
             UpdateButton.Content = "Update Now";

@@ -46,6 +46,12 @@ final class IpcClient {
             Darwin.close(sock)
             throw IpcError.disconnected
         }
+        // A stalled sidecar must not park the IPC queue in write(): disconnect()/register() use
+        // queue.sync from the main thread, so a blocked write would freeze the whole UI.
+        var sndTimeout = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sndTimeout, socklen_t(MemoryLayout<timeval>.size))
+        var noSigPipe: Int32 = 1
+        setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
         fd = sock
         isConnected = true
         connectedPath = path

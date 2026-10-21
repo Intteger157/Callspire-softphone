@@ -128,7 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { (state?.mainWindow ?? NSApp.windows.first)?.makeKeyAndOrderFront(nil) }
+        NSApp.activate(ignoringOtherApps: true)
+        if let win = state?.mainWindow, win.contentView != nil {
+            if win.isMiniaturized { win.deminiaturize(nil) }
+            win.makeKeyAndOrderFront(nil)
+            // Window is on screen: nothing more for SwiftUI to do.
+            return false
+        }
+        // Main window was closed and torn down: let SwiftUI build a fresh one.
         return true
     }
 
